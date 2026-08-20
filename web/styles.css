@@ -1,0 +1,138 @@
+/* flobot web UI styles. One rule per NDJSON kind so each is visually
+   distinct: content, thinking (collapsed), tool_start/tool_end (paired),
+   perm (mock ack), plan, err, done, verify (badge). */
+
+:root {
+  --bg: #0e0f12;
+  --fg: #e8eaed;
+  --muted: #8b909a;
+  --card: #16181d;
+  --line: #2a2e37;
+  --acc: #7aa2f7;
+  --ok: #9ece6a;
+  --err: #f7768e;
+  --warn: #e0af68;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+h1 { font-size: 14px; margin: 0; letter-spacing: .04em; }
+h2 { font-size: 11px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.sub { color: var(--muted); }
+#streamState { color: var(--muted); font-size: 11px; }
+
+main {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 1.4fr;
+  gap: 0;
+  min-height: calc(100vh - 42px);
+}
+section { padding: 12px 14px; border-right: 1px solid var(--line); }
+section + section { border-right: none; }
+
+.row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+input, select, textarea, button {
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 7px;
+  font: inherit;
+}
+input, select { min-width: 0; flex: 1; }
+textarea { width: 100%; min-height: 90px; resize: vertical; }
+button { background: #1c2333; color: var(--acc); cursor: pointer; flex: 0; }
+button:hover { border-color: var(--acc); }
+button.primary { background: #1a2744; }
+button:disabled { opacity: .5; cursor: default; }
+
+.list { margin: 0 0 12px; padding: 0; list-style: none; }
+.list li { padding: 5px 0; border-bottom: 1px solid var(--line); }
+.tag { color: var(--muted); }
+#err { color: var(--err); min-height: 1.2em; margin: 0 14px 0; }
+
+#log {
+  height: 280px;
+  overflow: auto;
+  background: #0a0b0e;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+/* ---- event kinds ------------------------------------------------------ */
+
+.ev { margin: 2px 0; }
+.ev .k { color: var(--acc); }
+
+/* content: plain assistant output */
+.ev.content { color: var(--fg); }
+.ev.content .k { color: var(--muted); }
+
+/* thinking: collapsed by default via <details> */
+.ev.thinking { color: var(--muted); font-style: italic; }
+.ev.thinking summary { cursor: pointer; list-style: none; }
+.ev.thinking summary::before { content: "▸ "; }
+.ev.thinking[open] summary::before { content: "▾ "; }
+.ev.thinking .body { padding-left: 12px; white-space: pre-wrap; }
+
+/* tool_start / tool_end: paired rows */
+.ev.tool { border-left: 2px solid var(--line); padding-left: 6px; }
+.ev.tool_start .k { color: var(--acc); }
+.ev.tool_end .k { color: var(--muted); }
+.ev.tool .tool-status { color: var(--warn); }
+.ev.tool.closed .tool-status { color: var(--ok); }
+.ev.tool.err .tool-status, .ev.tool.err .k { color: var(--err); }
+
+/* perm: mock acknowledgment */
+.ev.perm .k { color: var(--warn); }
+.ev.perm .ack { margin-left: 6px; }
+.ev.perm.acked { opacity: .7; }
+
+/* plan: highlighted plan text */
+.ev.plan { border-left: 2px solid var(--acc); padding-left: 6px; }
+.ev.plan .k { color: var(--acc); }
+
+/* err: error output */
+.ev.err { color: var(--err); }
+.ev.err .k { color: var(--err); }
+
+/* done: terminal success */
+.ev.done { color: var(--ok); }
+.ev.done .k { color: var(--ok); }
+
+/* run_status: server-side status line */
+.ev.run_status .k { color: var(--muted); }
+
+/* verify: success/failure badge */
+.ev.verify .badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-weight: bold;
+  font-size: 11px;
+}
+.ev.verify.ok .badge { background: #1a2744; color: var(--ok); border: 1px solid var(--ok); }
+.ev.verify.fail .badge { background: #2a1418; color: var(--err); border: 1px solid var(--err); }
+
+/* unknown kind */
+.ev.unknown .k { color: var(--muted); }
+
+table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+td, th { text-align: left; padding: 3px 6px 3px 0; vertical-align: top; }
+#handoff { display: none; }
+.note { color: var(--muted); margin: 0 0 8px; }
