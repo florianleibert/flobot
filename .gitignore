@@ -1,0 +1,16 @@
+/flobot
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+.env
+.env.*
+*.pem
+*.key
+secrets/
+.accounts/
+.DS_Store
+tmp/
+/vendor/

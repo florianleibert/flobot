@@ -1,0 +1,12 @@
+{
+  "project": "flobot",
+  "updated": "2026-08-19T23:52:29Z",
+  "ports": {
+    "4120": {
+      "service": "flobot-web",
+      "description": "Standalone loopback roster + run UI (cmd/flobot serve)"
+    }
+  },
+  "reserved": [4121, 4122, 4123, 4124],
+  "notes": "Loopback only. Do not bind amesh 18765-18766 or flocode2 4090-4094."
+}

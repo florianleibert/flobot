@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flobot</title>
+<style>
+:root { --bg:#0e0f12; --fg:#e8eaed; --muted:#8b909a; --card:#16181d; --line:#2a2e37; --acc:#7aa2f7; --ok:#9ece6a; --err:#f7768e; --warn:#e0af68; }
+* { box-sizing:border-box; }
+html,body { margin:0; background:var(--bg); color:var(--fg); font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+header { display:flex; justify-content:space-between; align-items:baseline; padding:10px 14px; border-bottom:1px solid var(--line); }
+h1 { font-size:14px; margin:0; letter-spacing:.04em; }
+h2 { font-size:11px; margin:0 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+.sub { color:var(--muted); }
+main { display:grid; grid-template-columns:minmax(280px,1fr) 1.4fr; gap:0; min-height:calc(100vh - 42px); }
+section { padding:12px 14px; border-right:1px solid var(--line); }
+section + section { border-right:none; }
+.row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+input,select,textarea,button { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:5px 7px; font:inherit; }
+input,select { min-width:0; flex:1; }
+textarea { width:100%; min-height:90px; resize:vertical; }
+button { background:#1c2333; color:var(--acc); cursor:pointer; flex:0; }
+button:hover { border-color:var(--acc); }
+button.primary { background:#1a2744; }
+.list { margin:0 0 12px; padding:0; list-style:none; }
+.list li { padding:5px 0; border-bottom:1px solid var(--line); }
+.tag { color:var(--muted); }
+#err { color:var(--err); min-height:1.2em; margin:0 14px 0; }
+#log { height:280px; overflow:auto; background:#0a0b0e; border:1px solid var(--line); border-radius:4px; padding:8px; white-space:pre-wrap; }
+.ev .k { color:var(--acc); }
+.ev.err .k,.ev.error .k { color:var(--err); }
+.ev.done .k { color:var(--ok); }
+.ev.perm .k,.ev.verify .k { color:var(--warn); }
+table { width:100%; border-collapse:collapse; margin-bottom:10px; }
+td,th { text-align:left; padding:3px 6px 3px 0; vertical-align:top; }
+#handoff { display:none; }
+.note { color:var(--muted); margin:0 0 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>flobot <span class="sub">standalone · actor local · no pairing</span></h1>
+  <span class="sub">127.0.0.1:4120 · exec flocode2</span>
+</header>
+<p id="err"></p>
+<main>
+<section>
+  <h2>Bots</h2>
+  <div class="row">
+    <input id="botName" placeholder="name" value="Coder">
+    <input id="botRole" placeholder="role" value="coder">
+    <select id="botRoute">
+      <option value="glm">glm</option>
+      <option value="qwen">qwen</option>
+      <option value="muse">muse</option>
+      <option value="local">local</option>
+    </select>
+    <button type="button" id="createBot">Add</button>
+  </div>
+  <ul class="list" id="bots"></ul>
+
+  <div id="handoff">
+    <h2>Handoff</h2>
+    <div class="row">
+      <select id="fromBot"></select>
+      <select id="toBot"></select>
+      <input id="handoffBody" placeholder="work item">
+      <button type="button" id="sendHandoff">Send</button>
+    </div>
+    <ul class="list" id="msgs"></ul>
+  </div>
+
+  <h2>Skills</h2>
+  <div class="row">
+    <input id="skillName" placeholder="name">
+  </div>
+  <textarea id="skillBody" placeholder="reviewable how-to (markdown)"></textarea>
+  <div class="row"><button type="button" id="createSkill">Add skill</button></div>
+  <ul class="list" id="skills"></ul>
+
+  <h2>Routines</h2>
+  <div class="row">
+    <select id="rtnBot"></select>
+    <select id="rtnSkill"></select>
+    <input id="rtnTrigger" placeholder="trigger" value="manual">
+    <button type="button" id="createRtn">Add</button>
+  </div>
+  <ul class="list" id="routines"></ul>
+</section>
+<section>
+  <h2>Run</h2>
+  <p class="note">Headless CODE without yolo denies mutating tools. Test-run uses intent=ask (60s).</p>
+  <div class="row">
+    <select id="runBot"></select>
+    <select id="intent">
+      <option value="code">code</option>
+      <option value="ask">ask</option>
+      <option value="plan">plan</option>
+    </select>
+    <label><input type="checkbox" id="yolo"> yolo</label>
+    <label><input type="checkbox" id="verify"> verify</label>
+    <input id="worktree" placeholder="worktree (optional)">
+  </div>
+  <textarea id="prompt" placeholder="prompt"></textarea>
+  <div class="row"><button class="primary" type="button" id="runBtn">Run</button></div>
+  <h2>Events</h2>
+  <div id="log"></div>
+  <h2>Routes</h2>
+  <table id="routes"><tbody></tbody></table>
+  <h2>Model health</h2>
+  <div class="row"><button type="button" id="probeBtn">Probe /v1/models</button></div>
+  <table id="health"><tbody></tbody></table>
+</section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const errEl = $("err");
+let roster = {bots:[], skills:[], routines:[], messages:[], routes:[], runs:[]};
+let activeRun = null;
+let pollTimer = null;
+
+function showErr(e) { errEl.textContent = e || ""; }
+function esc(s) { return String(s??"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function api(method, path, body) {
+  const opt = {method, headers:{}};
+  if (body !== undefined) {
+    opt.headers["Content-Type"] = "application/json";
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opt);
+  const text = await r.text();
+  if (!r.ok) throw new Error(text.trim() || r.statusText);
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+function fillSelect(el, items, label) {
+  const cur = el.value;
+  el.innerHTML = items.map(b => `<option value="${esc(b.id)}">${esc(label(b))}</option>`).join("");
+  if ([...el.options].some(o => o.value === cur)) el.value = cur;
+}
+
+function render() {
+  $("bots").innerHTML = roster.bots.map(b =>
+    `<li><strong>${esc(b.name)}</strong> <span class="tag">${esc(b.id)} · ${esc(b.role)} · ${esc(b.route)}</span></li>`
+  ).join("") || `<li class="tag">none</li>`;
+  fillSelect($("runBot"), roster.bots, b => `${b.name} (${b.route})`);
+  fillSelect($("rtnBot"), roster.bots, b => b.name);
+  fillSelect($("fromBot"), roster.bots, b => b.name);
+  fillSelect($("toBot"), roster.bots, b => b.name);
+  fillSelect($("rtnSkill"), roster.skills, s => s.name);
+  $("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
+  $("msgs").innerHTML = (roster.messages||[]).map(m =>
+    `<li>${esc(m.from)} → ${esc(m.to)} <span class="tag">owner ${esc(m.owner_bot)}</span><br>${esc(m.body)}</li>`
+  ).join("");
+  $("skills").innerHTML = roster.skills.map(s =>
+    `<li><strong>${esc(s.name)}</strong> <span class="tag">${esc(s.id)}</span></li>`
+  ).join("") || `<li class="tag">none</li>`;
+  $("routines").innerHTML = roster.routines.map(rt =>
+    `<li>${esc(rt.id)} · ${esc(rt.trigger)} · paused=${rt.paused}
+      <span class="tag">${esc(rt.last_note||"no test-run")}</span>
+      <button data-test="${esc(rt.id)}">test-run</button>
+      <button data-en="${esc(rt.id)}">enable</button></li>`
+  ).join("") || `<li class="tag">none</li>`;
+  $("routines").querySelectorAll("[data-test]").forEach(btn => btn.onclick = () => testRun(btn.dataset.test));
+  $("routines").querySelectorAll("[data-en]").forEach(btn => btn.onclick = () => enableRtn(btn.dataset.en));
+  const tb = $("routes").querySelector("tbody");
+  tb.innerHTML = (roster.routes||[]).map(r =>
+    `<tr><td>${esc(r.id)}</td><td>${esc(r.role)}</td><td>${esc(r.model)}</td><td class="tag">${esc(r.purpose)}</td></tr>`
+  ).join("");
+}
+
+async function refresh() {
+  roster = await api("GET", "/api/v1/roster");
+  render();
+}
+
+function renderEvents(events) {
+  $("log").innerHTML = (events||[]).map(e => {
+    const k = esc(e.kind||"");
+    const t = e.tool ? " "+esc(e.tool) : "";
+    const x = e.text ? " "+esc(e.text) : "";
+    const ie = e.is_error ? " err" : "";
+    return `<div class="ev ${k}${ie}"><span class="k">${k}${t}</span>${x}</div>`;
+  }).join("") || `<div class="tag">no events</div>`;
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+async function pollOnce() {
+  if (!activeRun) return;
+  const ev = await api("GET", "/api/v1/runs/"+activeRun+"/events");
+  renderEvents(ev.events);
+  if (ev.status && ev.status !== "running") {
+    stopPoll();
+    activeRun = null;
+    await refresh();
+  }
+}
+
+function startPoll(id) {
+  activeRun = id;
+  stopPoll();
+  pollOnce().catch(e => showErr(e.message));
+  pollTimer = setInterval(() => pollOnce().catch(e => showErr(e.message)), 500);
+}
+
+$("createBot").onclick = async () => {
+  showErr("");
+  try {
+    await api("POST", "/api/v1/bots", {name:$("botName").value, role:$("botRole").value, route:$("botRoute").value});
+    await refresh();
+  } catch (e) { showErr(e.message); }
+};
+$("createSkill").onclick = async () => {
+  showErr("");
+  try {
+    await api("POST", "/api/v1/skills", {name:$("skillName").value, body:$("skillBody").value});
+    await refresh();
+  } catch (e) { showErr(e.message); }
+};
+$("createRtn").onclick = async () => {
+  showErr("");
+  try {
+    await api("POST", "/api/v1/routines", {bot_id:$("rtnBot").value, skill_id:$("rtnSkill").value, trigger:$("rtnTrigger").value});
+    await refresh();
+  } catch (e) { showErr(e.message); }
+};
+$("sendHandoff").onclick = async () => {
+  showErr("");
+  try {
+    await api("POST", "/api/v1/handoff", {from:$("fromBot").value, to:$("toBot").value, body:$("handoffBody").value});
+    await refresh();
+  } catch (e) { showErr(e.message); }
+};
+$("runBtn").onclick = async () => {
+  showErr("");
+  try {
+    const run = await api("POST", "/api/v1/runs", {
+      bot_id: $("runBot").value,
+      prompt: $("prompt").value,
+      intent: $("intent").value,
+      yolo: $("yolo").checked,
+      verify: $("verify").checked,
+      worktree: $("worktree").value
+    });
+    renderEvents([]);
+    startPoll(run.id);
+  } catch (e) { showErr(e.message); }
+};
+async function testRun(id) {
+  showErr("");
+  try {
+    const rt = await api("POST", "/api/v1/routines/"+id+"/test-run");
+    await refresh();
+    if (rt.run_id) startPoll(rt.run_id);
+  } catch (e) { showErr(e.message); }
+}
+async function enableRtn(id) {
+  showErr("");
+  try { await api("POST", "/api/v1/routines/"+id+"/enable"); await refresh(); }
+  catch (e) { showErr(e.message); }
+}
+$("probeBtn").onclick = async () => {
+  showErr("");
+  try {
+    const h = await api("GET", "/api/v1/health/models");
+    const tb = $("health").querySelector("tbody");
+    tb.innerHTML = (h.probes||[]).map(p => {
+      const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
+      return `<tr><td>${esc(p.id)}</td><td>${p.ok?"ok":"fail"}</td><td>${esc((p.ids||[]).join(", "))}</td><td class="tag">${esc(p.error||"")}${mm}</td></tr>`;
+    }).join("");
+  } catch (e) { showErr(e.message); }
+};
+refresh().catch(e => showErr(e.message));
+</script>
+</body>
+</html>
