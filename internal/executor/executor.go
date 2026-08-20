@@ -145,7 +145,7 @@ func (e *Exec) Run(ctx context.Context, req Request, emit func(Event)) Result {
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	cmd.Env = e.childEnv(req.Route)
+	cmd.Env = e.childEnv(req.Route, req.Verify)
 	setPgid(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -240,7 +240,7 @@ func clip(s string) string {
 	return s
 }
 
-func (e *Exec) childEnv(route string) []string {
+func (e *Exec) childEnv(route string, verify bool) []string {
 	var base []string
 	if e != nil && e.Environ != nil {
 		base = e.Environ()
@@ -251,7 +251,8 @@ func (e *Exec) childEnv(route string) []string {
 	if !envHas(out, "FLOCODE_LOG_LEVEL") {
 		out = append(out, "FLOCODE_LOG_LEVEL=info")
 	}
-	if strings.TrimSpace(route) == "muse" && strings.TrimSpace(envVal(out, "MODEL_API_KEY")) == "" {
+	needKey := strings.TrimSpace(route) == "muse" || verify
+	if needKey && strings.TrimSpace(envVal(out, "MODEL_API_KEY")) == "" {
 		if k := strings.TrimSpace(readMuseKey(e.home())); k != "" {
 			out = envSet(out, "MODEL_API_KEY", k)
 		}

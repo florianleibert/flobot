@@ -145,6 +145,40 @@ func TestMuseKeyInjectedWithoutLogging(t *testing.T) {
 	}
 }
 
+func TestVerifyInjectsMuseKeyOnGlmRoute(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".accounts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".accounts", "meta.ai"), []byte("TESTKEY_NOT_FOR_PROD\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, "env-verify.txt")
+	ex := &Exec{
+		Bin:  bin,
+		Home: home,
+		Environ: func() []string {
+			return []string{"FLOCODE_FAKE_ENV=" + envPath}
+		},
+	}
+	res := ex.Run(context.Background(), Request{Prompt: "p", Pin: "glm-5.2", Intent: "code", Route: "glm", Verify: true}, nil)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	got, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "MODEL_API_KEY=set") {
+		t.Fatalf("verify key not injected on glm: %s", got)
+	}
+}
+
 func TestParseDropsUnknownFields(t *testing.T) {
 	ev, ok := parseLine([]byte(`{"kind":"tool_end","turn_id":2,"tool":"bash","is_error":true,"args":{"command":"cat /secrets"},"result":"nope"}`))
 	if !ok {

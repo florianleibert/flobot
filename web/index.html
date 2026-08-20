@@ -176,8 +176,22 @@ async function refresh() {
   render();
 }
 
+function coalesce(events) {
+  const out = [];
+  for (const e of events||[]) {
+    const last = out[out.length-1];
+    if (e.kind === "thinking") continue;
+    if (last && last.kind === "content" && e.kind === "content" && !e.tool && !last.tool) {
+      last.text = (last.text||"") + (e.text||"");
+      continue;
+    }
+    out.push({...e});
+  }
+  return out;
+}
+
 function renderEvents(events) {
-  $("log").innerHTML = (events||[]).map(e => {
+  $("log").innerHTML = coalesce(events).map(e => {
     const k = esc(e.kind||"");
     const t = e.tool ? " "+esc(e.tool) : "";
     const x = e.text ? " "+esc(e.text) : "";
