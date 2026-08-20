@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -60,7 +61,22 @@ func New(st *store.Store, opts ...Option) *Server {
 	if s.store == nil {
 		s.store = store.New()
 	}
+	// Restore the roster from disk. A missing state file is not an error.
+	if err := s.store.Load(); err != nil {
+		log.Printf("flobot: load state: %v", err)
+	}
 	return s
+}
+
+// persist saves the roster after a successful mutation. A save failure is
+// logged to stderr but never fails the HTTP handler.
+func (s *Server) persist() {
+	if s.store == nil {
+		return
+	}
+	if err := s.store.Save(); err != nil {
+		log.Printf("flobot: save state: %v", err)
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -139,6 +155,7 @@ func (s *Server) createBot(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	s.persist()
 	writeJSON(w, bot)
 }
 
@@ -156,6 +173,7 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	s.persist()
 	writeJSON(w, msg)
 }
 
@@ -172,6 +190,7 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	s.persist()
 	writeJSON(w, sk)
 }
 
@@ -189,6 +208,7 @@ func (s *Server) createRoutine(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	s.persist()
 	writeJSON(w, rt)
 }
 
@@ -225,8 +245,10 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	s.persist()
 	s.spawn(run, executor.Request{
 		Prompt:  prompt,
+		SkillBody: sk.Body,
 		Pin:     pin,
 		Intent:  "ask",
 		Yolo:    false,
@@ -254,6 +276,7 @@ func (s *Server) enableRoutine(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	s.persist()
 	writeJSON(w, rt)
 }
 

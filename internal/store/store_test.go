@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -250,5 +252,61 @@ func TestRunEventsCapAndClip(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"events"`) {
 		t.Fatalf("events must be json-omitted: %s", raw)
+	}
+}
+
+func TestPersistRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	st := New()
+	st.SetPersistPath(path)
+	bot, err := st.CreateBot("sess-a", "Chief", "chief-of-staff", "muse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk, err := st.CreateSkill("sess-a", "sysinfo", "Run read-only sysctl/uname.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Raw file must not contain an Owner field or secret-looking env.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	low := strings.ToLower(string(raw))
+	for _, leak := range []string{`"owner"`, "llm_", "api_key"} {
+		if strings.Contains(low, leak) {
+			t.Fatalf("state file leaked %q: %s", leak, raw)
+		}
+	}
+
+	// Load into a fresh store and check the roster matches.
+	st2 := New()
+	st2.SetPersistPath(path)
+	if err := st2.Load(); err != nil {
+		t.Fatal(err)
+	}
+	bots := st2.ListBots("sess-a")
+	if len(bots) != 1 || bots[0].ID != bot.ID || bots[0].Name != bot.Name {
+		t.Fatalf("bots after load = %+v", bots)
+	}
+	skills := st2.ListSkills("sess-a")
+	if len(skills) != 1 || skills[0].ID != sk.ID || skills[0].Name != sk.Name {
+		t.Fatalf("skills after load = %+v", skills)
+	}
+
+	// Missing file is ok: empty store.
+	st3 := New()
+	st3.SetPersistPath(filepath.Join(dir, "nope.json"))
+	if err := st3.Load(); err != nil {
+		t.Fatalf("missing file must not error: %v", err)
+	}
+	if n := len(st3.ListBots("sess-a")); n != 0 {
+		t.Fatalf("empty store saw %d bots", n)
 	}
 }

@@ -108,6 +108,9 @@ type Store struct {
 	routines map[string]Routine
 	messages []Message
 	runs     map[string]Run
+
+	// persistPath is an optional override for the state file (tests).
+	persistPath string
 }
 
 func New() *Store {
@@ -147,6 +150,7 @@ func (s *Store) CreateBot(owner, name, role, route string) (Bot, error) {
 	s.mu.Lock()
 	s.bots[bot.ID] = bot
 	s.mu.Unlock()
+	s.Save()
 	return bot, nil
 }
 
@@ -214,6 +218,7 @@ func (s *Store) CreateSkill(owner, name, body string) (Skill, error) {
 	s.mu.Lock()
 	s.skills[sk.ID] = sk
 	s.mu.Unlock()
+	s.Save()
 	return sk, nil
 }
 
@@ -268,6 +273,7 @@ func (s *Store) CreateRoutine(owner, botID, skillID, trigger string) (Routine, e
 	s.mu.Lock()
 	s.routines[rt.ID] = rt
 	s.mu.Unlock()
+	s.Save()
 	return rt, nil
 }
 
@@ -298,9 +304,9 @@ func (s *Store) ListRoutines(actor string) []Routine {
 // not exec; the server calls the executor then records here.
 func (s *Store) TestRun(id, actor, runID, note string) (Routine, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rt, ok := s.routines[id]
 	if !ok || rt.Owner != actor {
+		s.mu.Unlock()
 		return Routine{}, ErrDenied
 	}
 	rt.LastRun = nowRFC3339()
@@ -314,21 +320,26 @@ func (s *Store) TestRun(id, actor, runID, note string) (Routine, error) {
 	}
 	rt.LastNote = clip(note)
 	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
 	return rt, nil
 }
 
 func (s *Store) EnableRoutine(id, actor string) (Routine, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rt, ok := s.routines[id]
 	if !ok || rt.Owner != actor {
+		s.mu.Unlock()
 		return Routine{}, ErrDenied
 	}
 	if rt.LastRun == "" {
+		s.mu.Unlock()
 		return Routine{}, fmt.Errorf("test-run required before enable")
 	}
 	rt.Paused = false
 	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
 	return rt, nil
 }
 
@@ -360,6 +371,7 @@ func (s *Store) appendMessage(owner, from, to, group, body, ownerBot string) (Me
 	s.mu.Lock()
 	s.messages = append(s.messages, msg)
 	s.mu.Unlock()
+	s.Save()
 	return msg, nil
 }
 

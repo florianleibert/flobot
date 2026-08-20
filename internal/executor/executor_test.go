@@ -51,6 +51,88 @@ func TestArgvContract(t *testing.T) {
 	}
 }
 
+func TestArgvPrependsSkillBody(t *testing.T) {
+	args := Argv(Request{
+		Prompt:    "do the thing",
+		Pin:       "glm-5.2",
+		Intent:    "ask",
+		SkillBody: "Step 1: read the file.\nStep 2: report.",
+	})
+	prompt := args[1]
+	want := "Skill (follow this how-to):\nStep 1: read the file.\nStep 2: report.\n\ndo the thing"
+	if prompt != want {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	// No skill body: prompt untouched.
+	plain := Argv(Request{Prompt: "x", Pin: "qwen-3.8"})
+	if plain[1] != "x" {
+		t.Fatalf("plain prompt = %q", plain[1])
+	}
+	// Whitespace-only skill body: prompt untouched.
+	ws := Argv(Request{Prompt: "x", Pin: "qwen-3.8", SkillBody: "   "})
+	if ws[1] != "x" {
+		t.Fatalf("ws prompt = %q", ws[1])
+	}
+}
+
+func TestRunLogsCCPMRunLine(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	ex := &Exec{
+		Bin: bin,
+		Environ: func() []string { return []string{} },
+	}
+	res := ex.Run(context.Background(), Request{
+		Prompt: "hello",
+		Pin:    "glm-5.2",
+		Intent: "code",
+		Route:  "glm",
+		Dir:    ws,
+	}, nil)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	b, err := os.ReadFile(filepath.Join(ws, "docs", "ccpm-runs.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	if !strings.Contains(got, "| time | pin | intent | result |") {
+		t.Fatalf("missing header: %s", got)
+	}
+	if !strings.Contains(got, "| glm-5.2 | code | ok |") {
+		t.Fatalf("missing run line: %s", got)
+	}
+	// Second run appends a second line.
+	if res := ex.Run(context.Background(), Request{Prompt: "again", Pin: "qwen-3.8", Intent: "ask", Route: "qwen", Dir: ws}, nil); res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	b, err = os.ReadFile(filepath.Join(ws, "docs", "ccpm-runs.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = string(b)
+	if !strings.Contains(got, "| qwen-3.8 | ask | ok |") {
+		t.Fatalf("missing second line: %s", got)
+	}
+	if n := strings.Count(got, "| time | pin | intent | result |"); n != 1 {
+		t.Fatalf("header count = %d", n)
+	}
+}
+
+func TestCCPMLogSanitizesPipes(t *testing.T) {
+	if got := sanitizeCell("a|b\nc"); got != "a\\|b c" {
+		t.Fatalf("sanitize = %q", got)
+	}
+	if got := sanitizeCell("  "); got != "-" {
+		t.Fatalf("empty cell = %q", got)
+	}
+}
+
 func TestRunFakeBinaryTwoNDJSONLines(t *testing.T) {
 	dir := t.TempDir()
 	bin, err := WriteFakeBinary(dir)

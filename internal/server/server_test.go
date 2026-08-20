@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +74,9 @@ func TestTestRunStartsAskIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}))
+	st := store.New()
+	st.SetPersistPath(filepath.Join(dir, "state.json"))
+	srv := New(st, WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir))
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -97,6 +101,23 @@ func TestTestRunStartsAskIntent(t *testing.T) {
 	en := postJSON(t, ts, "/api/v1/routines/"+rt["id"].(string)+"/enable", map[string]any{})
 	if en["paused"] == true {
 		t.Fatalf("still paused: %v", en)
+	}
+
+	// The roster must have been persisted to the state file.
+	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatalf("state not persisted: %v", err)
+	}
+	if !strings.Contains(string(raw), bot["id"].(string)) {
+		t.Fatalf("state file missing bot: %s", raw)
+	}
+
+	// A new server on the same store path must load the roster.
+	st2 := store.New()
+	st2.SetPersistPath(filepath.Join(dir, "state.json"))
+	srv2 := New(st2, WithExec(&executor.Exec{Bin: bin}))
+	if n := len(srv2.store.ListBots(Actor)); n != 1 {
+		t.Fatalf("loaded bots = %d", n)
 	}
 }
 

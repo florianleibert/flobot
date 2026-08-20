@@ -38,6 +38,9 @@ type Event struct {
 // Request is one flocode child.
 type Request struct {
 	Prompt        string
+	// SkillBody, when set, is prepended to Prompt as a how-to the child
+	// must follow. It is prompt text, never a secret.
+	SkillBody     string
 	Pin           string
 	Intent        string
 	Yolo          bool
@@ -87,12 +90,13 @@ func (e *Exec) binary() (string, error) {
 
 // Argv is the canonical flocode argv (no secrets).
 func Argv(req Request) []string {
+	prompt := applySkillBody(req)
 	intent := strings.TrimSpace(req.Intent)
 	if intent == "" {
 		intent = "code"
 	}
 	args := []string{
-		"-p", req.Prompt,
+		"-p", prompt,
 		"--model", req.Pin,
 		"--intent", intent,
 		"--output", "streaming-json",
@@ -110,6 +114,16 @@ func Argv(req Request) []string {
 		args = append(args, "--continue-until")
 	}
 	return args
+}
+
+// applySkillBody returns the prompt with the skill how-to prepended when
+// SkillBody is set. Argv and Run share this so the child always sees the
+// same prompt.
+func applySkillBody(req Request) string {
+	if sb := strings.TrimSpace(req.SkillBody); sb != "" {
+		return "Skill (follow this how-to):\n" + sb + "\n\n" + req.Prompt
+	}
+	return req.Prompt
 }
 
 func (e *Exec) timeout(req Request) time.Duration {
@@ -185,6 +199,9 @@ func (e *Exec) Run(ctx context.Context, req Request, emit func(Event)) Result {
 	waitErr := cmd.Wait()
 	close(done)
 	stderr := ring.String()
+
+	// ccpm run log: one line per finished child. Never includes secrets.
+	logCCPMRun(req.Dir, req.Pin, req.Intent, waitErr)
 
 	if ctx.Err() != nil {
 		err := ctx.Err()
@@ -345,4 +362,62 @@ func (r *ringBuf) String() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return string(r.buf)
+}
+
+// ccpmRunsRel is the run log inside the workspace.
+const ccpmRunsRel = "docs/ccpm-runs.md"
+
+const ccpmRunsHeader = `# ccpm runs
+
+One line per flocode child. Never contains API keys or tokens.
+
+| time | pin | intent | result |
+| --- | --- | --- | --- |
+`
+
+// logCCPMRun appends one markdown table row to docs/ccpm-runs.md in dir
+// (or the current directory). It never writes API keys, MODEL_API_KEY or
+// LLM_ tokens: only the pin, intent and a sanitized result are recorded.
+func logCCPMRun(dir, pin, intent string, err error) {
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	line := fmt.Sprintf("| %s | %s | %s | %s |\n",
+		time.Now().UTC().Format(time.RFC3339),
+		sanitizeCell(pin),
+		sanitizeCell(intent),
+		result,
+	)
+	path := filepath.Join(dir, ccpmRunsRel)
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+			return
+		}
+		if wErr := os.WriteFile(path, []byte(ccpmRunsHeader), 0o644); wErr != nil {
+			return
+		}
+	}
+	f, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if openErr != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line)
+}
+
+// sanitizeCell keeps a value safe for a markdown table cell: no pipes,
+// newlines, or anything that looks like a secret.
+func sanitizeCell(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	if s == "" {
+		return "-"
+	}
+	return s
 }
