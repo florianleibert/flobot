@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/florianleibert/flobot/internal/executor"
@@ -34,6 +35,9 @@ type Server struct {
 	client  *http.Client
 	home    string
 	workDir string
+
+	hubOnce sync.Once
+	hub     *hub
 }
 
 type Option func(*Server)
@@ -61,6 +65,7 @@ func New(st *store.Store, opts ...Option) *Server {
 	if s.store == nil {
 		s.store = store.New()
 	}
+	s.hubOnce.Do(func() { s.hub = newHub() })
 	// Restore the roster from disk. A missing state file is not an error.
 	if err := s.store.Load(); err != nil {
 		log.Printf("flobot: load state: %v", err)
@@ -95,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.runEvents)
 	mux.HandleFunc("GET /api/v1/health/models", s.healthModels)
+	mux.HandleFunc("GET /api/stream", s.stream)
 	return mux
 }
 
@@ -367,6 +373,13 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 				Tool:    ev.Tool,
 				IsError: ev.IsError,
 			})
+			s.hub.publish(store.Event{
+				Kind:    ev.Kind,
+				TurnID:  ev.TurnID,
+				Text:    ev.Text,
+				Tool:    ev.Tool,
+				IsError: ev.IsError,
+			})
 		})
 		status := "done"
 		errText := ""
@@ -375,7 +388,109 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 			errText = res.Err.Error()
 		}
 		_ = s.store.FinishRun(run.ID, Actor, status, errText)
+		s.hub.publish(store.Event{Kind: "run_status", Text: status})
 	}()
+}
+
+// stream is the NDJSON event feed. It replays the events of the run given
+// by ?run= (if any), then forwards live executor events until the client
+// disconnects. A disconnect or reconnect never affects the server or other
+// clients.
+func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// Flush the headers now so the client's request returns immediately,
+	// even before the first event arrives.
+	fl.Flush()
+
+	// Replay the tail of a specific run so a reconnecting client catches up.
+	if id := strings.TrimSpace(r.URL.Query().Get("run")); id != "" {
+		if run, err := s.store.GetRun(id, Actor); err == nil {
+			for _, ev := range run.Events {
+				if !writeNDJSON(w, ev) {
+					return
+				}
+			}
+			fl.Flush()
+		}
+	}
+
+	ch, cancel := s.hub.subscribe()
+	defer cancel()
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := enc.Encode(ev); err != nil {
+				return
+			}
+			fl.Flush()
+		}
+	}
+}
+
+func writeNDJSON(w http.ResponseWriter, ev store.Event) bool {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(ev) == nil
+}
+
+// hub fans executor events out to every connected /api/stream client.
+// Each subscriber owns a buffered channel; a slow or gone client is
+// dropped without blocking the publisher or the other clients.
+type hub struct {
+	mu   sync.Mutex
+	next uint64
+	subs map[uint64]chan store.Event
+}
+
+func newHub() *hub {
+	return &hub{subs: make(map[uint64]chan store.Event)}
+}
+
+func (h *hub) subscribe() (<-chan store.Event, func()) {
+	h.mu.Lock()
+	h.next++
+	id := h.next
+	ch := make(chan store.Event, 64)
+	h.subs[id] = ch
+	h.mu.Unlock()
+	cancel := func() {
+		h.mu.Lock()
+		if c, ok := h.subs[id]; ok {
+			delete(h.subs, id)
+			close(c)
+		}
+		h.mu.Unlock()
+	}
+	return ch, cancel
+}
+
+func (h *hub) publish(ev store.Event) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, ch := range h.subs {
+		select {
+		case ch <- ev:
+		default:
+			// Slow client: drop the event and the client rather than
+			// block the publisher.
+			delete(h.subs, id)
+			close(ch)
+		}
+	}
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {

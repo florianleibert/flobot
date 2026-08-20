@@ -102,24 +102,31 @@ type Run struct {
 
 // Store is the in-memory authority. Nothing persists across restart.
 type Store struct {
-	mu       sync.Mutex
-	bots     map[string]Bot
-	skills   map[string]Skill
-	routines map[string]Routine
-	messages []Message
-	runs     map[string]Run
+	*State // embedded: State's methods (Load, Save, ListBots, ...) are promoted
 
-	// persistPath is an optional override for the state file (tests).
-	persistPath string
+	mu   sync.Mutex
+	runs map[string]Run
 }
 
 func New() *Store {
+	st := NewState()
+	// Seed the pinned roster so a fresh store behaves like a loaded one.
+	st.applyDefaults()
 	return &Store{
-		bots:     make(map[string]Bot),
-		skills:   make(map[string]Skill),
-		routines: make(map[string]Routine),
+		State: st,
 		runs:     make(map[string]Run),
 	}
+}
+
+// SetPersistPath overrides the state file location (tests). It is a
+// compatibility alias for State.SetPath.
+func (s *Store) SetPersistPath(p string) {
+	s.State.SetPath(p)
+}
+
+// Save persists the roster. It is a compatibility alias for State.Save.
+func (s *Store) Save() error {
+	return s.State.Save()
 }
 
 func (s *Store) CreateBot(owner, name, role, route string) (Bot, error) {

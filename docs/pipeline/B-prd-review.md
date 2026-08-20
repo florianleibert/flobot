@@ -1,0 +1,4 @@
+critique: 
+- Gaps: The PRD lacks a clear definition of how the UI communicates user acknowledgments (e.g., `perm` event mock) back to the executor. The atomic append mechanism for the CCPM log needs a defined concurrency strategy (e.g., file locking or mutex) since multiple child runs might complete simultaneously.
+- Risks: Parsing `~/.accounts/meta.ai` poses a risk if the file format is ambiguous or changes. The PRD should explicitly define the expected file format (e.g., plain text key-value, JSON). Concurrent writes to `~/.flobot/state.json` could lead to race conditions if file locking isn't implemented properly at the OS level.
+- Must-fix before code: Define the exact file format of `~/.accounts/meta.ai`. Specify the communication mechanism for `perm` approvals from the UI to the executor. Define the exact directory and file path for the CCPM log inside the repository.

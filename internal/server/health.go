@@ -70,7 +70,7 @@ func (s *Server) probeModels(parent context.Context, p Probe) ProbeResult {
 		return res
 	}
 	if p.Auth {
-		if k := strings.TrimSpace(executor.LookupModelAPIKey(s.home)); k != "" {
+		if k, err := executor.ReadModelAPIKey(s.home); err == nil {
 			req.Header.Set("Authorization", "Bearer "+k)
 		}
 	}

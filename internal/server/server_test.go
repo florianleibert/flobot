@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -116,8 +117,15 @@ func TestTestRunStartsAskIntent(t *testing.T) {
 	st2 := store.New()
 	st2.SetPersistPath(filepath.Join(dir, "state.json"))
 	srv2 := New(st2, WithExec(&executor.Exec{Bin: bin}))
-	if n := len(srv2.store.ListBots(Actor)); n != 1 {
-		t.Fatalf("loaded bots = %d", n)
+	loaded := srv2.store.ListBots(Actor)
+	found := false
+	for _, b := range loaded {
+		if b.ID == bot["id"].(string) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("loaded bots missing created bot: %+v", loaded)
 	}
 }
 
@@ -220,6 +228,169 @@ func TestIndexAndHealthAndLocalUnpinned(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "unpinned") {
 		t.Fatalf("local error: %s", b)
+	}
+}
+
+func TestStreamForwardsExecutorEvents(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "C", "role": "coder", "route": "glm"})
+
+	// Connect the stream client before starting the run.
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Fatalf("content-type = %q", ct)
+	}
+
+	postJSON(t, ts, "/api/v1/runs", map[string]any{
+		"bot_id": bot["id"], "prompt": "hello", "intent": "code",
+	})
+
+	// Read until we see the done event (or a run_status), with a deadline.
+	deadline := time.Now().Add(3 * time.Second)
+	seen := map[string]bool{}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64<<10), 256<<10)
+	for time.Now().Before(deadline) {
+		if !sc.Scan() {
+			if sc.Err() != nil {
+				t.Fatalf("stream read: %v", sc.Err())
+			}
+			break
+		}
+		var ev map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			t.Fatalf("bad NDJSON line %q: %v", sc.Bytes(), err)
+		}
+		kind, _ := ev["kind"].(string)
+		seen[kind] = true
+		if kind == "done" || kind == "run_status" {
+			break
+		}
+	}
+	resp.Body.Close()
+	if !seen["content"] {
+		t.Fatalf("stream missed content event: %v", seen)
+	}
+	if !seen["done"] && !seen["run_status"] {
+		t.Fatalf("stream missed terminal event: %v", seen)
+	}
+}
+
+func TestStreamReconnectReplaysRunEvents(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "C", "role": "coder", "route": "glm"})
+	run := postJSON(t, ts, "/api/v1/runs", map[string]any{
+		"bot_id": bot["id"], "prompt": "hello", "intent": "code",
+	})
+	runID, _ := run["id"].(string)
+	waitEvents(t, ts, runID)
+
+	// First client connects, disconnects immediately, then reconnects with
+	// ?run= and must receive the replayed events without the server crashing.
+	resp, err := http.Get(ts.URL + "/api/stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Get(ts.URL + "/api/stream?run=" + runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	seen := map[string]bool{}
+	sc := bufio.NewScanner(resp.Body)
+	for time.Now().Before(deadline) && len(seen) < 2 {
+		if !sc.Scan() {
+			break
+		}
+		var ev map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			t.Fatalf("bad NDJSON line %q: %v", sc.Bytes(), err)
+		}
+		kind, _ := ev["kind"].(string)
+		seen[kind] = true
+	}
+	if !seen["content"] || !seen["done"] {
+		t.Fatalf("reconnect replay missing events: %v", seen)
+	}
+
+	// The server must still be healthy after the disconnect/reconnect.
+	health, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(health.Body)
+	health.Body.Close()
+	if health.StatusCode != 200 || !strings.Contains(string(b), `"ok":true`) {
+		t.Fatalf("server unhealthy after reconnect: %d %s", health.StatusCode, b)
+	}
+}
+
+func TestStreamDisconnectDoesNotCrashServer(t *testing.T) {
+	srv := New(store.New(), WithIndex("<html>flobot</html>"))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	// Abruptly drop several stream connections.
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get(ts.URL + "/api/stream")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	// A fresh client must still be able to connect and the server must
+	// answer health.
+	resp, err := http.Get(ts.URL + "/api/stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	health, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(health.Body)
+	health.Body.Close()
+	if health.StatusCode != 200 || !strings.Contains(string(b), `"ok":true`) {
+		t.Fatalf("server unhealthy after disconnects: %d %s", health.StatusCode, b)
+	}
+}
+
+func TestDefaultAddrIsLoopback(t *testing.T) {
+	if DefaultAddr() != "127.0.0.1:4120" {
+		t.Fatalf("DefaultAddr = %q", DefaultAddr())
+	}
+	if err := CheckLoopbackAddr(DefaultAddr()); err != nil {
+		t.Fatal(err)
 	}
 }
 

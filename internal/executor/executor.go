@@ -23,7 +23,8 @@ const (
 	stderrCap      = 32 << 10
 	textCap        = 8 << 10
 	fallbackBin    = "/Users/floleibert/dev/flocode2/flocode"
-	museKeyRel     = ".accounts/meta.ai"
+	// museKeyRel is the key file location, relative to the user home dir.
+	museKeyRel = MuseKeyRel
 )
 
 // Event is one parsed NDJSON object. Only kind, turn_id, text, tool, is_error.
@@ -269,9 +270,9 @@ func (e *Exec) childEnv(route string, verify bool) []string {
 		out = append(out, "FLOCODE_LOG_LEVEL=info")
 	}
 	needKey := strings.TrimSpace(route) == "muse" || verify
-	if needKey && strings.TrimSpace(envVal(out, "MODEL_API_KEY")) == "" {
-		if k := strings.TrimSpace(readMuseKey(e.home())); k != "" {
-			out = envSet(out, "MODEL_API_KEY", k)
+	if needKey && strings.TrimSpace(envVal(out, ModelAPIKeyEnv)) == "" {
+		if k, err := ReadModelAPIKey(e.home()); err == nil {
+			out = WithModelAPIKey(out, k)
 		}
 	}
 	return out
@@ -285,28 +286,6 @@ func (e *Exec) home() string {
 	return h
 }
 
-// LookupModelAPIKey returns MODEL_API_KEY from the environment, else the
-// trimmed ~/.accounts/meta.ai file. Callers must not log the value.
-func LookupModelAPIKey(home string) string {
-	if v := strings.TrimSpace(os.Getenv("MODEL_API_KEY")); v != "" {
-		return v
-	}
-	if home == "" {
-		home, _ = os.UserHomeDir()
-	}
-	return readMuseKey(home)
-}
-
-func readMuseKey(home string) string {
-	if home == "" {
-		return ""
-	}
-	b, err := os.ReadFile(filepath.Join(home, museKeyRel))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
 
 func envHas(env []string, key string) bool {
 	p := key + "="
