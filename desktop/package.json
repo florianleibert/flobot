@@ -18,19 +18,11 @@
     "extraResources": [
       {
         "from": "../flobot",
-        "to": "flobot",
-        "binary": true
+        "to": "flobot"
       }
     ],
     "mac": {
-      "target": "default",
-      "extraResources": [
-        {
-          "from": "../flobot",
-          "to": "flobot",
-          "binary": true
-        }
-      ]
+      "target": "default"
     }
   }
 }
