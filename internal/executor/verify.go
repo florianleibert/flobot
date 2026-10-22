@@ -6,24 +6,20 @@
 package executor
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"strings"
 )
 
-// MusePin is the flocode --model pin for Muse Spark 1.2.
-const MusePin = "muse-spark-1.2"
+// MusePin is the flocode --model pin for Muse Spark 1.3.
+const MusePin = "muse-spark-1.3"
 
 // MuseRoute is the route id that maps to Muse Spark 1.2.
 const MuseRoute = "muse"
 
 // VerifyPrompt is the prompt sent to flocode for a verification run.
-const VerifyPrompt = "Verify the Muse Spark 1.2 integration: confirm the model API key is valid and the model responds, then report the result."
+const VerifyPrompt = "Verify the Muse Spark 1.3 integration: confirm the model API key is valid and the model responds, then report the result."
 
 // Verify runs a Muse Spark 1.2 verification through flocode.
 //
@@ -70,7 +66,7 @@ func (e *Exec) Verify(ctx context.Context, req Request, emit func(Event)) Result
 	}
 
 	var events []Event
-	res := e.runWithEnv(ctx, req, env, func(ev Event) {
+	res := e.run(ctx, req, env, func(ev Event) {
 		events = append(events, ev)
 		emit(ev)
 	})
@@ -113,103 +109,6 @@ func (e *Exec) baseEnv() []string {
 		return e.Environ()
 	}
 	return os.Environ()
-}
-
-// runWithEnv is like Run but uses a pre-built child environment, so the
-// caller controls exactly which variables (including MODEL_API_KEY) the
-// child sees.
-func (e *Exec) runWithEnv(ctx context.Context, req Request, env []string, emit func(Event)) Result {
-	if emit == nil {
-		emit = func(Event) {}
-	}
-	bin, err := e.binary()
-	if err != nil {
-		ev := Event{Kind: "err", Text: err.Error()}
-		emit(ev)
-		return Result{Events: []Event{ev}, Err: err}
-	}
-	if strings.TrimSpace(req.Pin) == "" {
-		err := fmt.Errorf("model pin required")
-		ev := Event{Kind: "err", Text: err.Error()}
-		emit(ev)
-		return Result{Events: []Event{ev}, Err: err}
-	}
-	to := e.timeout(req)
-	ctx, cancel := context.WithTimeout(ctx, to)
-	defer cancel()
-
-	args := Argv(req)
-	cmd := exec.Command(bin, args...)
-	if req.Dir != "" {
-		cmd.Dir = req.Dir
-	}
-	cmd.Env = env
-	setPgid(cmd)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		ev := Event{Kind: "err", Text: err.Error()}
-		emit(ev)
-		return Result{Events: []Event{ev}, Err: err}
-	}
-	ring := &ringBuf{max: stderrCap}
-	cmd.Stderr = ring
-	if err := cmd.Start(); err != nil {
-		ev := Event{Kind: "err", Text: err.Error()}
-		emit(ev)
-		return Result{Events: []Event{ev}, Err: err}
-	}
-
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			killGroup(cmd.Process)
-		case <-done:
-		}
-	}()
-
-	var events []Event
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 64<<10), 256<<10)
-	for sc.Scan() {
-		ev, ok := parseLine(sc.Bytes())
-		if !ok {
-			continue
-		}
-		events = append(events, ev)
-		emit(ev)
-	}
-	scanErr := sc.Err()
-	waitErr := cmd.Wait()
-	close(done)
-	stderr := ring.String()
-
-	logCCPMRun(req.Dir, req.Pin, req.Intent, waitErr)
-
-	if ctx.Err() != nil {
-		err := ctx.Err()
-		if len(events) == 0 || events[len(events)-1].Kind != "err" {
-			ev := Event{Kind: "err", Text: err.Error()}
-			events = append(events, ev)
-			emit(ev)
-		}
-		return Result{Events: events, Stderr: stderr, Err: err}
-	}
-	if waitErr != nil {
-		if len(events) == 0 || events[len(events)-1].Kind != "err" {
-			ev := Event{Kind: "err", Text: "flocode exited: " + waitErr.Error()}
-			events = append(events, ev)
-			emit(ev)
-		}
-		return Result{Events: events, Stderr: stderr, Err: waitErr}
-	}
-	if scanErr != nil && scanErr != io.EOF {
-		ev := Event{Kind: "err", Text: scanErr.Error()}
-		events = append(events, ev)
-		emit(ev)
-		return Result{Events: events, Stderr: stderr, Err: scanErr}
-	}
-	return Result{Events: events, Stderr: stderr}
 }
 
 // IsVerifyError reports whether err is a missing/invalid Muse API key.

@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/florianleibert/flobot/internal/amesh"
 	"github.com/florianleibert/flobot/internal/executor"
+	"github.com/florianleibert/flobot/internal/routes"
 )
 
 const probeTimeout = 8 * time.Second
@@ -31,32 +33,62 @@ type ProbeResult struct {
 	QwenMismatch bool     `json:"qwen_mismatch,omitempty"`
 }
 
-// DefaultProbes are the mesh + Muse endpoints from research round 3.
-func DefaultProbes() []Probe {
-	return []Probe{
-		{ID: "glm", URL: "http://10.30.0.127:13038/v1"},
-		{ID: "qwen38", URL: "http://23.183.40.72:8020/v1"},
-		{ID: "qwen36", URL: "http://10.10.0.14:8000/v1"},
-		{ID: "muse", URL: "https://api.meta.ai/v1", Auth: true},
-	}
-}
+// MuseProbeURL is the only non-mesh endpoint flobot probes directly.
+const MuseProbeURL = "https://api.meta.ai/v1"
 
 func (s *Server) healthModels(w http.ResponseWriter, r *http.Request) {
-	probes := s.probes
-	if len(probes) == 0 {
-		probes = DefaultProbes()
+	if len(s.probes) > 0 {
+		out := make([]ProbeResult, len(s.probes))
+		var wg sync.WaitGroup
+		for i, p := range s.probes {
+			wg.Add(1)
+			go func(i int, p Probe) {
+				defer wg.Done()
+				out[i] = s.probeModels(r.Context(), p)
+			}(i, p)
+		}
+		wg.Wait()
+		writeJSON(w, map[string]any{"probes": out})
+		return
 	}
-	out := make([]ProbeResult, len(probes))
-	var wg sync.WaitGroup
-	for i, p := range probes {
-		wg.Add(1)
-		go func(i int, p Probe) {
-			defer wg.Done()
-			out[i] = s.probeModels(r.Context(), p)
-		}(i, p)
+	// No explicit probes: report health for the documented routes. Mesh-backed
+	// routes (glm, qwen) resolve their endpoint from the live amesh catalog
+	// instead of hardcoded IPs; local is unpinned; muse keeps its API probe.
+	writeJSON(w, map[string]any{"probes": s.probeRoutes(r.Context())})
+}
+
+// probeRoutes builds ProbeResults for every documented route.
+func (s *Server) probeRoutes(ctx context.Context) []ProbeResult {
+	models, catErr := (&amesh.Client{Addr: s.ameshAddr}).Models(ctx)
+	out := make([]ProbeResult, 0, 4)
+	for _, rt := range routes.DefaultRoutes() {
+		switch rt.ID {
+		case "local":
+			out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "unpinned"})
+		case "muse":
+			out = append(out, s.probeModels(ctx, Probe{ID: rt.ID, URL: MuseProbeURL, Auth: true}))
+		default:
+			if catErr != nil {
+				out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "amesh catalog: " + catErr.Error()})
+				continue
+			}
+			m, ok := amesh.Find(models, rt.Model)
+			if !ok {
+				out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "not in amesh catalog"})
+				continue
+			}
+			if !amesh.Healthy(m.Health) {
+				out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "health " + m.Health})
+				continue
+			}
+			if strings.TrimSpace(m.BaseURL) == "" {
+				out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "no endpoint"})
+				continue
+			}
+			out = append(out, s.probeModels(ctx, Probe{ID: rt.ID, URL: m.BaseURL}))
+		}
 	}
-	wg.Wait()
-	writeJSON(w, map[string]any{"probes": out})
+	return out
 }
 
 func (s *Server) probeModels(parent context.Context, p Probe) ProbeResult {
@@ -86,7 +118,7 @@ func (s *Server) probeModels(parent context.Context, p Probe) ProbeResult {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		res.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		res.Error = "read body"
 		return res
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -96,9 +128,9 @@ func (s *Server) probeModels(parent context.Context, p Probe) ProbeResult {
 	ids := parseModelIDs(body)
 	res.IDs = ids
 	res.OK = true
-	if p.ID == "qwen38" && !hasQwen38(ids) {
+	if strings.HasPrefix(p.ID, "qwen") && !hasQwen38(ids) {
 		res.QwenMismatch = true
-		res.Error = ":8020 is not qwen3.8"
+		res.Error = "endpoint does not serve qwen3.8"
 	}
 	return res
 }

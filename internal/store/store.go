@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -22,9 +23,15 @@ const ActorLocal = "local"
 // ErrDenied is returned when the actor does not own the record.
 var ErrDenied = errors.New("flobot denied")
 
+// ErrNotFound is returned when the record does not exist at all. Ownership
+// mismatches stay ErrDenied so callers cannot enumerate other actors' ids.
+var ErrNotFound = errors.New("flobot not found")
+
 const (
 	textCap    = 8 << 10
 	maxEvents  = 2000
+	maxRuns    = 200 // finished runs kept; oldest evicted
+	maxMsgs    = 500 // messages kept; oldest evicted
 	idRandSize = 8
 )
 
@@ -114,7 +121,7 @@ func New() *Store {
 	st.applyDefaults()
 	return &Store{
 		State: st,
-		runs:     make(map[string]Run),
+		runs:  make(map[string]Run),
 	}
 }
 
@@ -125,8 +132,14 @@ func (s *Store) SetPersistPath(p string) {
 }
 
 // Save persists the roster. It is a compatibility alias for State.Save.
+// A failed save is never fatal, but it is logged to stderr so a broken
+// state file is not silently ignored.
 func (s *Store) Save() error {
-	return s.State.Save()
+	err := s.State.Save()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flobot: state save failed: %v\n", err)
+	}
+	return err
 }
 
 func (s *Store) CreateBot(owner, name, role, route string) (Bot, error) {
@@ -161,6 +174,50 @@ func (s *Store) CreateBot(owner, name, role, route string) (Bot, error) {
 	return bot, nil
 }
 
+// DeleteBot removes a bot. Routines referencing it are removed too (a
+// routine without its bot can never fire); its runs and messages are kept.
+func (s *Store) DeleteBot(id, actor string) error {
+	if _, err := s.ownedBot(id, actor); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	delete(s.bots, id)
+	for rid, rt := range s.routines {
+		if rt.BotID == id {
+			delete(s.routines, rid)
+		}
+	}
+	s.mu.Unlock()
+	s.Save()
+	return nil
+}
+
+// UpdateBot changes mutable fields (name, role, route). Empty fields keep
+// their current value.
+func (s *Store) UpdateBot(id, actor, name, role, route string) (Bot, error) {
+	bot, err := s.ownedBot(id, actor)
+	if err != nil {
+		return Bot{}, err
+	}
+	if name = strings.TrimSpace(name); name != "" {
+		bot.Name = name
+	}
+	if role = strings.TrimSpace(role); role != "" {
+		bot.Role = role
+	}
+	if route = strings.TrimSpace(route); route != "" {
+		if _, ok := routes.Lookup(route); !ok {
+			return Bot{}, fmt.Errorf("unknown route %q", route)
+		}
+		bot.Route = route
+	}
+	s.mu.Lock()
+	s.bots[id] = bot
+	s.mu.Unlock()
+	s.Save()
+	return bot, nil
+}
+
 func (s *Store) GetBot(id, actor string) (Bot, error) {
 	return s.ownedBot(id, actor)
 }
@@ -172,7 +229,10 @@ func (s *Store) ownedBot(id, actor string) (Bot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	bot, ok := s.bots[id]
-	if !ok || bot.Owner != actor {
+	if !ok {
+		return Bot{}, ErrNotFound
+	}
+	if bot.Owner != actor {
 		return Bot{}, ErrDenied
 	}
 	return bot, nil
@@ -229,6 +289,29 @@ func (s *Store) CreateSkill(owner, name, body string) (Skill, error) {
 	return sk, nil
 }
 
+// DeleteSkill removes a skill and any routines that reference it.
+func (s *Store) DeleteSkill(id, actor string) error {
+	s.mu.Lock()
+	sk, ok := s.skills[id]
+	if !ok {
+		s.mu.Unlock()
+		return ErrNotFound
+	}
+	if sk.Owner != actor {
+		s.mu.Unlock()
+		return ErrDenied
+	}
+	delete(s.skills, id)
+	for rid, rt := range s.routines {
+		if rt.SkillID == id {
+			delete(s.routines, rid)
+		}
+	}
+	s.mu.Unlock()
+	s.Save()
+	return nil
+}
+
 func (s *Store) GetSkill(id, actor string) (Skill, error) {
 	if id == "" || actor == "" {
 		return Skill{}, ErrDenied
@@ -236,7 +319,10 @@ func (s *Store) GetSkill(id, actor string) (Skill, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sk, ok := s.skills[id]
-	if !ok || sk.Owner != actor {
+	if !ok {
+		return Skill{}, ErrNotFound
+	}
+	if sk.Owner != actor {
 		return Skill{}, ErrDenied
 	}
 	return sk, nil
@@ -284,11 +370,52 @@ func (s *Store) CreateRoutine(owner, botID, skillID, trigger string) (Routine, e
 	return rt, nil
 }
 
+// DeleteRoutine removes a routine.
+func (s *Store) DeleteRoutine(id, actor string) error {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok {
+		s.mu.Unlock()
+		return ErrNotFound
+	}
+	if rt.Owner != actor {
+		s.mu.Unlock()
+		return ErrDenied
+	}
+	delete(s.routines, id)
+	s.mu.Unlock()
+	s.Save()
+	return nil
+}
+
+// PauseRoutine toggles Paused. Unpausing requires a prior test-run, same
+// as EnableRoutine.
+func (s *Store) PauseRoutine(id, actor string, paused bool) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok || rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	if !paused && rt.LastRun == "" {
+		s.mu.Unlock()
+		return Routine{}, fmt.Errorf("test-run required before enable")
+	}
+	rt.Paused = paused
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
 func (s *Store) GetRoutine(id, actor string) (Routine, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rt, ok := s.routines[id]
-	if !ok || rt.Owner != actor {
+	if !ok {
+		return Routine{}, ErrNotFound
+	}
+	if rt.Owner != actor {
 		return Routine{}, ErrDenied
 	}
 	return rt, nil
@@ -377,6 +504,9 @@ func (s *Store) appendMessage(owner, from, to, group, body, ownerBot string) (Me
 	}
 	s.mu.Lock()
 	s.messages = append(s.messages, msg)
+	if len(s.messages) > maxMsgs {
+		s.messages = append(s.messages[:0], s.messages[len(s.messages)-maxMsgs:]...)
+	}
 	s.mu.Unlock()
 	s.Save()
 	return msg, nil
@@ -504,7 +634,40 @@ func (s *Store) FinishRun(id, actor, status, errText string) error {
 	run.Err = clip(errText)
 	run.EndedAt = nowRFC3339()
 	s.runs[id] = run
+	s.evictRunsLocked()
 	return nil
+}
+
+// evictRunsLocked keeps the newest maxRuns finished runs; running runs are
+// never evicted. Called with s.mu held.
+func (s *Store) evictRunsLocked() {
+	finished := 0
+	for _, r := range s.runs {
+		if r.EndedAt != "" {
+			finished++
+		}
+	}
+	if finished <= maxRuns {
+		return
+	}
+	// Collect finished run ids sorted oldest-first by end time (id tiebreak).
+	ids := make([]string, 0, finished)
+	for id, r := range s.runs {
+		if r.EndedAt != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		ri, rj := s.runs[ids[i]], s.runs[ids[j]]
+		if ri.EndedAt == rj.EndedAt {
+			return ids[i] < ids[j]
+		}
+		return ri.EndedAt < rj.EndedAt
+	})
+	drop := finished - maxRuns
+	for _, id := range ids[:drop] {
+		delete(s.runs, id)
+	}
 }
 
 func (s *Store) GetRun(id, actor string) (Run, error) {
@@ -514,7 +677,10 @@ func (s *Store) GetRun(id, actor string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run, ok := s.runs[id]
-	if !ok || run.Owner != actor {
+	if !ok {
+		return Run{}, ErrNotFound
+	}
+	if run.Owner != actor {
 		return Run{}, ErrDenied
 	}
 	run.Events = append([]Event(nil), run.Events...)
@@ -527,6 +693,20 @@ func (s *Store) ListEvents(id, actor string) ([]Event, error) {
 		return nil, err
 	}
 	return run.Events, nil
+}
+
+// HasRunningRun reports whether the bot has a run in "running" status. The
+// scheduler uses it to skip firing a routine whose previous run is still
+// going, so a hung run never piles up concurrent fires.
+func (s *Store) HasRunningRun(botID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.runs {
+		if run.BotID == botID && run.Status == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) ListRuns(actor string) []Run {

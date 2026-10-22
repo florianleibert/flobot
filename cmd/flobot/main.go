@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/florianleibert/flobot/internal/amesh"
 	"github.com/florianleibert/flobot/internal/executor"
 	"github.com/florianleibert/flobot/internal/routes"
 	"github.com/florianleibert/flobot/internal/server"
@@ -80,7 +81,7 @@ func cmdRun(args []string) error {
 	if strings.TrimSpace(*prompt) == "" {
 		return fmt.Errorf("--prompt required")
 	}
-	pin, err := routes.ResolvePin(*route)
+	pin, cfgOverride, err := resolvePin(context.Background(), *route)
 	if err != nil {
 		return err
 	}
@@ -90,18 +91,33 @@ func cmdRun(args []string) error {
 	}
 	ex := &executor.Exec{}
 	res := ex.Run(context.Background(), executor.Request{
-		Prompt:        p,
-		Pin:           pin,
-		Intent:        *intent,
-		Yolo:          *yolo,
-		Verify:        *verify,
-		Worktree:      *worktree,
-		ContinueUntil: *cont,
-		Route:         *route,
+		Prompt:         p,
+		Pin:            pin,
+		Intent:         *intent,
+		Yolo:           *yolo,
+		Verify:         *verify,
+		Worktree:       *worktree,
+		ContinueUntil:  *cont,
+		Route:          *route,
+		ConfigOverride: cfgOverride,
 	}, func(ev executor.Event) {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetEscapeHTML(false)
 		_ = enc.Encode(ev)
 	})
 	return res.Err
+}
+
+// resolvePin maps a route to a flocode pin, resolving mesh routes against
+// the live amesh catalog.
+func resolvePin(ctx context.Context, route string) (pin, cfgOverride string, err error) {
+	if amesh.IsMeshRoute(route) {
+		mp, err := routes.ResolveMeshPin(ctx, route, "")
+		if err != nil {
+			return "", "", err
+		}
+		return mp.Pin, mp.Config, nil
+	}
+	pin, err = routes.ResolvePin(route)
+	return pin, "", err
 }

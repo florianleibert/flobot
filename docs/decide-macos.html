@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flobot — macOS integration decision deck</title>
+<style>
+:root{
+  --bg:#0b0d10; --panel:#12151a; --panel2:#171b21; --line:#232a33;
+  --ink:#e8edf2; --dim:#8b98a5; --faint:#5b6672;
+  --go:#3ddc84; --do:#5aa9ff; --skip:#ff5d5d; --gold:#f5c451;
+  --ease:cubic-bezier(.22,1,.36,1);
+  font-size:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line)}
+header .logo{font-weight:700;letter-spacing:.02em}
+header .logo em{color:var(--gold);font-style:normal}
+header .sub{color:var(--dim);font-size:13px}
+header .count{margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums;font-size:13px}
+#bar{height:3px;background:var(--line)}
+#bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--do),var(--go));transition:width .45s var(--ease)}
+main{flex:1;display:flex;align-items:center;justify-content:center;padding:34px 20px}
+#stage{width:min(780px,100%)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:30px 34px;position:relative;
+  animation:in .4s var(--ease)}
+@keyframes in{from{opacity:0;transform:translateY(14px) scale(.99)}to{opacity:1;transform:none}}
+.card .kicker{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
+.card .kicker .n{color:var(--gold);font-weight:700}
+.card h2{font-size:25px;line-height:1.2;margin-bottom:14px;letter-spacing:-.01em}
+.card .pitch{color:var(--dim);margin-bottom:14px}
+.card .pitch b{color:var(--ink);font-weight:600}
+.card .how{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:16px;
+  font:12.5px/1.6 ui-monospace,SFMono-Regular,monospace;color:#9fd0a8;overflow-x:auto;white-space:pre-wrap}
+.card .how b{color:var(--gold);font-weight:700}
+.card .why{border-left:3px solid var(--gold);padding:2px 0 2px 14px;color:var(--dim);font-size:14px;margin-bottom:20px}
+.card .why b{color:var(--gold);font-weight:600}
+.dims{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px}
+.dim{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.dim .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);margin-bottom:6px}
+.dim .val{font-weight:700;font-size:14px}
+.meter{display:flex;gap:3px;margin-top:6px}
+.meter i{height:4px;flex:1;border-radius:2px;background:var(--line)}
+.meter i.on{background:var(--do)}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.tag{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:3px 10px}
+.tag.warn{color:var(--gold);border-color:#4a3f22}
+.acts{display:flex;gap:10px;margin-top:8px}
+button{font:inherit;font-weight:600;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+  padding:12px 18px;cursor:pointer;transition:transform .12s var(--ease),background .15s}
+button:hover{transform:translateY(-1px)}
+button:disabled{opacity:.35;cursor:default;transform:none}
+.b-go{background:#0e2b1c;border-color:#1d5c3a;color:var(--go);flex:1.4}
+.b-do{background:#0d1f38;border-color:#1d4a80;color:var(--do);flex:1}
+.b-skip{background:#2b1111;border-color:#6b2626;color:var(--skip);flex:1}
+.b-back{background:transparent;color:var(--dim);padding:12px 14px}
+.hint{color:var(--faint);font-size:12px;text-align:center;margin-top:14px}
+kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font:12px ui-monospace,monospace}
+#summary{display:none}
+#summary h2{font-size:24px;margin-bottom:6px}
+#summary .sub{color:var(--dim);margin-bottom:22px}
+.group{margin-bottom:22px}
+.group h3{font-size:13px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
+.group ul{list-style:none}
+.group li{display:flex;align-items:baseline;gap:10px;padding:8px 14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:6px}
+.group li .idx{color:var(--faint);font-variant-numeric:tabular-nums;font-size:12px}
+.g-go h3{color:var(--go)} .g-do h3{color:var(--do)} .g-skip h3{color:var(--skip)}
+#summary .acts{max-width:420px}
+footer{padding:12px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:12px;display:flex;gap:18px}
+@media(max-width:640px){.dims{grid-template-columns:repeat(2,1fr)}.card{padding:22px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">flo<em>bot</em> · macOS integrations</div>
+  <div class="sub">50 ways to wire flobot into macOS — decide what to build</div>
+  <div class="count" id="count"></div>
+</header>
+<div id="bar"><i id="barfill"></i></div>
+<main>
+  <div id="stage">
+    <div id="deck"></div>
+    <div id="summary">
+      <h2>Your calls</h2>
+      <div class="sub">Decisions are saved in this browser. Reopen anytime — or reset and go again.</div>
+      <div class="group g-go"><h3>Double down</h3><ul id="list-go"></ul></div>
+      <div class="group g-do"><h3>Do</h3><ul id="list-do"></ul></div>
+      <div class="group g-skip"><h3>Skip</h3><ul id="list-skip"></ul></div>
+      <div class="acts">
+        <button class="b-back" id="btn-review">&#8592; review again</button>
+        <button class="b-skip" id="btn-reset">reset decisions</button>
+      </div>
+    </div>
+  </div>
+</main>
+<footer>
+  <span>50 macOS integration candidates · grouped by mechanism</span>
+  <span>keys: <kbd>1</kbd> double down · <kbd>2</kbd> do · <kbd>3</kbd> skip · <kbd>←</kbd> back</span>
+</footer>
+<script>
+const CASES = [
+{
+  n:1, title:"Menu bar agent (NSStatusItem)",
+  pitch:'A native menu bar icon showing <b>running agents</b>, latest run status, and one-click access to routines. Click a bot to see its live run; click "stop" to cancel.',
+  how:'<b>How:</b> Electron Tray (already in Electron, zero extra deps) polling GET /api/v1/roster + /api/v1/runs every 2s. Tray.setContextMenu() builds the menu. No native module needed.',
+  why:'flobot becomes an <b>ambient presence</b> on the Mac — you glance, you know, you act. Cheapest "feels native" win in the whole list.',
+  dims:{value:4,moat:3,effort:1,risk:1},
+  tags:["electron tray","zero new deps","ship first"],
+  note:"Electron Tray is ~50 lines. Highest polish-per-hour on this list."
+},
+{
+  n:2, title:"Global hotkey: summon the agent",
+  pitch:'Press <b>⌘⇧F</b> anywhere in macOS; flobot\u2019s window focuses with the prompt ready. Like Raycast/Alfred but for your agent crew.',
+  how:'<b>How:</b> Electron globalShortcut.register("CmdOrControl+Shift+F", focus). Register on app ready, unregister on will-quit. macOS needs no permission prompt for app-registered shortcuts.',
+  why:'Friction kills agent usage. A <b>global summon</b> makes flobot the fastest way to delegate anything on the machine.',
+  dims:{value:4,moat:3,effort:1,risk:1},
+  tags:["globalShortcut","electron built-in"],
+  note:"One API call. Pair with the Quick run card already shipped."
+},
+{
+  n:3, title:"Dock badge: running-run count",
+  pitch:'The dock icon shows a <b>red badge with the number of running runs</b>; bounce (once) when an overnight run finishes.',
+  how:'<b>How:</b> app.dock.setBadge(String(running)) on roster poll; app.dock.bounce("informational") on run_status done event from the SSE stream.',
+  why:'Unattended runs are only useful if <b>you notice they finished</b>. The badge is the notification channel that doesn\u2019t require permission prompts.',
+  dims:{value:3,moat:2,effort:1,risk:1},
+  tags:["dock api","electron built-in"],
+  note:"Trivial; do it with the Tray work in one pass."
+},
+{
+  n:4, title:"flobot CLI as a macOS service (Shortcuts app)",
+  pitch:'In macOS <b>Shortcuts</b>, a "Run Shell Script" action calls flobot run --bot reviewer --prompt "review clipboard". Now any Shortcut — voice, menu bar, Spotlight — can drive agents.',
+  how:'<b>How:</b> flobot CLI already exists (cmd/flobot). Add a `flobot run` subcommand that POSTs to the loopback server and streams NDJSON to stdout. Shortcuts calls it directly.',
+  why:'Shortcuts is Apple\u2019s <b>official automation hub</b> — one entry point unlocks Siri, Spotlight, and every other integration for free.',
+  dims:{value:4,moat:3,effort:2,risk:1},
+  tags:["shortcuts","cli surface","siri-adjacent"],
+  note:"The CLI subcommand is the only real work; Shortcuts consumes it as-is."
+},
+{
+  n:5, title:"Finder toolbar / Services menu integration",
+  pitch:'Right-click a folder in Finder → Services → "flobot: work on this". The path becomes the working directory of a new run.',
+  how:'<b>How:</b> An Automator "Quick Action" (folder input) that runs a tiny shell script: flobot run --cwd "$1" --prompt "review and improve". No app changes needed once the CLI exists.',
+  why:'Agents are most useful when they start <b>where your files already are</b> — Finder is where Mac users live.',
+  dims:{value:3,moat:3,effort:2,risk:1},
+  tags:["automator","services menu","cli surface"],
+  note:"Depends on #4\u2019s CLI. The Automator wrapper is user-side, not code."
+},
+{
+  n:6, title:"Share Extension target: send anything to an agent",
+  pitch:'From any app\u2019s Share menu, send <b>text, URLs, or files to flobot</b> — it lands in a chosen bot\u2019s prompt or memory.',
+  how:'<b>How:</b> Electron share-extension requires a native helper app (Swift, ~200 lines) registered as a Share Extension that POSTs to the loopback server. Heavier: needs Xcode + codesigning.',
+  why:'The "throw it at the agent" gesture — <b>zero context switching</b> between reading something and delegating work on it.',
+  dims:{value:4,moat:4,effort:4,risk:3},
+  tags:["share extension","native helper","codesigning"],
+  note:"Real native work. Defer until the CLI/Tray layer proves usage."
+},
+{
+  n:7, title:"URL scheme: flobot://run?bot=reviewer&prompt=…",
+  pitch:'Any app, browser page, or script can launch an agent run with a <b>single URL</b>: flobot://run?bot=reviewer&prompt=Review%20this%20PR.',
+  how:'<b>How:</b> Electron handles open-url events (set CFBundleURLTypes in Info.plist / electron-builder config). Parse the URL, POST to the server, focus the window.',
+  why:'A <b>universal entry point</b> — bookmarks, notes apps, terminal echo statements, and webhooks can all trigger flobot with no IPC.',
+  dims:{value:4,moat:3,effort:2,risk:2},
+  tags:["url scheme","electron built-in","webhook-friendly"],
+  note:"electron-builder config + ~40 lines. Strong ROI."
+},
+{
+  n:8, title:"Login item: agents on boot",
+  pitch:'flobot starts at login (opt-in), server up, routines firing — <b>your crew is always on</b> when the Mac is.',
+  how:'<b>How:</b> app.setLoginItemSettings({openAtLogin: true}) behind a settings toggle. Electron built-in, no SMAppService juggling.',
+  why:'Scheduled routines only work if the <b>runtime is alive</b>. This is the missing half of the scheduler story.',
+  dims:{value:4,moat:3,effort:1,risk:1},
+  tags:["login item","electron built-in","routines"],
+  note:"Trivial; pairs with #3 dock badge."
+},
+{
+  n:9, title:"Spotlight/Quick Look plugin for run ledgers",
+  pitch:'Search <b>"flobot"</b> in Spotlight → past runs and their ledgers appear; Quick Look previews the NDJSON event log rendered as text.',
+  how:'<b>How:</b> A Spotlight importer (.mdimporter) is a native bundle — significant Xcode work. Cheaper 80%: export ledgers as files into ~/Library/Messages-like folder and let default indexing find them.',
+  why:'Your agent history becomes <b>part of the Mac\u2019s memory</b>, not buried in an app database.',
+  dims:{value:2,moat:3,effort:4,risk:3},
+  tags:["spotlight","native plugin","defer"],
+  note:"Low pull, high effort. The file-export fallback is the honest v1."
+},
+{
+  n:10, title:"Touch Bar / Fn-globe key agent palette",
+  pitch:'Press the <b>fn/globe key</b> → a compact agent palette: pick bot, dictate a prompt, run. (Also the Touch Bar on older machines.)',
+  how:'<b>How:</b> The globe key is just a keyboard event — a global shortcut (see #2) plus a compact quick-run window. Touch Bar itself is deprecated hardware; skip it.',
+  why:'One-key access from anywhere = the difference between "sometimes I use it" and <b>"it\u2019s how I work"</b>.',
+  dims:{value:3,moat:2,effort:2,risk:1},
+  tags:["quick palette","globalShortcut"],
+  note:"Mostly a UI variant of #2; do after #2 proves out."
+},
+{
+  n:11, title:"macOS Notifications on run completion",
+  pitch:'When an overnight or background run finishes (or fails), a <b>native notification</b> appears: "reviewer finished: 3 files changed, tests green." Click → jump to the run.',
+  how:'<b>How:</b> Electron Notification API on run_status done/error events from the SSE stream. notification.on("click") focuses the window and navigates to the run. macOS asks for notification permission once.',
+  why:'Unattended work is worthless if completion is silent. This is the <b>minimum viable presence</b> for the overnight-surgeon use case.',
+  dims:{value:5,moat:3,effort:1,risk:1},
+  tags:["notifications","electron built-in","ship first"],
+  note:"~30 lines. Do with Tray/badge pass."
+},
+{
+  n:12, title:"AppleScript / JXA control surface",
+  pitch:'`osascript` can drive flobot: "tell application \\"flobot\\" to run bot \\"reviewer\\" with prompt \\"clean up my desktop\\"" — scriptable from any Mac automation tool.',
+  how:'<b>How:</b> Electron apps get AppleScript support via a small native bridge or, simpler, a CLI subcommand (`flobot run`) that osascript invokes with `do shell script`. Full Apple Events needs Swift glue.',
+  why:'AppleScript is the <b>lingua franca of Mac automation</b> — Keyboard Maestro, BetterTouchTool, and every pro user\u2019s scripts can then drive agents.',
+  dims:{value:3,moat:3,effort:3,risk:2},
+  tags:["applescript","cli surface","pro users"],
+  note:"The CLI route gets 90% of the value at 10% of the cost."
+},
+{
+  n:13, title:"Keyboard Maestro / BetterTouchTool macros",
+  pitch:'Users wire a KM macro or BTT gesture to trigger a flobot routine — no flobot code required, just a documented HTTP/CLI contract.',
+  how:'<b>How:</b> Document the loopback HTTP API + `flobot run` CLI as the integration contract. KM/BTT both execute shell commands and URLs natively.',
+  why:'The <b>power-user multiplier</b>: every Mac automation tool becomes a flobot trigger with zero code from us.',
+  dims:{value:3,moat:2,effort:1,risk:1},
+  tags:["docs only","http api","power users"],
+  note:"Pure documentation. Do it the day the CLI lands."
+},
+{
+  n:14, title:"WatchPaths / file-watcher triggers",
+  pitch:'"When <b>~/Downloads/inbox</b> gets a new file, run the triage skill on it." Folder actions, reimagined as agent routines.',
+  how:'<b>How:</b> Go backend adds a watcher routine type using fsnotify (or FSEvents via a thin cgo wrapper — fsnotify uses kqueue, fine on macOS). Debounce 2s, then fire the routine with the path as prompt context.',
+  why:'Event-driven agents: the Mac <b>tells flobot what changed</b> instead of you telling it.',
+  dims:{value:4,moat:4,effort:3,risk:2},
+  tags:["fsnotify","routine trigger","backend work"],
+  note:"Natural extension of the existing scheduler; needs a careful security story (what may trigger what)."
+},
+{
+  n:15, title:"Launchd agent for the headless server",
+  pitch:'The Go server runs as a <b>launchd user agent</b> (KeepAlive), independent of the Electron app — the app becomes just one client of an always-on local daemon.',
+  how:'<b>How:</b> Ship ~/Library/LaunchAgents/com.florianleibert.flobot.plist with RunAtLoad + KeepAlive. `flobot install-daemon` writes it; `launchctl bootstrap` starts it. Electron then probes health and connects.',
+  why:'Routines fire even when the GUI is closed. <b>Server-first architecture</b> — the app is a view, not the runtime.',
+  dims:{value:4,moat:4,effort:2,risk:2},
+  tags:["launchd","daemon","architecture"],
+  note:"The Electron shell already probes/reuses a healthy server — this completes that design."
+},
+{
+  n:16, title:"Git hooks: pre-commit / pre-push agent review",
+  pitch:'Install a git hook that asks a flobot agent to <b>review the diff</b> before you commit or push — fast fail on obvious breakage.',
+  how:'<b>How:</b> `flobot hook install` writes .git/hooks/pre-commit calling `flobot run --wait --timeout 60 --prompt "review this diff"`. Exit code gates the commit.',
+  why:'Agents in the <b>exact moment of decision</b> — before bad code lands, not after.',
+  dims:{value:4,moat:4,effort:2,risk:2},
+  tags:["git hooks","cli surface","dev workflow"],
+  note:"Needs the CLI\u2019s --wait mode (blocking run with exit code). Small, high leverage."
+},
+{
+  n:17, title:"Shell prompt / precmd integration",
+  pitch:'Your zsh prompt shows <b>agent status</b>: "▲ 2 running" — and a precmd hook can queue a "summarize today\u2019s commits" run when you cd into a repo.',
+  how:'<b>How:</b> A tiny zsh function curling the loopback /api/v1/runs?status=running. Ship as a snippet in docs; no app code.',
+  why:'Terminal-native users see agents <b>without leaving the shell</b> — ambient awareness, zero UI.',
+  dims:{value:2,moat:2,effort:1,risk:1},
+  tags:["zsh","docs only","ambient"],
+  note:"Cute, cheap, docs-only. Low priority but free."
+},
+{
+  n:18, title:"Clipboard watcher: clean my clipboard",
+  pitch:'A routine watches the clipboard; on a big text dump, offer: <b>"summarize / clean / act on this?"</b> via notification with actions.',
+  how:'<b>How:</b> Electron polls clipboard.readText() (throttled 2s, hash-dedupe) while "clipboard watch" is enabled. Above a size threshold → notification with response actions.',
+  why:'The clipboard is the <b>universal exchange format</b> of desktop work — an agent that watches it catches half your day\u2019s context.',
+  dims:{value:3,moat:3,effort:2,risk:2},
+  tags:["clipboard","electron built-in","privacy care"],
+  note:"Must be strictly opt-in and visibly off by default — clipboard watching is sensitive."
+},
+{
+  n:19, title:"Drag-and-drop target: drop files on the dock icon",
+  pitch:'Drag a file or folder onto the flobot dock icon → a new run starts with that path as the working context.',
+  how:'<b>How:</b> Electron handles open-file events (app.on("open-file")) and drag-drop on the window (already have web drop events). Dock-icon drops route to open-file on macOS.',
+  why:'The most <b>physical, obvious gesture</b> on the Mac — "here, deal with this."',
+  dims:{value:4,moat:3,effort:2,risk:1},
+  tags:["open-file","electron built-in","dock"],
+  note:"Small; big felt-native win."
+},
+{
+  n:20, title:"Quick Look: spacebar-preview a run ledger",
+  pitch:'In Finder, select an exported ledger file, hit <b>space</b> → a rendered preview of the run: prompt, events, result — not raw NDJSON.',
+  how:'<b>How:</b> A Quick Look extension is a native app-extension (Xcode). Cheaper: export ledgers as .md with a header summary — Quick Look renders markdown-ish text natively.',
+  why:'Agent output should be <b>first-class citizen of the filesystem</b>, previewable like any document.',
+  dims:{value:2,moat:3,effort:4,risk:3},
+  tags:["quick look","native plugin","defer"],
+  note:"Markdown export gets 80% for 5% effort. Native QL extension is a later maybe."
+},
+{
+  n:21, title:"iMessage: text your agent from your phone",
+  pitch:'Text "run standup-summary" to your Mac\u2019s number (or a relay) — the routine fires, and the result texts back. Your agent crew, <b>reachable from anywhere</b>.',
+  how:'<b>How:</b> macOS Messages chat.db is readable (SQLite) but writing/sending requires AppleScript GUI scripting or a native bridge — fragile across macOS versions. Honest v1: a small Shortcuts automation on "message received" that calls the flobot CLI.',
+  why:'The phone is the <b>remote control you always have</b>. No cloud relay, no vendor app — your Mac is the server.',
+  dims:{value:4,moat:4,effort:4,risk:4},
+  tags:["imessage","shortcuts relay","fragile"],
+  note:"AppleScript send is the fragile part; the Shortcuts-on-receive route is the stable path."
+},
+{
+  n:22, title:"Mail rules: agent triage on incoming mail",
+  pitch:'A Mail rule: messages from "github.com" → forward to flobot → agent summarizes PRs into one digest run every morning.',
+  how:'<b>How:</b> macOS Mail rules can run AppleScript on messages. The script pipes the message body to `flobot run --bot triage`. No server changes; pure glue.',
+  why:'Email is the <b>highest-volume inbound stream</b> most people have — an agent that triages it earns its keep daily.',
+  dims:{value:3,moat:3,effort:3,risk:3},
+  tags:["mail rules","applescript glue","cli surface"],
+  note:"Depends on #4 CLI. AppleScript glue is user-side."
+},
+{
+  n:23, title:"Reminders / Notes as the agent inbox",
+  pitch:'A Reminders list named "flobot" — anything you add becomes a queued run; results append back as a note. Use the apps Apple already gave you as the UI.',
+  how:'<b>How:</b> Reminders/Notes have no public local API; the bridge is AppleScript (read list items, mark complete) driven by a routine. Or Shortcuts "get reminders in list flobot" → CLI.',
+  why:'Zero new UI to build — <b>Apple\u2019s own apps become flobot\u2019s front-end</b>, on Mac and iPhone via iCloud sync.',
+  dims:{value:3,moat:3,effort:3,risk:3},
+  tags:["reminders","applescript","icloud sync"],
+  note:"The iCloud-sync angle is the real prize: iPhone → Reminders → Mac agent → done."
+},
+{
+  n:24, title:"Calendar-driven routines",
+  pitch:'"Every meeting in my calendar with \\"review\\" in the title → 10 min before, run the prep skill on the linked doc." Calendar events become <b>routine triggers</b>.',
+  how:'<b>How:</b> Read calendar via `icalBuddy` (brew) or AppleScript in a routine; or Shortcuts "find calendar events" → CLI. No native module needed.',
+  why:'Time-based triggers that <b>know what your day actually is</b>, not just what the clock says.',
+  dims:{value:3,moat:3,effort:3,risk:2},
+  tags:["calendar","icalbuddy","routine trigger"],
+  note:"Good candidate for the connector-registry design (spec gap C4)."
+},
+{
+  n:25, title:"Dictation: talk to your agents",
+  pitch:'Hold a hotkey, <b>dictate the prompt</b> (macOS built-in dictation), release → run. The Mac\u2019s dictation inserts text into the focused prompt field.',
+  how:'<b>How:</b> Zero code: macOS dictation (fn-fn) types into any focused field, including flobot\u2019s prompt. Document it. Optional polish: a push-to-talk window using Web Speech API (Chromium supports it).',
+  why:'Speaking is <b>10× faster than typing</b> for delegation — and it works today with zero code.',
+  dims:{value:3,moat:2,effort:1,risk:1},
+  tags:["dictation","docs only","works today"],
+  note:"Pure documentation win. Include in a macOS-tips doc."
+},
+{
+  n:26, title:"VoiceOver / accessibility audit of the web UI",
+  pitch:'The web UI passes a <b>VoiceOver pass</b>: labels, roles, focus order — agents and runs are navigable by keyboard and screen reader end to end.',
+  how:'<b>How:</b> Audit pass over web/index.html + app.js: aria-labels on icon buttons, role=live on the run log, focus management on panel switches. No new deps.',
+  why:'Accessibility is table stakes for a "native-feeling" Mac app — and keyboard-nav helps <b>everyone</b>.',
+  dims:{value:3,moat:2,effort:2,risk:1},
+  tags:["a11y","web ui","quality pass"],
+  note:"A focused weekend pass; not a feature, a floor."
+},
+{
+  n:27, title:"Keychain: the only right place for keys",
+  pitch:'API keys live in <b>macOS Keychain</b>, not dotfiles. flobot reads via `security find-generic-password`, injects into child env at spawn time, never logs it.',
+  how:'<b>How:</b> Extend internal/executor/credentials.go with a Keychain backend: exec `security find-generic-password -s flobot -w`. Fall back to the existing ~/.accounts file. scrubKey already guards stderr.',
+  why:'Keys in plaintext dotfiles are the <b>biggest security smell</b> in the stack today. Keychain is the Mac-native fix.',
+  dims:{value:4,moat:3,effort:2,risk:2},
+  tags:["keychain","security","backend work"],
+  note:"Small, high-trust win. Pairs with the existing scrub work."
+},
+{
+  n:28, title:"App Sandbox + hardened runtime for distribution",
+  pitch:'Ship a <b>sandboxed, notarized</b> app: no "unidentified developer" dialog, Gatekeeper-clean, Mac App Store-eligible if ever wanted.',
+  how:'<b>How:</b> electron-builder entitlements (com.apple.security.app-sandbox) + notarize (notarytool) in CI. The Go server child-process spawn needs a careful sandbox exception story (process spawn is restricted under sandbox).',
+  why:'Distribution reality: unsandboxed unsigned apps get <b>quarantined and blocked</b>. Notarization is the price of "just works" on other Macs.',
+  dims:{value:4,moat:3,effort:4,risk:4},
+  tags:["sandbox","notarization","distribution"],
+  note:"The sandbox-vs-spawn-children tension is the hard part; needs a design doc first."
+},
+{
+  n:29, title:"Sparkle-style auto-update",
+  pitch:'The app <b>updates itself</b> (or the embedded Go binary) with a signed update feed — agents keep improving without manual reinstalls.',
+  how:'<b>How:</b> electron-updater (built into electron-builder ecosystem) with a GitHub Releases feed. The Go binary ships inside the app bundle; app updates carry it.',
+  why:'An agent tool that <b>silently rots</b> is a dead tool. Updates are maintenance, not a feature.',
+  dims:{value:3,moat:2,effort:3,risk:3},
+  tags:["auto-update","electron-updater","distribution"],
+  note:"Standard electron-builder path; mostly CI/config work."
+},
+{
+  n:30, title:"Universal binary + Apple Silicon native",
+  pitch:'The Go server and Electron runtime both run <b>native on Apple Silicon</b> — no Rosetta, fast cold starts, low battery draw.',
+  how:'<b>How:</b> Already true: Go builds arm64 natively; Electron ships arm64. Just verify the build matrix (GOARCH=arm64, electron-builder arm64 target) and drop x64 unless needed.',
+  why:'Native speed + battery is the <b>Mac-native baseline</b>; Rosetta is a smell users can feel.',
+  dims:{value:3,moat:2,effort:1,risk:1},
+  tags:["arm64","build config","mostly done"],
+  note:"Audit the build matrix; likely already green."
+},
+{
+  n:31, title:"Shortcuts: Get up to speed morning macro",
+  pitch:'One Shortcut on the Mac (and iPhone via iCloud): "Hey Siri, get up to speed" → flobot runs standup-summary + inbox-triage + calendar-prep skills and posts one digest notification.',
+  how:'<b>How:</b> Pure user-side composition of #4\u2019s CLI: Shortcuts runs three `flobot run --wait` actions, concatenates stdout, shows a notification. flobot ships the skills; the user owns the Shortcut.',
+  why:'The <b>showcase integration</b> — the demo that makes people install the whole stack.',
+  dims:{value:4,moat:3,effort:2,risk:1},
+  tags:["shortcuts","siri","showcase"],
+  note:"Depends on #4. Ship the skills; publish the Shortcut as a .shortcut download."
+},
+{
+  n:32, title:"Focus modes: agent behavior follows your focus",
+  pitch:'In "Work" focus, agents run normally. In "Personal" focus, <b>only ambient routines</b> (no notifications). In "DND", everything pauses.',
+  how:'<b>How:</b> Electron can read the focus state via a tiny Swift helper (or `shortcuts get` on a Focus-status shortcut — clunky). Honest v1: a flobot setting "pause notifications when DND" using the system DND check (`defaults read com.apple.notificationcenterui`).',
+  why:'An agent tool that <b>respects your attention</b> is the difference between assistant and annoyance.',
+  dims:{value:3,moat:3,effort:3,risk:2},
+  tags:["focus modes","attention","polish"],
+  note:"The DND check is cheap; full Focus-mode awareness needs native glue."
+},
+{
+  n:33, title:"Time Machine exclusions for agent state",
+  pitch:'Ledgers and state are valuable but chatty. Exclude volatile dirs from Time Machine, keep the important ones — <b>backups that don\u2019t bloat</b>.',
+  how:'<b>How:</b> `flobot install` sets the exclusion flag (xattr com.apple.metadata:com_apple_backup_excludeItem) on the runs cache dir but not on state.json/skills.',
+  why:'Being a <b>good Mac citizen</b>: fast backups, and the user\u2019s agent memory still survives disk loss.',
+  dims:{value:2,moat:2,effort:1,risk:1},
+  tags:["time machine","citizenship","xattr"],
+  note:"Five lines of Go. Do during the install-command work (#15)."
+},
+{
+  n:34, title:"Power: pause heavy runs on battery",
+  pitch:'On battery under 30%, flobot <b>defers non-critical runs</b> and shows why. On power, full speed.',
+  how:'<b>How:</b> Electron powerMonitor API (built-in): onBatteryPower + onAcPower events; expose to the Go server as a "power" flag on the roster endpoint; scheduler checks it before firing.',
+  why:'An agent stack that <b>drains your battery mid-flight</b> gets uninstalled. Respect the machine.',
+  dims:{value:3,moat:3,effort:2,risk:1},
+  tags:["powerMonitor","battery","citizenship"],
+  note:"Small, thoughtful, very native-app behavior."
+},
+{
+  n:35, title:"Network: react to Wi-Fi changes / offline",
+  pitch:'Wi-Fi drops → mesh routes go unreachable; flobot <b>pauses mesh runs, queues them, and resumes</b> when back online — direct/local routes keep working.',
+  how:'<b>How:</b> Electron online/offline events (built-in) pushed to the server; scheduler skips mesh-route routines while offline; queued runs fire on reconnect. The direct-routes work (already shipped) is the offline story\u2019s backbone.',
+  why:'Laptops move. An agent tool that <b>fails loudly on every café</b> feels broken.',
+  dims:{value:3,moat:3,effort:2,risk:2},
+  tags:["online/offline","resilience","mesh routes"],
+  note:"Builds directly on the direct/mesh route split already in place."
+},
+{
+  n:36, title:"Open in…: default handler for .flobot files",
+  pitch:'Export a run/bot/skill as a <b>.flobot file</b>; double-click to import into another Mac\u2019s flobot. Agents become portable documents.',
+  how:'<b>How:</b> electron-builder fileAssociations + open-file event → import handler (validate JSON, confirm, insert via store). Export is a download from the UI.',
+  why:'Sharing a <b>working agent</b> should be as easy as sharing a file — this is the viral loop.',
+  dims:{value:4,moat:4,effort:3,risk:2},
+  tags:["file association","portable agents","viral"],
+  note:"Needs an export format spec (bot + skills + memory, no secrets). Strong candidate."
+},
+{
+  n:37, title:"Continuity: hand a run to your iPhone",
+  pitch:'Start a run on the Mac; it appears in <b>Handoff</b> on the iPhone as a Shortcuts/web view to check status. (Apple-intelligence-era Continuity, not a full app.)',
+  how:'<b>How:</b> True Handoff needs a native iOS counterpart — out of scope. Honest v1: the loopback server is LAN-only; a Tailscale/SSH tunnel + the web UI in mobile Safari gives 80%.',
+  why:'"Start on Mac, check from couch" is a real daily loop — even without native iOS.',
+  dims:{value:3,moat:3,effort:4,risk:3},
+  tags:["continuity","remote view","defer"],
+  note:"The tunnel + responsive-web pass is the honest scope; native Handoff is a trap."
+},
+{
+  n:38, title:"Widgets: agent status on desktop/Notification Center",
+  pitch:'A macOS widget: <b>running agents, next routine fire, last result</b> — glanceable from the desktop.',
+  how:'<b>How:</b> WidgetKit extensions are Swift-only and live in a native host app — a real Xcode project alongside Electron. Significant native investment.',
+  why:'Glanceable status is the <b>ambient computing</b> promise; widgets are where Mac users look.',
+  dims:{value:3,moat:4,effort:5,risk:4},
+  tags:["widgetkit","native","defer"],
+  note:"Defer until the Tray + badge prove that glanceable status is used at all."
+},
+{
+  n:39, title:"Live Activities / Dynamic Island (via web push)",
+  pitch:'A long run shows a <b>Live Activity on iPhone</b> — progress streaming in the Dynamic Island. Requires a native iOS app + push infrastructure.',
+  how:'<b>How:</b> Out of scope for a Mac-first tool; requires Apple push certs, an iOS app, and a relay. Not honest v1.',
+  why:'Flashy, but the <b>cost center is entirely off-Mac</b> — contradicts the local-first thesis.',
+  dims:{value:2,moat:3,effort:5,risk:5},
+  tags:["ios","push","skip for now"],
+  note:"Explicitly out of scope; listed for completeness."
+},
+{
+  n:40, title:"Menu bar drop zone for quick delegation",
+  pitch:'The Tray icon is also a <b>drop target</b>: drag a file onto the menu bar icon → quick-run palette pre-filled with the file path.',
+  how:'<b>How:</b> macOS menu-bar drag targets need a native NSStatusItem plugin (Electron Tray doesn\u2019t accept drops). Alternative: the dock-icon drop (#19) plus a global-hotkey palette covers 90%.',
+  why:'Frictionless "deal with this file" — but the dock already does it.',
+  dims:{value:2,moat:2,effort:4,risk:3},
+  tags:["tray","native plugin","redundant"],
+  note:"#19 (dock drop) makes this mostly redundant. Skip unless Tray goes native."
+},
+{
+  n:41, title:"Screen capture: agent sees your screen",
+  pitch:'"What\u2019s wrong with this layout?" — the agent <b>captures the screen</b> (with permission), reasons over the image, and acts.',
+  how:'<b>How:</b> macOS 10.15+ requires user consent for screen capture. Electron desktopCapturer API (built-in) can grab the screen after the OS permission grant; the image goes to the run as an attachment. Model must be vision-capable.',
+  why:'Half of computer work is <b>visual</b> — an agent that can\u2019t see can\u2019t help with it.',
+  dims:{value:4,moat:4,effort:3,risk:3},
+  tags:["screen capture","vision models","permission"],
+  note:"Needs a vision-capable route pinned (muse-spark supports images). Big unlock, real work."
+},
+{
+  n:42, title:"Camera / photo ingestion",
+  pitch:'Point at a whiteboard, snap via iPhone → lands in Photos → flobot routine transcribes it into a task list. <b>Physical world → agent</b>.',
+  how:'<b>How:</b> Photos has no local API; the bridge is Shortcuts ("get latest photo" → save to a watched folder) + the file-watcher trigger (#14). No native code.',
+  why:'The camera is the <b>fastest input device</b> for physical context; Shortcuts + watcher composes it from parts we\u2019re already building.',
+  dims:{value:3,moat:3,effort:3,risk:2},
+  tags:["photos","shortcuts","file watcher"],
+  note:"Pure composition of #14 + #4. No new flobot code beyond the watcher."
+},
+{
+  n:43, title:"Audio: meeting transcription → agent summary",
+  pitch:'Record a meeting (Voice Memos/QuickTime); drop the file on flobot → <b>transcribe (whisper-class local model) → summarize → file to notes</b>.',
+  how:'<b>How:</b> macOS Sonoma+ has on-device speech-to-text via Speech framework — but only via native code. Honest v1: whisper.cpp as an optional local binary the executor calls, then a normal run over the transcript.',
+  why:'Voice meetings are where decisions happen; agents that <b>know what was said</b> can act on it.',
+  dims:{value:4,moat:4,effort:4,risk:3},
+  tags:["whisper","audio","local models"],
+  note:"whisper.cpp integration is a skill, not a platform feature. Good skill-library candidate."
+},
+{
+  n:44, title:"Location-aware routines",
+  pitch:'"When I get home, run the evening-digest skill." CoreLocation geofencing — <b>where you are changes what agents do</b>.',
+  how:'<b>How:</b> CoreLocation needs a native helper + always-on permission — heavy and privacy-sensitive. Honest v1: Shortcuts "when I arrive home" (built-in automation) → CLI. Zero flobot code.',
+  why:'Context-aware automation is powerful, but <b>Shortcuts already does the geofencing</b> — flobot just needs to be callable.',
+  dims:{value:2,moat:2,effort:2,risk:3},
+  tags:["location","shortcuts","privacy"],
+  note:"Shortcuts automations cover this; flobot needs nothing but the CLI."
+},
+{
+  n:45, title:"Smart stack: agent status in Stage Manager",
+  pitch:'Group flobot with your dev tools in Stage Manager; the window <b>remembers its stage</b> and doesn\u2019t steal focus when runs finish.',
+  why:'A tool that <b>respects window management</b> feels native; one that pops over your work gets quit.',
+  how:'<b>How:</b> Electron window behaviors: never focus on notification click unless clicked, use showInactive() for status toasts. No native API needed.',
+  dims:{value:2,moat:2,effort:1,risk:1},
+  tags:["window etiquette","polish","electron built-in"],
+  note:"Small behavioral pass over window focus rules."
+},
+{
+  n:46, title:"Deep links into specific runs (flobot://run/<id>)",
+  pitch:'Notifications, Tray menu, and history rows all deep-link to <b>the exact run</b> — one URL space for the whole app.',
+  how:'<b>How:</b> Extends #7\u2019s URL scheme with routes: flobot://run/<id>, flobot://bot/<id>, flobot://routine/<id>. The Electron open-url handler navigates the web UI.',
+  why:'Every integration (notification click, Tray, Shortcuts result) lands in the <b>right place</b>, not the home screen.',
+  dims:{value:3,moat:2,effort:2,risk:1},
+  tags:["deep links","url scheme","polish"],
+  note:"Cheap once #7 exists. Do together."
+},
+{
+  n:47, title:"Agent-authored macOS automation (the flywheel)",
+  pitch:'The endgame: an agent <b>writes its own Shortcuts/Automator glue</b>. "Set up a Shortcut that runs this skill every morning" — the agent shells out to shortcuts CLI and builds it.',
+  how:'<b>How:</b> macOS ships a `shortcuts` CLI (list/run/sign). An agent with shell access can compose automations as a skill. The approval gate (already shipped) covers the consequential-action risk.',
+  why:'This is the <b>moat</b>: flobot doesn\u2019t just use macOS automation — it <b>authors</b> it, compounding with every run.',
+  dims:{value:5,moat:5,effort:3,risk:4},
+  tags:["shortcuts cli","agent-authored","flywheel"],
+  note:"The most differentiated idea on this list. Ship after the CLI + approval gate are proven."
+},
+{
+  n:48, title:"Menu bar mini-terminal: one-line agent REPL",
+  pitch:'Click Tray → a <b>one-line input</b> at the cursor: type a prompt, Enter, it runs on the default bot, result toasts. No window, no context switch.',
+  how:'<b>How:</b> A frameless, always-on-top, focusable-on-hotkey mini window (Electron BrowserWindow, ~100 lines) that POSTs to /api/v1/runs and shows the result inline.',
+  why:'The <b>lowest-friction surface</b> possible on a Mac — flobot as a keystroke, not an app.',
+  dims:{value:4,moat:3,effort:2,risk:1},
+  tags:["mini window","tray","friction"],
+  note:"Natural follow-on to #2. Very demo-able."
+},
+{
+  n:49, title:"Obsidian / logseq vault as agent memory",
+  pitch:'Point flobot at your notes vault: agents <b>read your notes for context</b> and write summaries back as markdown — your knowledge base becomes agent memory.',
+  how:'<b>How:</b> No native integration needed: vaults are folders of markdown. A skill that greps/reads the vault and appends run summaries. File-watcher (#14) can trigger on note changes.',
+  why:'The <b>richest context store</b> most knowledge workers have, already on disk, already plain text.',
+  dims:{value:4,moat:3,effort:2,risk:1},
+  tags:["markdown vault","skill","no native code"],
+  note:"Pure skill work on top of the executor. Ship as an example skill."
+},
+{
+  n:50, title:"The flobot macOS citizenship scorecard",
+  pitch:'Not a feature: a <b>definition of done</b> for Mac-native quality — notarized, sandboxed-or-explained, Keychain, login item, notifications, deep links, drag-drop, a11y, battery-aware, offline-aware.',
+  how:'<b>How:</b> A checklist doc (docs/mac-citizenship.md) scoring each item shipped/skipped/why. Every release notes the score.',
+  why:'"Native feel" is not one integration — it\u2019s <b>the sum of small respects</b>. The scorecard keeps the list honest.',
+  dims:{value:3,moat:3,effort:1,risk:1},
+  tags:["meta","docs","definition of done"],
+  note:"Write it the day the first batch (Tray, badge, notifications, hotkey) ships."
+},
+];
+const KEY = "flobot-decide-macos-v1";
+const LABELS = {go:"double down", do:"do", skip:"skip"};
+let decisions = {};
+try { decisions = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch {}
+let i = 0;
+const $ = id => document.getElementById(id);
+function meter(v){ let s=""; for(let k=1;k<=5;k++) s += `<i class="${k<=v?"on":""}"></i>`; return s; }
+function render(){
+  const total = CASES.length;
+  const done = Object.keys(decisions).length;
+  $("count").textContent = `${Math.min(i+1,total)} / ${total}`;
+  $("barfill").style.width = (done/total*100) + "%";
+  if(i >= total){ showSummary(); return; }
+  const c = CASES[i];
+  const d = decisions[c.n];
+  $("deck").innerHTML = `
+  <div class="card">
+    <div class="kicker"><span class="n">${String(c.n).padStart(2,"0")}</span><span>macOS integration</span>
+      ${d?`<span class="tag warn">your call: ${LABELS[d]}</span>`:""}</div>
+    <h2>${c.title}</h2>
+    <div class="pitch">${c.pitch}</div>
+    <div class="how">${c.how}</div>
+    <div class="why"><b>Why it kills:</b> ${c.why}</div>
+    <div class="dims">
+      <div class="dim"><div class="lbl">Value</div><div class="val">${c.dims.value}/5</div><div class="meter">${meter(c.dims.value)}</div></div>
+      <div class="dim"><div class="lbl">Moat</div><div class="val">${c.dims.moat}/5</div><div class="meter">${meter(c.dims.moat)}</div></div>
+      <div class="dim"><div class="lbl">Effort</div><div class="val">${c.dims.effort}/5</div><div class="meter">${meter(c.dims.effort)}</div></div>
+      <div class="dim"><div class="lbl">Risk</div><div class="val">${c.dims.risk}/5</div><div class="meter">${meter(c.dims.risk)}</div></div>
+    </div>
+    <div class="tags">${c.tags.map(t=>`<span class="tag ${t.includes("defer")||t.includes("skip")?"warn":""}">${t}</span>`).join("")}</div>
+    <p class="hint" style="text-align:left;margin:10px 0 0">${c.note}</p>
+    <div class="acts">
+      <button class="b-go" data-d="go">1 · Double down</button>
+      <button class="b-do" data-d="do">2 · Do</button>
+      <button class="b-skip" data-d="skip">3 · Skip</button>
+    </div>
+  </div>
+  <div class="hint"><kbd>1</kbd> double down · <kbd>2</kbd> do · <kbd>3</kbd> skip · <kbd>←</kbd> back${d?" · <kbd>0</kbd> clear":""}</div>`;
+  $("deck").querySelectorAll("button[data-d]").forEach(b =>
+    b.addEventListener("click", () => decide(b.dataset.d)));
+}
+function decide(d){
+  decisions[CASES[i].n] = d;
+  save(); i++; render();
+}
+function save(){ localStorage.setItem(KEY, JSON.stringify(decisions)); }
+function showSummary(){
+  $("deck").style.display = "none";
+  $("summary").style.display = "block";
+  $("count").textContent = `${Object.keys(decisions).length}/${CASES.length} decided`;
+  for(const d of ["go","do","skip"]){
+    const ul = $("list-"+d); ul.innerHTML = "";
+    CASES.filter(c => decisions[c.n] === d).forEach(c => {
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="idx">${String(c.n).padStart(2,"0")}</span><span>${c.title}</span>`;
+      ul.appendChild(li);
+    });
+    if(!ul.children.length) ul.innerHTML = `<li style="color:var(--faint)">— none —</li>`;
+  }
+}
+$("btn-review").addEventListener("click", () => {
+  $("summary").style.display = "none"; $("deck").style.display = "block"; i = 0; render();
+});
+$("btn-reset").addEventListener("click", () => {
+  decisions = {}; save(); i = 0;
+  $("summary").style.display = "none"; $("deck").style.display = "block"; render();
+});
+document.addEventListener("keydown", e => {
+  if($("summary").style.display === "block"){
+    if(e.key === "ArrowLeft"){ $("btn-review").click(); }
+    return;
+  }
+  if(i >= CASES.length) return;
+  if(e.key === "1") decide("go");
+  else if(e.key === "2") decide("do");
+  else if(e.key === "3") decide("skip");
+  else if(e.key === "ArrowLeft" && i > 0){ i--; render(); }
+  else if(e.key === "0" && decisions[CASES[i].n]){ delete decisions[CASES[i].n]; save(); render(); }
+});
+render();
+</script>
+</body>
+</html>

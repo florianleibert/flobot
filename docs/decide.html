@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flobot — use-case decision deck</title>
+<style>
+:root{
+  --bg:#0b0d10; --panel:#12151a; --panel2:#171b21; --line:#232a33;
+  --ink:#e8edf2; --dim:#8b98a5; --faint:#5b6672;
+  --go:#3ddc84; --do:#5aa9ff; --skip:#ff5d5d; --gold:#f5c451;
+  --ease:cubic-bezier(.22,1,.36,1);
+  font-size:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line)}
+header .logo{font-weight:700;letter-spacing:.02em}
+header .logo em{color:var(--gold);font-style:normal}
+header .sub{color:var(--dim);font-size:13px}
+header .count{margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums;font-size:13px}
+#bar{height:3px;background:var(--line)}
+#bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--do),var(--go));transition:width .45s var(--ease)}
+main{flex:1;display:flex;align-items:center;justify-content:center;padding:34px 20px}
+#stage{width:min(760px,100%)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:30px 34px;position:relative;
+  animation:in .4s var(--ease)}
+@keyframes in{from{opacity:0;transform:translateY(14px) scale(.99)}to{opacity:1;transform:none}}
+.card .kicker{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
+.card .kicker .n{color:var(--gold);font-weight:700}
+.card h2{font-size:26px;line-height:1.2;margin-bottom:14px;letter-spacing:-.01em}
+.card .pitch{color:var(--dim);margin-bottom:18px}
+.card .pitch b{color:var(--ink);font-weight:600}
+.card .why{border-left:3px solid var(--gold);padding:2px 0 2px 14px;color:var(--dim);font-size:14px;margin-bottom:22px}
+.card .why b{color:var(--gold);font-weight:600}
+.dims{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:24px}
+.dim{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.dim .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);margin-bottom:6px}
+.dim .val{font-weight:700;font-size:14px}
+.meter{display:flex;gap:3px;margin-top:6px}
+.meter i{height:4px;flex:1;border-radius:2px;background:var(--line)}
+.meter i.on{background:var(--do)}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.tag{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:3px 10px}
+.tag.warn{color:var(--gold);border-color:#4a3f22}
+.acts{display:flex;gap:10px;margin-top:8px}
+button{font:inherit;font-weight:600;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+  padding:12px 18px;cursor:pointer;transition:transform .12s var(--ease),background .15s}
+button:hover{transform:translateY(-1px)}
+button:disabled{opacity:.35;cursor:default;transform:none}
+.b-go{background:#0e2b1c;border-color:#1d5c3a;color:var(--go);flex:1.4}
+.b-do{background:#0d1f38;border-color:#1d4a80;color:var(--do);flex:1}
+.b-skip{background:#2b1111;border-color:#6b2626;color:var(--skip);flex:1}
+.b-back{background:transparent;color:var(--dim);padding:12px 14px}
+.hint{color:var(--faint);font-size:12px;text-align:center;margin-top:14px}
+kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font:12px ui-monospace,monospace}
+/* summary */
+#summary{display:none}
+#summary h2{font-size:24px;margin-bottom:6px}
+#summary .sub{color:var(--dim);margin-bottom:22px}
+.group{margin-bottom:22px}
+.group h3{font-size:13px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
+.group ul{list-style:none}
+.group li{display:flex;align-items:baseline;gap:10px;padding:9px 14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:6px}
+.group li .idx{color:var(--faint);font-variant-numeric:tabular-nums;font-size:12px}
+.g-go h3{color:var(--go)} .g-do h3{color:var(--do)} .g-skip h3{color:var(--skip)}
+#summary .acts{max-width:420px}
+footer{padding:12px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:12px;display:flex;gap:18px}
+footer a{color:var(--dim);text-decoration:none}
+@media(max-width:640px){.dims{grid-template-columns:repeat(2,1fr)}.card{padding:22px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">flo<em>bot</em> · decision deck</div>
+  <div class="sub">step through the use cases — decide what to double down on</div>
+  <div class="count" id="count"></div>
+</header>
+<div id="bar"><i id="barfill"></i></div>
+<main>
+  <div id="stage">
+    <div id="deck"></div>
+    <div id="summary">
+      <h2>Your calls</h2>
+      <div class="sub">Decisions are saved in this browser. Reopen anytime — or reset and go again.</div>
+      <div class="group g-go"><h3>Double down</h3><ul id="list-go"></ul></div>
+      <div class="group g-do"><h3>Do</h3><ul id="list-do"></ul></div>
+      <div class="group g-skip"><h3>Skip</h3><ul id="list-skip"></ul></div>
+      <div class="acts">
+        <button class="b-back" id="btn-review">&#8592; review again</button>
+        <button class="b-skip" id="btn-reset">reset decisions</button>
+      </div>
+    </div>
+  </div>
+</main>
+<footer>
+  <span>source: docs/use-cases.md</span>
+  <span>keys: <kbd>1</kbd> double down · <kbd>2</kbd> do · <kbd>3</kbd> skip · <kbd>←</kbd> back</span>
+</footer>
+<script>
+const CASES = [
+{
+  n:1, title:"The overnight repo surgeon",
+  pitch:'"Fix the flaky test in <b>internal/store</b>, then run the full suite." flobot works in an <b>isolated worktree</b>, keeps your main checkout clean, runs the suite in verify mode, and leaves a diff + ledger. You wake up to a reviewable patch, not a half-broken working tree.',
+  why:'Durable environment + worktrees + verify/yolo = <b>unattended surgery with a clean landing zone</b>. No cloud VM, no "did it actually run?"',
+  dims:{value:5,moat:5,effort:2,risk:1},
+  tags:["worktrees","verify mode","built today"],
+  note:"Core executor mechanics already shipped — this is polish, not new surface."
+},
+{
+  n:2, title:"Parallel specialists that never talk over each other",
+  pitch:'Spawn <b>reviewer</b>, <b>tester</b>, <b>docs-writer</b> on one PR. Each is a durable named agent with its own memory and role; they run concurrently, and handoff is an explicit, logged event — single owner per stage, no two agents clobbering the same file.',
+  why:'The Grok Bot "bot → bot crew" shape, but <b>local and inspectable</b>. The ledger shows exactly who owned what, when.',
+  dims:{value:5,moat:4,effort:3,risk:2},
+  tags:["handoffs","teammate memory","built today"],
+  note:"Handoff + memory shipped; the crew UX (one view over many agents) is the work."
+},
+{
+  n:3, title:"Teach-by-demo → one-command skills",
+  pitch:'Do a release workflow once. flobot captures the ledger trace, compiles it into an editable <b>skill artifact</b> (steps, inputs, tool calls, assertions), you test-run and publish. Next release is one command.',
+  why:'Your tribal knowledge stops living in a wiki and starts living in a <b>re-runnable, versioned artifact on disk</b>.',
+  dims:{value:5,moat:5,effort:4,risk:3},
+  tags:["ledger→skill compiler","spec gap C3.2"],
+  note:"The ledger→skill compiler is a flagged spec gap — biggest build, biggest differentiator."
+},
+{
+  n:4, title:"Cron = fresh agent every morning",
+  pitch:'"Every 9am, run the standup-summary skill." The scheduler binds skill → named agent → cron; each fire is a fresh agent run with its own ledger; test-run before enabling, pause/resume anytime, retained run history.',
+  why:'Scheduled automation that is <b>inspectable and replayable</b> — not a black-box cron that silently breaks.',
+  dims:{value:4,moat:3,effort:3,risk:2},
+  tags:["scheduler","routines","built today"],
+  note:"Scheduler exists; productization (registry, history UX) is the remaining work."
+},
+{
+  n:5, title:"Event-triggered automation with narrow rules",
+  pitch:'"When <b>CHANGELOG.md</b> changes, run release-notes." Git-hook / file-watch / webhook connectors fire the routine; match rules are narrow and explicit — no "run on anything."',
+  why:'Automation that fires on <b>your</b> events, locally, with no cloud middleware between the trigger and the work.',
+  dims:{value:4,moat:4,effort:4,risk:3},
+  tags:["event connectors","spec gap C4"],
+  note:"Connector registry is a spec gap — needs a careful security story (what may trigger what)."
+},
+{
+  n:6, title:"Teammate memory that actually persists",
+  pitch:'"Remember: we use table-driven tests and never <b>t.Skip</b>." That preference lives in the agent\u2019s durable memory and shapes every later task — per-agent, shared only via environment or explicit handoff.',
+  why:'The agent gets <b>smarter about you</b> over time, on your disk, not in some vendor\u2019s cloud profile.',
+  dims:{value:4,moat:4,effort:1,risk:1},
+  tags:["teammate memory","built today"],
+  note:"Already shipped and cheap to keep sharpening — pure retention value."
+},
+{
+  n:7, title:"The private assistant with zero cloud",
+  pitch:'Run flobot entirely against <b>local models / mesh identity</b>. Memory, skills, routines, ledgers all live on your machine; no external API call; offline degradation is graceful — local agents keep working with no network.',
+  why:'An agent stack with real capability that does not require you to <b>hand your code to a third party</b>. This is the differentiator.',
+  dims:{value:5,moat:5,effort:2,risk:2},
+  tags:["local-first","amesh routing","built today"],
+  note:"Mostly already true of the stack — this is positioning and hardening, not new build."
+},
+{
+  n:8, title:"The consequential-action gate",
+  pitch:'Delegate a task that touches writes-outside-repo, sends, deletions, or account mutations. flobot <b>blocks for explicit Allow/Deny</b>; the decision is logged with agent, action, surface; pending approvals time out to <b>deny</b>.',
+  why:'You can let an agent be powerful <b>because</b> it cannot act consequentially without you — trust by construction, not by hope.',
+  dims:{value:4,moat:5,effort:3,risk:2},
+  tags:["approval gate","built today"],
+  note:"The trust story is the product. Timeout-to-deny is already the safe default."
+},
+{
+  n:9, title:"Mesh-model routing: cheap triage, strong reasoning",
+  pitch:'Route triage to a small local model, hard reasoning to a big one. amesh mesh routing <b>pins models per route/agent</b> via web UI + HTTP API — tune cost vs. quality per agent without changing your workflow.',
+  why:'<b>Frontier-grade reasoning where it matters</b> and cheap local inference everywhere else, in one app.',
+  dims:{value:4,moat:4,effort:2,risk:2},
+  tags:["amesh","route pinning","built today"],
+  note:"Routing shipped; the win is making per-agent pinning first-class in the UI."
+},
+{
+  n:10, title:"The always-on local crew (graceful offline)",
+  pitch:'Leave flobot running on your machine (or an opted-in remote host). Durable agents keep working when you\u2019re away; routines fire on schedule; everything degrades gracefully offline; remote sandbox is an <b>explicit opt-in</b> escape hatch, never a requirement.',
+  why:'"Always-on" without the always-on cloud bill or the data residency compromise.',
+  dims:{value:3,moat:4,effort:4,risk:4},
+  tags:["always-on","remote sandbox","spec gap C1.3"],
+  note:"Heaviest lift, weakest near-term pull — the remote sandbox is the riskiest surface."
+},
+];
+const KEY = "flobot-decide-v1";
+const LABELS = {go:"double down", do:"do", skip:"skip"};
+let decisions = {};
+try { decisions = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch {}
+let i = 0;
+const $ = id => document.getElementById(id);
+function meter(v){ let s=""; for(let k=1;k<=5;k++) s += `<i class="${k<=v?"on":""}"></i>`; return s; }
+function render(){
+  const total = CASES.length;
+  const done = Object.keys(decisions).length;
+  $("count").textContent = `${Math.min(i+1,total)} / ${total}`;
+  $("barfill").style.width = (done/total*100) + "%";
+  if(i >= total){ showSummary(); return; }
+  const c = CASES[i];
+  const d = decisions[c.n];
+  $("deck").innerHTML = `
+  <div class="card">
+    <div class="kicker"><span class="n">${String(c.n).padStart(2,"0")}</span><span>use case</span>
+      ${d?`<span class="tag warn">your call: ${LABELS[d]}</span>`:""}</div>
+    <h2>${c.title}</h2>
+    <div class="pitch">${c.pitch}</div>
+    <div class="why"><b>Why it kills:</b> ${c.why}</div>
+    <div class="dims">
+      <div class="dim"><div class="lbl">Value</div><div class="val">${c.dims.value}/5</div><div class="meter">${meter(c.dims.value)}</div></div>
+      <div class="dim"><div class="lbl">Moat</div><div class="val">${c.dims.moat}/5</div><div class="meter">${meter(c.dims.moat)}</div></div>
+      <div class="dim"><div class="lbl">Effort</div><div class="val">${c.dims.effort}/5</div><div class="meter">${meter(c.dims.effort)}</div></div>
+      <div class="dim"><div class="lbl">Risk</div><div class="val">${c.dims.risk}/5</div><div class="meter">${meter(c.dims.risk)}</div></div>
+    </div>
+    <div class="tags">${c.tags.map(t=>`<span class="tag ${t.includes("spec gap")?"warn":""}">${t}</span>`).join("")}</div>
+    <p class="hint" style="text-align:left;margin:10px 0 0">${c.note}</p>
+    <div class="acts">
+      <button class="b-go" data-d="go">1 · Double down</button>
+      <button class="b-do" data-d="do">2 · Do</button>
+      <button class="b-skip" data-d="skip">3 · Skip</button>
+    </div>
+  </div>
+  <div class="hint"><kbd>1</kbd> double down · <kbd>2</kbd> do · <kbd>3</kbd> skip · <kbd>←</kbd> back${d?" · <kbd>0</kbd> clear":""}</div>`;
+  $("deck").querySelectorAll("button[data-d]").forEach(b =>
+    b.addEventListener("click", () => decide(b.dataset.d)));
+}
+function decide(d){
+  decisions[CASES[i].n] = d;
+  save(); i++; render();
+}
+function save(){ localStorage.setItem(KEY, JSON.stringify(decisions)); }
+function showSummary(){
+  $("deck").style.display = "none";
+  $("summary").style.display = "block";
+  $("count").textContent = `${Object.keys(decisions).length}/${CASES.length} decided`;
+  for(const d of ["go","do","skip"]){
+    const ul = $("list-"+d); ul.innerHTML = "";
+    CASES.filter(c => decisions[c.n] === d).forEach(c => {
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="idx">${String(c.n).padStart(2,"0")}</span><span>${c.title}</span>`;
+      ul.appendChild(li);
+    });
+    if(!ul.children.length) ul.innerHTML = `<li style="color:var(--faint)">— none —</li>`;
+  }
+}
+$("btn-review").addEventListener("click", () => {
+  $("summary").style.display = "none"; $("deck").style.display = "block"; i = 0; render();
+});
+$("btn-reset").addEventListener("click", () => {
+  decisions = {}; save(); i = 0;
+  $("summary").style.display = "none"; $("deck").style.display = "block"; render();
+});
+document.addEventListener("keydown", e => {
+  if($("summary").style.display === "block"){
+    if(e.key === "ArrowLeft"){ $("btn-review").click(); }
+    return;
+  }
+  if(i >= CASES.length) return;
+  if(e.key === "1") decide("go");
+  else if(e.key === "2") decide("do");
+  else if(e.key === "3") decide("skip");
+  else if(e.key === "ArrowLeft" && i > 0){ i--; render(); }
+  else if(e.key === "0" && decisions[CASES[i].n]){ delete decisions[CASES[i].n]; save(); render(); }
+});
+render();
+</script>
+</body>
+</html>

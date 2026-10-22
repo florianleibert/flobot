@@ -1,0 +1,36 @@
+{
+  "name": "flobot-desktop",
+  "version": "0.1.0",
+  "description": "flobot desktop app (Electron shell around the flobot web UI)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.florianleibert.flobot",
+    "productName": "flobot",
+    "files": ["main.js", "preload.js"],
+    "extraResources": [
+      {
+        "from": "../flobot",
+        "to": "flobot",
+        "binary": true
+      }
+    ],
+    "mac": {
+      "target": "default",
+      "extraResources": [
+        {
+          "from": "../flobot",
+          "to": "flobot",
+          "binary": true
+        }
+      ]
+    }
+  }
+}

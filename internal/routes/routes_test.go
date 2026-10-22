@@ -17,7 +17,7 @@ func TestDefaultRoutesDocumentTheCombination(t *testing.T) {
 			t.Fatalf("missing route %s", id)
 		}
 	}
-	if got["glm"].Model != "glm-5.2-fp8" || got["muse"].Model != "muse-spark-1.2" || got["qwen"].Model != "qwen3.8-27b-fp8" {
+	if got["glm"].Model != "glm-5.2-fp8" || got["muse"].Model != "muse-spark-1.3" || got["qwen"].Model != "qwen3.8-27b-fp8" {
 		t.Fatalf("%+v", got)
 	}
 	if got["muse"].Source != "meta-model-api" {
@@ -26,7 +26,7 @@ func TestDefaultRoutesDocumentTheCombination(t *testing.T) {
 }
 
 func TestPinMapAndResolvePin(t *testing.T) {
-	if PinMap["glm"] != "glm-5.2" || PinMap["qwen"] != "qwen-3.8" || PinMap["muse"] != "muse-spark-1.2" {
+	if PinMap["glm"] != "glm-5.2" || PinMap["qwen"] != "qwen-3.8" || PinMap["muse"] != "muse-spark-1.3" {
 		t.Fatalf("PinMap = %#v", PinMap)
 	}
 	if _, ok := PinMap["local"]; ok {
@@ -41,7 +41,7 @@ func TestPinMapAndResolvePin(t *testing.T) {
 		t.Fatalf("qwen pin = %q %v", pin, err)
 	}
 	pin, err = ResolvePin("muse")
-	if err != nil || pin != "muse-spark-1.2" {
+	if err != nil || pin != "muse-spark-1.3" {
 		t.Fatalf("muse pin = %q %v", pin, err)
 	}
 	if _, err := ResolvePin("local"); !errors.Is(err, ErrLocalUnpinned) {

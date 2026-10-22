@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/florianleibert/flobot/internal/executor"
+	"github.com/florianleibert/flobot/internal/schedule"
 	"github.com/florianleibert/flobot/internal/store"
 )
 
@@ -394,25 +396,6 @@ func TestDefaultAddrIsLoopback(t *testing.T) {
 	}
 }
 
-func TestDefaultProbes(t *testing.T) {
-	got := map[string]Probe{}
-	for _, p := range DefaultProbes() {
-		got[p.ID] = p
-	}
-	if got["glm"].URL != "http://10.30.0.127:13038/v1" {
-		t.Fatalf("glm %s", got["glm"].URL)
-	}
-	if got["qwen38"].URL != "http://23.183.40.72:8020/v1" {
-		t.Fatalf("qwen38 %s", got["qwen38"].URL)
-	}
-	if got["qwen36"].URL != "http://10.10.0.14:8000/v1" {
-		t.Fatalf("qwen36 %s", got["qwen36"].URL)
-	}
-	if got["muse"].URL != "https://api.meta.ai/v1" || !got["muse"].Auth {
-		t.Fatalf("muse %+v", got["muse"])
-	}
-}
-
 func modelsServer(t *testing.T, ids []string) *httptest.Server {
 	t.Helper()
 	rows := make([]map[string]string, len(ids))
@@ -485,4 +468,319 @@ func eventKinds(ev map[string]any) string {
 		kinds = append(kinds, k)
 	}
 	return strings.Join(kinds, ",")
+}
+
+// fakeMeshCatalog serves an amesh-web /api/v2/mesh/models payload.
+func fakeMeshCatalog(t *testing.T, models string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"schema":"amesh.mesh_model_catalog.v1","models":[%s]}`, models)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestMeshModelsListsReadyRoutes(t *testing.T) {
+	cat := fakeMeshCatalog(t,
+		`{"id":"glm-5.2-fp8","display":"GLM 5.2","base_url":"https://10.30.0.8:18443/v1","health":"ready","where":"mesh","importable":true},
+		 {"id":"qwen3.8-27b-fp8","health":"down","where":"mesh","importable":false}`)
+	srv := New(store.New(), WithAmeshAddr(cat.Listener.Addr().String()))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	res := getJSON(t, ts, "/api/v1/mesh/models")
+	if res["ok"] != true {
+		t.Fatalf("ok = %v (%v)", res["ok"], res["reason"])
+	}
+	rows, _ := res["models"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("models = %v", rows)
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["route"] != "mesh/glm-5.2-fp8" {
+		t.Fatalf("route = %v", row["route"])
+	}
+}
+
+func TestMeshModelsRendersUnreachableAmesh(t *testing.T) {
+	srv := New(store.New(), WithAmeshAddr("127.0.0.1:1"))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	res := getJSON(t, ts, "/api/v1/mesh/models")
+	if res["ok"] != false {
+		t.Fatalf("ok = %v", res["ok"])
+	}
+	if res["reason"] == nil {
+		t.Fatal("missing reason")
+	}
+}
+
+func TestMeshRouteRunResolvesPinAndConfig(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := fakeMeshCatalog(t,
+		`{"id":"glm-5.2-fp8","base_url":"https://10.30.0.8:18443/v1","health":"ready","where":"mesh","importable":true}`)
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir), WithAmeshAddr(cat.Listener.Addr().String()))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{
+		"name": "Meshy", "role": "coder", "route": "mesh/glm-5.2-fp8",
+	})
+	run := postJSON(t, ts, "/api/v1/runs", map[string]any{
+		"bot_id": bot["id"], "prompt": "hello", "intent": "ask",
+	})
+	runID, _ := run["id"].(string)
+	if runID == "" {
+		t.Fatalf("run = %v", run)
+	}
+	ev := waitEvents(t, ts, runID)
+	kinds := eventKinds(ev)
+	if !strings.Contains(kinds, "done") {
+		t.Fatalf("events = %s", kinds)
+	}
+	if pin, _ := run["pin"].(string); pin != "glm-5.2-fp8" {
+		t.Fatalf("pin = %q", pin)
+	}
+}
+
+func TestMeshRouteRunRejectsUnknownModel(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := fakeMeshCatalog(t,
+		`{"id":"glm-5.2-fp8","base_url":"https://10.30.0.8:18443/v1","health":"ready","where":"mesh","importable":true}`)
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithAmeshAddr(cat.Listener.Addr().String()))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{
+		"name": "Ghost", "role": "coder", "route": "mesh/nope",
+	})
+	res := postJSONStatus(t, ts, "/api/v1/runs", map[string]any{
+		"bot_id": bot["id"], "prompt": "hello",
+	})
+	if res.code != 400 {
+		t.Fatalf("code = %d body = %v", res.code, res.body)
+	}
+}
+
+func getJSON(t *testing.T, ts *httptest.Server, path string) map[string]any {
+	t.Helper()
+	resp, err := http.Get(ts.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		t.Fatalf("%s -> %d %s", path, resp.StatusCode, b)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("%s: %s", path, b)
+	}
+	return out
+}
+
+func postJSONStatus(t *testing.T, ts *httptest.Server, path string, body map[string]any) struct {
+	code int
+	body string
+} {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(ts.URL+path, "application/json", strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return struct {
+		code int
+		body string
+	}{resp.StatusCode, string(b)}
+}
+
+func TestHandoffRunSpawnsRecipientRun(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	a := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "Chief", "role": "chief-of-staff", "route": "glm"})
+	b := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "Coder", "role": "coder", "route": "qwen"})
+	out := postJSON(t, ts, "/api/v1/handoff", map[string]any{
+		"from": a["id"], "to": b["id"], "body": "fix the failing test", "run": true,
+	})
+	run, _ := out["run"].(map[string]any)
+	if run == nil {
+		t.Fatalf("no run in handoff response: %v", out)
+	}
+	runID, _ := run["id"].(string)
+	if runID == "" {
+		t.Fatalf("run id missing: %v", run)
+	}
+	if run["bot_id"] != b["id"] {
+		t.Fatalf("run bot_id = %v, want recipient", run["bot_id"])
+	}
+	if run["intent"] != "code" {
+		t.Fatalf("coder recipient should get intent code, got %v", run["intent"])
+	}
+	ev := waitEvents(t, ts, runID)
+	if !strings.Contains(eventKinds(ev), "done") {
+		t.Fatalf("events = %s", eventKinds(ev))
+	}
+}
+
+func TestHandoffWithoutRunIsMessageOnly(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	a := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "A", "role": "r", "route": "glm"})
+	b := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "B", "role": "r", "route": "glm"})
+	out := postJSON(t, ts, "/api/v1/handoff", map[string]any{
+		"from": a["id"], "to": b["id"], "body": "note only",
+	})
+	if out["run"] != nil {
+		t.Fatalf("unexpected run: %v", out["run"])
+	}
+	runs := getJSON(t, ts, "/api/v1/runs")
+	if list, _ := runs["runs"].([]any); len(list) != 0 {
+		t.Fatalf("handoff without run spawned runs: %v", list)
+	}
+}
+
+// TestSchedulerFiresEnabledRoutine proves the server wiring end-to-end:
+// fireables must carry Trigger/LastFire so Due() can match, and a due
+// routine must spawn a run. Regression for the wiring bug where Fireable
+// was built without Trigger, so the scheduler never fired anything.
+func TestSchedulerFiresEnabledRoutine(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "S", "role": "r", "route": "glm"})
+	sk := postJSON(t, ts, "/api/v1/skills", map[string]any{"name": "s", "body": "how-to"})
+	rt := postJSON(t, ts, "/api/v1/routines", map[string]any{
+		"bot_id": bot["id"], "skill_id": sk["id"], "trigger": "every 1m",
+	})
+	// Test-run then enable: the store requires a test-run before enable.
+	tr := postJSON(t, ts, "/api/v1/routines/"+rt["id"].(string)+"/test-run", map[string]any{})
+	if tr["run_id"] == nil || tr["run_id"] == "" {
+		t.Fatalf("test-run produced no run: %v", tr)
+	}
+	waitEvents(t, ts, tr["run_id"].(string))
+	postJSON(t, ts, "/api/v1/routines/"+rt["id"].(string)+"/enable", map[string]any{})
+
+	// The fireables list must include the enabled routine with its trigger.
+	// (The store may also load routines persisted by earlier runs.)
+	var mine []schedule.Fireable
+	for _, f := range srv.fireables() {
+		if f.RoutineID == rt["id"] {
+			mine = append(mine, f)
+		}
+	}
+	if len(mine) != 1 {
+		t.Fatalf("fireables = %v", srv.fireables())
+	}
+	if mine[0].Trigger != "every 1m" {
+		t.Fatalf("fireable trigger = %q", mine[0].Trigger)
+	}
+	fs := mine
+
+	// Due() must fire after the interval elapses. Base the fake clock ahead
+	// of the real wall clock so the test-run's LastFire is always in the past.
+	sch := schedule.New()
+	base := time.Now().Add(time.Hour)
+	sch.Now = func() time.Time { return base }
+	if fired := sch.Due(fs); len(fired) != 0 {
+		t.Fatalf("fired on first observation: %v", fired)
+	}
+	sch.Now = func() time.Time { return base.Add(2 * time.Minute) }
+	fired := sch.Due(fs)
+	if len(fired) != 1 || fired[0].RoutineID != rt["id"] {
+		t.Fatalf("fired = %v", fired)
+	}
+
+	// fireRoutine must spawn a run for the routine's bot.
+	if err := srv.fireRoutine(fired[0]); err != nil {
+		t.Fatalf("fireRoutine: %v", err)
+	}
+	runs := getJSON(t, ts, "/api/v1/runs")
+	list, _ := runs["runs"].([]any)
+	if len(list) < 2 {
+		t.Fatalf("routine fire spawned no run: %v", list)
+	}
+}
+
+// TestRememberAndRunWithMemory proves the remember endpoint stores a note
+// and the note is prepended to the next run's prompt (teammate memory).
+func TestRememberAndRunWithMemory(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Capture argv so the prompt the child received can be inspected.
+	argvPath := filepath.Join(dir, "argv.txt")
+	ex := &executor.Exec{
+		Bin:     bin,
+		Environ: func() []string { return []string{"FLOCODE_FAKE_ARGV=" + argvPath} },
+	}
+	srv := New(store.New(), WithExec(ex), WithWorkDir(dir))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "M", "role": "r", "route": "glm"})
+	if bot["memory"] != nil && bot["memory"] != "" {
+		t.Fatalf("fresh bot has memory: %v", bot["memory"])
+	}
+	got := postJSON(t, ts, "/api/v1/bots/"+bot["id"].(string)+"/remember", map[string]any{
+		"note": "always write tests first",
+	})
+	if got["memory"] != "always write tests first" {
+		t.Fatalf("memory = %v", got["memory"])
+	}
+	// Empty note is rejected.
+	if st := postJSONStatus(t, ts, "/api/v1/bots/"+bot["id"].(string)+"/remember", map[string]any{"note": " "}); st.code != 400 {
+		t.Fatalf("empty note status = %d", st.code)
+	}
+
+	run := postJSON(t, ts, "/api/v1/runs", map[string]any{
+		"bot_id": bot["id"], "prompt": "do the thing", "intent": "ask",
+	})
+	waitEvents(t, ts, run["id"].(string))
+
+	b, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := string(b)
+	if !strings.Contains(argv, "always write tests first") {
+		t.Fatalf("memory not prepended to child prompt: %s", argv)
+	}
+	if !strings.Contains(argv, "do the thing") {
+		t.Fatalf("prompt missing: %s", argv)
+	}
 }

@@ -22,7 +22,9 @@ const (
 	AskTimeout     = 60 * time.Second
 	stderrCap      = 32 << 10
 	textCap        = 8 << 10
-	fallbackBin    = "/Users/floleibert/dev/flocode2/flocode"
+	// fallbackBin is resolved at startup: $FLOCODE_BIN wins, else
+	// $HOME/dev/flocode2/flocode if it exists. Never a hardcoded user path.
+	fallbackBin = "dev/flocode2/flocode"
 	// museKeyRel is the key file location, relative to the user home dir.
 	museKeyRel = MuseKeyRel
 )
@@ -38,19 +40,23 @@ type Event struct {
 
 // Request is one flocode child.
 type Request struct {
-	Prompt        string
+	Prompt string
 	// SkillBody, when set, is prepended to Prompt as a how-to the child
 	// must follow. It is prompt text, never a secret.
-	SkillBody     string
-	Pin           string
-	Intent        string
-	Yolo          bool
-	Verify        bool
-	Worktree      string
-	ContinueUntil bool
-	Route         string
-	Timeout       time.Duration
-	Dir           string
+	SkillBody string
+	Pin       string
+	Intent    string
+	Yolo      bool
+	Verify    bool
+	Worktree  string
+	// ConfigOverride, when set, is written to a temp file and passed to the
+	// child as FLOCODE_CONFIG. Used for mesh routes: a generated config that
+	// pins the mesh model. It must never contain secrets.
+	ConfigOverride string
+	ContinueUntil  bool
+	Route          string
+	Timeout        time.Duration
+	Dir            string
 }
 
 // Result is the captured stream. Stderr is a diagnostic ring and is never
@@ -76,8 +82,12 @@ func FindBinary() (string, error) {
 	if p, err := exec.LookPath("flocode"); err == nil {
 		return p, nil
 	}
-	if st, err := os.Stat(fallbackBin); err == nil && !st.IsDir() {
-		return fallbackBin, nil
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		p := filepath.Join(home, fallbackBin)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p, nil
+		}
 	}
 	return "", fmt.Errorf("flocode binary not found (set FLOCODE_BIN)")
 }
@@ -135,7 +145,13 @@ func (e *Exec) timeout(req Request) time.Duration {
 }
 
 // Run starts flocode, streams parsed events, and kills the process group on cancel.
+// A non-nil reqEnv overrides the computed child environment (used by Verify
+// to inject MODEL_API_KEY exactly once).
 func (e *Exec) Run(ctx context.Context, req Request, emit func(Event)) Result {
+	return e.run(ctx, req, nil, emit)
+}
+
+func (e *Exec) run(ctx context.Context, req Request, reqEnv []string, emit func(Event)) Result {
 	if emit == nil {
 		emit = func(Event) {}
 	}
@@ -161,6 +177,19 @@ func (e *Exec) Run(ctx context.Context, req Request, emit func(Event)) Result {
 		cmd.Dir = req.Dir
 	}
 	cmd.Env = e.childEnv(req.Route, req.Verify)
+	if reqEnv != nil {
+		cmd.Env = reqEnv
+	}
+	if cfg := strings.TrimSpace(req.ConfigOverride); cfg != "" {
+		path, err := writeConfigOverride(cfg)
+		if err != nil {
+			ev := Event{Kind: "err", Text: err.Error()}
+			emit(ev)
+			return Result{Events: []Event{ev}, Err: err}
+		}
+		defer os.Remove(path)
+		cmd.Env = envSet(cmd.Env, "FLOCODE_CONFIG", path)
+	}
 	setPgid(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -186,20 +215,33 @@ func (e *Exec) Run(ctx context.Context, req Request, emit func(Event)) Result {
 	}()
 
 	var events []Event
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 64<<10), 256<<10)
-	for sc.Scan() {
-		ev, ok := parseLine(sc.Bytes())
-		if !ok {
-			continue
+	rd := bufio.NewReaderSize(stdout, 64<<10)
+	for {
+		line, err := readLine(rd, 256<<10)
+		if len(line) > 0 {
+			if ev, ok := parseLine(line); ok {
+				events = append(events, ev)
+				emit(ev)
+			}
 		}
-		events = append(events, ev)
-		emit(ev)
+		if err != nil {
+			if err != io.EOF {
+				scanErr := err
+				_ = cmd.Wait()
+				close(done)
+				stderr := scrubKey(ring.String(), envVal(cmd.Env, ModelAPIKeyEnv))
+				ev := Event{Kind: "err", Text: scanErr.Error()}
+				events = append(events, ev)
+				emit(ev)
+				return Result{Events: events, Stderr: stderr, Err: scanErr}
+			}
+			break
+		}
 	}
-	scanErr := sc.Err()
+	scanErr := error(nil)
 	waitErr := cmd.Wait()
 	close(done)
-	stderr := ring.String()
+	stderr := scrubKey(ring.String(), envVal(cmd.Env, ModelAPIKeyEnv))
 
 	// ccpm run log: one line per finished child. Never includes secrets.
 	logCCPMRun(req.Dir, req.Pin, req.Intent, waitErr)
@@ -228,6 +270,39 @@ func (e *Exec) Run(ctx context.Context, req Request, emit func(Event)) Result {
 		return Result{Events: events, Stderr: stderr, Err: scanErr}
 	}
 	return Result{Events: events, Stderr: stderr}
+}
+
+// readLine reads one newline-terminated line, truncating any line longer
+// than max bytes instead of failing (a single oversized NDJSON event must
+// not kill the whole run). Returns io.EOF at end of input.
+func readLine(rd *bufio.Reader, max int) ([]byte, error) {
+	var buf []byte
+	for {
+		chunk, err := rd.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		if err == bufio.ErrBufferFull {
+			if len(buf) > max {
+				buf = buf[:max]
+				// Skip the rest of the oversized line, up to the newline.
+				for {
+					chunk, err := rd.ReadSlice('\n')
+					if err != bufio.ErrBufferFull {
+						break
+					}
+					_ = chunk
+				}
+				return buf, nil
+			}
+			continue
+		}
+		if err != nil {
+			if len(buf) > 0 && err == io.EOF {
+				return buf, io.EOF
+			}
+			return buf, err
+		}
+		return buf, nil
+	}
 }
 
 func parseLine(line []byte) (Event, bool) {
@@ -286,7 +361,6 @@ func (e *Exec) home() string {
 	return h
 }
 
-
 func envHas(env []string, key string) bool {
 	p := key + "="
 	for _, e := range env {
@@ -316,6 +390,31 @@ func envSet(env []string, key, val string) []string {
 		}
 	}
 	return append(env, p+val)
+}
+
+// writeConfigOverride writes a generated flocode config to a private temp
+// file and returns its path. The file is removed when the child exits.
+// The config must never contain secrets; mesh endpoints are private-network
+// URLs that need no key.
+func writeConfigOverride(cfg string) (string, error) {
+	f, err := os.CreateTemp("", "flobot-mesh-*.toml")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(cfg); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := os.Chmod(f.Name(), 0o600); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 type ringBuf struct {

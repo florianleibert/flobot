@@ -83,7 +83,7 @@ func TestRunLogsCCPMRunLine(t *testing.T) {
 	}
 	ws := t.TempDir()
 	ex := &Exec{
-		Bin: bin,
+		Bin:     bin,
 		Environ: func() []string { return []string{} },
 	}
 	res := ex.Run(context.Background(), Request{

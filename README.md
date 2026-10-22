@@ -2,7 +2,7 @@
 
 Local-first named teammates that **exec the flocode2 binary** (`flocode -p --output streaming-json`). Standalone dogfood UI on loopback **127.0.0.1:4120**. This module is `github.com/florianleibert/flobot`. It never imports `github.com/florianleibert/flocode` or `github.com/florianleibert/amesh`.
 
-**Phase 2 (this repo):** execution + roster + web. In-memory only; lost on restart. Muse key is read from `~/.accounts/meta.ai` into the child env as `MODEL_API_KEY` and never appears in JSON, NDJSON, or HTML.
+**Phase 2 (this repo):** execution + roster + web. State persists to `~/.flobot/state.json` (0600, atomic rename); runs and messages are capped (newest 200 runs / 500 messages kept). Muse key is read from `~/.accounts/meta.ai` into the child env as `MODEL_API_KEY` and never appears in JSON, NDJSON, or HTML.
 
 ## Run
 
@@ -14,7 +14,7 @@ go build -o flobot ./cmd/flobot
 ./flobot run --route glm --prompt "hello" --intent ask
 ```
 
-Bind addresses that are not loopback are rejected. Binary lookup: `FLOCODE_BIN`, else `PATH` `flocode`, else `/Users/floleibert/dev/flocode2/flocode`.
+Bind addresses that are not loopback are rejected. Binary lookup: `FLOCODE_BIN`, else `PATH` `flocode`, else `$HOME/dev/flocode2/flocode`.
 
 ### Argv contract
 
@@ -35,7 +35,8 @@ Test-run is `--intent ask`, yolo off, verify off, 60s timeout. Default CODE time
 | GET | `/health` |
 | GET | `/api/v1/roster` |
 | POST | `/api/v1/bots` `{name,role,route}` |
-| POST | `/api/v1/handoff` `{from,to,body}` |
+| POST | `/api/v1/bots/{id}/remember` `{note}` |
+| POST | `/api/v1/handoff` `{from,to,body,run}` |
 | POST | `/api/v1/skills` `{name,body}` |
 | POST | `/api/v1/routines` `{bot_id,skill_id,trigger}` |
 | POST | `/api/v1/routines/{id}/test-run` |
@@ -45,10 +46,39 @@ Test-run is `--intent ask`, yolo off, verify off, 60s timeout. Default CODE time
 | GET | `/api/v1/runs/{id}` |
 | GET | `/api/v1/runs/{id}/events` |
 | GET | `/api/v1/health/models` |
+| GET | `/api/v1/mesh/models` |
+| GET | `/api/stream` (SSE; `?run=` replays a run) |
+| POST | `/api/v1/runs/{id}/stop` |
 
-`GET /api/v1/health/models` probes `/v1/models` for glm, qwen38, qwen36, and muse (8s each). If `:8020` is not qwen3.8, the probe sets `qwen_mismatch`. Keys are never returned.
+`GET /api/v1/health/models` resolves `glm`/`qwen` endpoints from the live amesh catalog and probes their `/v1/models` (8s budget); `muse` probes `https://api.meta.ai/v1`; `local` reports `unpinned` (no pinned binary). Keys are never returned.
 
-Packages: `internal/routes`, `internal/store`, `internal/executor`, `internal/server`, `cmd/flobot`, `web/`.
+### Amesh mesh models
+
+flobot connects to the local amesh-web (default `127.0.0.1:18765`, override with `AMESH_WEB_ADDR`) and reads `GET /api/v2/mesh/models`. Every **ready** mesh model becomes a selectable flobot route `mesh/<model-id>`:
+
+```bash
+./flobot run --route mesh/glm-5.2-fp8 --prompt "hello" --intent ask
+curl -s http://127.0.0.1:4120/api/v1/mesh/models   # list ready mesh routes
+```
+
+- `POST /api/v1/bots` accepts `route: "mesh/<id>"` — per-bot model choice from the mesh (Hermes-style "your models, your hardware").
+- A run on a mesh route generates a flocode config pinning that model (base_url = the mesh node endpoint) and passes it to the child via `FLOCODE_CONFIG`. The user's `~/.flocode/config.toml` is never touched; the generated file carries no secrets and is deleted when the child exits.
+- Mesh routes use flocode's `generic-openai` profile (OpenAI-compatible mesh endpoints).
+- An amesh-web that is down or a hub that is unreachable is a rendered state (`ok:false` + reason), never a crash.
+
+### Handoff runs (Grok Bot crews)
+
+`POST /api/v1/handoff` with `run: true` writes the bus message **and** spawns a BOT_RUN for the recipient bot with the handoff body as its prompt — the recipient acts on the work item, not just receives it. Coder-role recipients get intent `code`; everyone else `ask`. The response includes the spawned `run`.
+
+### Teammate memory (Grok Bot G1)
+
+`POST /api/v1/bots/{id}/remember` `{note}` stores a short role note on a bot. The note is prepended to every subsequent run's prompt for that bot, so a teammate remembers its instructions across runs. Memory is prompt text, never a secret, and is capped at 8 KiB.
+
+### Routine scheduling (cron = fresh agent)
+
+Enabled routines with an `every <duration>` trigger (e.g. `every 5m`, `every 2h`) fire on a 30s scheduler tick. Each fire is a **fresh** flocode child with the skill body prepended — no state carries between fires. Enabling a routine never fires it immediately; the first fire comes one interval after enable. Fires publish a `routine_fire` event on `/api/stream`.
+
+Packages: `internal/routes`, `internal/store`, `internal/executor`, `internal/server`, `internal/amesh`, `internal/schedule`, `cmd/flobot`, `web/`.
 
 ---
 
@@ -156,7 +186,7 @@ The `FlobotStore` is the in-memory authority for the v2 plugin. It manages four 
 - `OwnerBot` encodes **single ownership per stage**: at most one bot owns a work item at a time
 - Handoff changes ownership; Message sets owner to recipient (or sender if broadcast)
 - Broadcast (`To: "@all"`) is not allowed for handoff (no single owner for a broadcast)
-- All messages in-memory; lost on restart
+- Messages persist to `~/.flobot/state.json` (newest 500 kept)
 
 **Methods:**
 - `Message(owner, from, to, group, body)` → FlobotMessage, error

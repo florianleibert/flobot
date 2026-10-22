@@ -56,10 +56,14 @@ func NewState() *State {
 }
 
 // Path returns the state file path: $HOME/.flobot/state.json, or the
-// override set via SetPath.
+// override set via SetPath. Under go test (FLOBOT_TEST_STATE set), an
+// unset path resolves to a temp dir so tests never touch the real home.
 func (s *State) Path() string {
 	if s.path != "" {
 		return s.path
+	}
+	if p := os.Getenv("FLOBOT_TEST_STATE"); p != "" {
+		return filepath.Join(p, "state.json")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

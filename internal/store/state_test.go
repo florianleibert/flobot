@@ -11,7 +11,9 @@ import (
 )
 
 // TestStatePathDefault checks the default location is ~/.flobot/state.json.
+// FLOBOT_TEST_STATE (set by TestMain) must be cleared for this test.
 func TestStatePathDefault(t *testing.T) {
+	t.Setenv("FLOBOT_TEST_STATE", "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	st := NewState()
@@ -79,7 +81,7 @@ func TestStateInitializesPinnedDefaults(t *testing.T) {
 	want := map[string]string{
 		"glm":  "glm-5.2",
 		"qwen": "qwen-3.8",
-		"muse": "muse-spark-1.2",
+		"muse": "muse-spark-1.3",
 	}
 	for name, pin := range want {
 		b, ok := byName[name]

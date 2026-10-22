@@ -24,6 +24,16 @@ const MuseKeyRel = ".accounts/meta.ai"
 // is empty. Its message names the file but never any of its contents.
 var ErrModelAPIKeyMissing = errors.New("model API key not found: create ~/.accounts/meta.ai (plain text, one line)")
 
+// scrubKey removes the MODEL_API_KEY value from any text (child stderr can
+// echo the environment on a crash). Returns the text unchanged when the key
+// is empty or absent.
+func scrubKey(s, key string) string {
+	if key == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, key, "[redacted]")
+}
+
 // ReadModelAPIKey reads the plain-text key from <home>/.accounts/meta.ai.
 // On a missing or empty file it returns ErrModelAPIKeyMissing (wrapped
 // with the file path) without leaking any file contents.

@@ -1,5 +1,6 @@
-// flobot web UI. Connects to /api/stream (NDJSON) and renders every
-// event kind: content, thinking (collapsed), tool_start/tool_end (paired),
+// flobot web UI — mission control for local agents.
+// Connects to /api/stream (NDJSON) and renders every event kind:
+// content, thinking (collapsed), tool_start/tool_end (paired),
 // perm (mock ack), plan, err, done, verify (badge).
 //
 // Security: the UI never displays secrets or API keys. Every string that
@@ -8,10 +9,11 @@
 // material, and esc() HTML-escapes the result.
 
 const $ = id => document.getElementById(id);
-const errEl = $("err");
 let roster = {bots:[], skills:[], routines:[], messages:[], routes:[], runs:[]};
 let activeRun = null;
 let pollTimer = null;
+let elapsedTimer = null;
+let runStart = null;
 
 // ---- stream state -------------------------------------------------------
 
@@ -47,7 +49,25 @@ function esc(s) {
 // safe renders a value for the DOM: sanitize first, then HTML-escape.
 function safe(s) { return esc(sanitize(s)); }
 
-function showErr(e) { errEl.textContent = e || ""; }
+// ---- toasts (interaction feedback) --------------------------------------
+
+function toast(msg, cls) {
+  const host = $("toasts");
+  // Cap concurrent toasts so a burst of events can't stack a column of
+  // them over the UI; oldest fade out immediately.
+  while (host.children.length >= 4) host.firstChild.remove();
+  const t = document.createElement("div");
+  t.className = "toast" + (cls ? " " + cls : "");
+  t.textContent = msg;
+  host.appendChild(t);
+  setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .3s"; }, 3200);
+  setTimeout(() => t.remove(), 3600);
+}
+
+function showErr(e) {
+  if (!e) return;
+  toast(e, "err");
+}
 
 // ---- API ----------------------------------------------------------------
 
@@ -66,44 +86,263 @@ async function api(method, path, body) {
 
 function fillSelect(el, items, label) {
   const cur = el.value;
-  el.innerHTML = items.map(b => `<option value="${esc(b.id)}">${esc(label(b))}</option>`).join("");
+  const html = items.map(b => `<option value="${esc(b.id)}">${esc(label(b))}</option>`).join("");
+  if (el.innerHTML !== html) el.innerHTML = html;
   if ([...el.options].some(o => o.value === cur)) el.value = cur;
+}
+
+// fillRouteSelect renders the documented routes from the live roster plus
+// any ready mesh models as options for the bot route. Fully reflective: no
+// hardcoded ids — whatever the server reports is what you can pin.
+function fillRouteSelect(el, mesh, direct) {
+  const cur = el.value;
+  const opts = (roster.routes || []).map(r =>
+    `<option value="${esc(r.id)}">${esc(r.id)}</option>`).join("");
+  const meshOpts = (mesh || []).map(m =>
+    `<option value="${esc(m.route)}">${esc(m.route)}${m.display ? " · " + esc(m.display) : ""}</option>`).join("");
+  const directOpts = (direct || []).map(m =>
+    `<option value="${esc(m.route)}">${esc(m.route)}${m.display ? " · " + esc(m.display) : ""}</option>`).join("");
+  const html = opts + meshOpts + directOpts;
+  if (el.innerHTML !== html) el.innerHTML = html;
+  if ([...el.options].some(o => o.value === cur)) el.value = cur;
+}
+
+// ---- navigation -----------------------------------------------------------
+
+const nav = $("nav");
+nav.querySelectorAll("button[data-panel]").forEach(btn => {
+  btn.onclick = () => {
+    nav.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+    const p = $("panel-" + btn.dataset.panel);
+    if (p) p.classList.add("active");
+    const title = $("panelTitle");
+    if (title && p) {
+      title.textContent = p.dataset.title || p.querySelector("h2")?.textContent || "";
+      // restart the pop animation so each switch feels deliberate
+      title.classList.remove("pop");
+      void title.offsetWidth;
+      title.classList.add("pop");
+    }
+  };
+});
+
+function gotoPanel(name) {
+  const btn = nav.querySelector(`button[data-panel="${name}"]`);
+  if (btn) btn.click();
 }
 
 // ---- rendering ----------------------------------------------------------
 
+let meshModels = [];
+let directModels = [];
+
+// animateNum tweens a stat number to its target with an ease-out cubic,
+// so live updates feel like instruments rather than teletypes.
+function animateNum(el, target) {
+  if (!el) return;
+  const from = parseInt(el.dataset.v || "0", 10) || 0;
+  if (from === target) { el.textContent = target; el.dataset.v = String(target); return; }
+  const t0 = performance.now();
+  const dur = 500;
+  const step = now => {
+    const p = Math.min((now - t0) / dur, 1);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(from + (target - from) * eased);
+    if (p < 1) requestAnimationFrame(step);
+    else { el.textContent = target; el.dataset.v = String(target); }
+  };
+  requestAnimationFrame(step);
+}
+
+// avatarColor picks a stable hue from a string.
+function avatarColor(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 55% 62%)`;
+}
+
+function avatar(name) {
+  const init = (name || "?").trim().slice(0, 2).toUpperCase();
+  return `<span class="avatar" style="background:${avatarColor(name)}">${esc(init)}</span>`;
+}
+
+function empty(icon, text) {
+  return `<li class="empty"><span class="ico">${icon}</span>${esc(text)}</li>`;
+}
+
+// skeleton renders content-shaped loading placeholders (never a spinner),
+// matching the shape of the list that is about to arrive.
+function skeleton(n) {
+  return Array.from({length: n}, () =>
+    `<li class="skel"><span class="skel-av"></span><div class="skel-body"><span class="skel-line w60"></span><span class="skel-line w90"></span></div></li>`
+  ).join("");
+}
+
+// setHTML writes innerHTML only when the content actually changed. Full
+// innerHTML rewrites on every refresh were the main source of list flicker:
+// the browser tears down and relayouts identical DOM. Skipping no-op
+// writes makes periodic refreshes invisible.
+function setHTML(el, html) {
+  if (!el || el.innerHTML === html) return;
+  el.innerHTML = html;
+}
+
 function render() {
-  $("bots").innerHTML = roster.bots.map(b =>
-    `<li><strong>${esc(b.name)}</strong> <span class="tag">${esc(b.id)} · ${esc(b.role)} · ${esc(b.route)}</span></li>`
-  ).join("") || `<li class="tag">none</li>`;
+  // nav counts + stats
+  $("navBots").textContent = roster.bots.length;
+  $("navRuns").textContent = (roster.runs||[]).length;
+  $("navRtn").textContent = roster.routines.length;
+  $("navSkills").textContent = roster.skills.length;
+
+  // stats tween so live changes read as motion
+  animateNum($("statBots"), roster.bots.length);
+  animateNum($("statRoutines"), roster.routines.length);
+  animateNum($("statRuns"), (roster.runs||[]).length);
+  animateNum($("statMesh"), meshModels.length);
+
+  // roster
+  setHTML($("bots"), roster.bots.map(b =>
+    `<li>${avatar(b.name)}
+      <div class="body">
+        <div class="title">${esc(b.name)} <span class="chip acc">${esc(b.role)}</span></div>
+        <div class="clip">${esc(b.route)}${b.memory ? " · remembers: " + safe(b.memory) : ""}</div>
+      </div>
+      <div class="actions"><span class="tag">${esc(b.id)}</span>
+        <button class="ghost danger" data-delbot="${esc(b.id)}" title="Delete bot">✕</button></div></li>`
+  ).join("") || empty("◍", "No teammates yet — add one above."));
+  $("bots").querySelectorAll("[data-delbot]").forEach(btn => btn.onclick = () => {
+    if (confirm("Delete this bot? Its routines go too; runs are kept.")) delBot(btn.dataset.delbot);
+  });
+
   fillSelect($("runBot"), roster.bots, b => `${b.name} (${b.route})`);
+  fillSelect($("qBot"), roster.bots, b => `${b.name} (${b.route})`);
+  fillSelect($("qMemBot"), roster.bots, b => b.name);
   fillSelect($("rtnBot"), roster.bots, b => b.name);
   fillSelect($("fromBot"), roster.bots, b => b.name);
   fillSelect($("toBot"), roster.bots, b => b.name);
   fillSelect($("rtnSkill"), roster.skills, s => s.name);
+  fillSelect($("memBot"), roster.bots, b => b.name);
+  fillRouteSelect($("botRoute"), meshModels, directModels);
   $("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
-  $("msgs").innerHTML = (roster.messages||[]).map(m =>
-    `<li>${esc(m.from)} → ${esc(m.to)} <span class="tag">owner ${esc(m.owner_bot)}</span><br>${safe(m.body)}</li>`
-  ).join("");
-  $("skills").innerHTML = roster.skills.map(s =>
-    `<li><strong>${esc(s.name)}</strong> <span class="tag">${esc(s.id)}</span></li>`
-  ).join("") || `<li class="tag">none</li>`;
-  $("routines").innerHTML = roster.routines.map(rt =>
-    `<li>${esc(rt.id)} · ${esc(rt.trigger)} · paused=${rt.paused}
-      <span class="tag">${esc(rt.last_note||"no test-run")}</span>
-      <button data-test="${esc(rt.id)}">test-run</button>
-      <button data-en="${esc(rt.id)}">enable</button></li>`
-  ).join("") || `<li class="tag">none</li>`;
+  setHTML($("msgs"), (roster.messages||[]).map(m =>
+    `<li>${avatar(m.from)}
+      <div class="body">
+        <div class="title">${esc(m.from)} → ${esc(m.to)} <span class="tag">owner ${esc(m.owner_bot)}</span></div>
+        <div class="clip">${safe(m.body)}</div>
+      </div></li>`
+  ).join("") || empty("⇄", "No handoffs yet."));
+
+  setHTML($("skills"), roster.skills.map(s =>
+    `<li><span class="avatar" style="background:var(--acc-soft);color:var(--acc)">✦</span>
+      <div class="body"><div class="title">${esc(s.name)}</div><div class="clip">${esc(s.id)}</div></div>
+      <div class="actions"><button class="ghost danger" data-delskill="${esc(s.id)}" title="Delete skill">✕</button></div></li>`
+  ).join("") || empty("✦", "No skills yet — write one above."));
+  $("skills").querySelectorAll("[data-delskill]").forEach(btn => btn.onclick = () => {
+    if (confirm("Delete this skill? Routines using it go too.")) delSkill(btn.dataset.delskill);
+  });
+
+  setHTML($("routines"), roster.routines.map(rt => {
+    const state = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
+    return `<li><span class="avatar" style="background:var(--acc-soft);color:var(--acc)">↻</span>
+      <div class="body">
+        <div class="title">${esc(rt.trigger)} ${state}</div>
+        <div class="clip">${esc(rt.id)} · ${esc(rt.last_note||"no test-run")}</div>
+      </div>
+      <div class="actions">
+        <button class="ghost" data-test="${esc(rt.id)}">test-run</button>
+        <button class="ghost" data-pause="${esc(rt.id)}">${rt.paused ? "resume" : "pause"}</button>
+        <button class="ghost danger" data-delrtn="${esc(rt.id)}" title="Delete routine">✕</button>
+      </div></li>`;
+  }).join("") || empty("↻", "No routines yet — schedule one above."));
   $("routines").querySelectorAll("[data-test]").forEach(btn => btn.onclick = () => testRun(btn.dataset.test));
-  $("routines").querySelectorAll("[data-en]").forEach(btn => btn.onclick = () => enableRtn(btn.dataset.en));
+  $("routines").querySelectorAll("[data-pause]").forEach(btn => btn.onclick = () => pauseRtn(btn.dataset.pause, !btn.textContent.includes("resume")));
+  $("routines").querySelectorAll("[data-delrtn]").forEach(btn => btn.onclick = () => {
+    if (confirm("Delete this routine?")) delRtn(btn.dataset.delrtn);
+  });
+
   const tb = $("routes").querySelector("tbody");
-  tb.innerHTML = (roster.routes||[]).map(r =>
+  setHTML(tb, (roster.routes||[]).map(r =>
     `<tr><td>${esc(r.id)}</td><td>${esc(r.role)}</td><td>${esc(r.model)}</td><td class="tag">${esc(r.purpose)}</td></tr>`
-  ).join("");
+  ).join(""));
+
+  // Run history: newest first, capped at 20 rows. Clicking a run replays
+  // its events into the log (Grok Bot-style run visibility).
+  const botName = {};
+  for (const b of roster.bots) botName[b.id] = b.name;
+  setHTML($("runHistory"), (roster.runs||[]).slice(0, 20).map(r => {
+    const chip = r.status === "done" ? "ok" : (r.status === "running" ? "acc" : "err");
+    const dur = runDuration(r);
+    return `<li class="runrow" data-runrow="${esc(r.id)}">
+      <div class="body">
+        <div class="title"><span class="runid">${esc(r.id.slice(0,8))}</span> <span class="chip ${chip}">${esc(r.status)}</span>${dur ? ` <span class="tag">${esc(dur)}</span>` : ""}</div>
+        <div class="clip">${esc(botName[r.bot_id] || r.bot_id || "—")} · ${esc(r.intent)} · ${esc(relTime(r.created_at))} · ${esc((r.prompt||"").slice(0,80))}${r.error ? " · " + esc(r.error) : ""}</div>
+      </div></li>`;
+  }).join("")
+    || `<li class="empty"><span class="ico">▶</span>No runs yet — start one with <b>r</b> or the Run panel.</li>`);
+  $("runHistory").querySelectorAll("[data-runrow]").forEach(li =>
+    li.onclick = () => { openDrawer(li.dataset.runrow).catch(e => showErr(e.message)); });
+}
+
+// showSkeletons fills the primary lists with loading placeholders until the
+// first roster arrives, so first paint never flashes a blank box.
+function showSkeletons() {
+  $("bots").innerHTML = skeleton(3);
+  $("runHistory").innerHTML = skeleton(2);
+  $("msgs").innerHTML = skeleton(2);
 }
 
 async function refresh() {
   roster = await api("GET", "/api/v1/roster");
+  render();
+}
+
+// loadMesh fetches the ready amesh mesh models and renders them as
+// selectable routes. An amesh-web that is down is a rendered state.
+async function loadMesh() {
+  try {
+    const res = await api("GET", "/api/v1/mesh/models");
+    meshModels = res.ok ? (res.models || []) : [];
+    $("meshCount").textContent = res.ok
+      ? `${meshModels.length} ready`
+      : `unavailable (${res.reason || "amesh-web unreachable"})`;
+  } catch (e) {
+    meshModels = [];
+    $("meshCount").textContent = `unavailable (${e.message})`;
+  }
+  $("meshModels").innerHTML = meshModels.map(m =>
+    `<li><span class="avatar" style="background:var(--ok-soft);color:var(--ok)">◈</span>
+      <div class="body">
+        <div class="title">${esc(m.route)}</div>
+        <div class="clip">${esc(m.display || m.model)}${m.context_tokens ? " · " + m.context_tokens + " ctx" : ""}</div>
+      </div></li>`
+  ).join("") || empty("◈", "No mesh models ready.");
+  render();
+}
+
+// loadDirect fetches the models available on the Meta model API (fetched
+// server-side; the key never reaches the browser) and renders them as
+// direct/<model> routes. This is the fallback when amesh is down and the
+// way to force a direct route.
+async function loadDirect() {
+  try {
+    const res = await api("GET", "/api/v1/direct/models");
+    directModels = res.ok ? (res.models || []) : [];
+    $("directCount").textContent = res.ok
+      ? `${directModels.length} available`
+      : `unavailable (${res.reason || "no key"})`;
+  } catch (e) {
+    directModels = [];
+    $("directCount").textContent = `unavailable (${e.message})`;
+  }
+  $("directModels").innerHTML = directModels.map(m =>
+    `<li><span class="avatar" style="background:var(--ok-soft);color:var(--ok)">◆</span>
+      <div class="body">
+        <div class="title">${esc(m.route)}</div>
+        <div class="clip">${esc(m.display || m.model)}</div>
+      </div></li>`
+  ).join("") || empty("◆", "No direct models available.");
   render();
 }
 
@@ -113,48 +352,101 @@ async function refresh() {
 // pair them and mark the tool as running until it finishes.
 const openTools = new Map();
 
+// event filter state — one active kind per console; "all" shows everything.
+let evFilter = "all";
+let drawerFilter = "all";
+
+// kindOf maps an event to its filter bucket. tool_start/tool_end collapse
+// into "tool" so the chip reads naturally.
+function kindOf(e) {
+  const k = e.kind || "";
+  if (k === "tool_start" || k === "tool_end") return "tool";
+  return k;
+}
+
+// matchesFilter decides whether an event passes the active filter.
+function matchesFilter(e, filter) {
+  if (!filter || filter === "all") return true;
+  return kindOf(e) === filter;
+}
+
+// applyFilter re-renders the live log under the current filter. It replays
+// the buffered events so filtering feels instant, not append-only.
+let logEvents = [];   // buffered events for the live console (filter replay)
+function applyFilter() {
+  const log = logEl();
+  log.innerHTML = "";
+  openTools.clear();
+  for (const e of logEvents) {
+    if (matchesFilter(e, evFilter)) appendEvent(e);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+function wireFilters(container, setter) {
+  container.querySelectorAll(".chipf").forEach(chip => {
+    chip.onclick = () => {
+      container.querySelectorAll(".chipf").forEach(c => c.classList.remove("active"));
+      chip.classList.add("active");
+      setter(chip.dataset.kind);
+    };
+  });
+}
+wireFilters($("evFilters"), k => { evFilter = k; applyFilter(); });
+wireFilters($("drawerFilters"), k => { drawerFilter = k; renderDrawerLog(); });
+
 function logEl() { return $("log"); }
+
+// nearBottom reports whether the log is scrolled to (or near) the bottom,
+// i.e. the user is following the stream. Autoscroll only then — never yank
+// the view while someone is scrolled up reading history.
+function nearBottom(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+}
 
 function appendEvent(e) {
   const log = logEl();
+  const stick = nearBottom(log);
+  log.appendChild(buildEventNode(e));
+  // A run is terminal on "done" or on a run_status of done/error; both must
+  // refresh the roster so RECENT RUNS never goes stale after an error run.
+  if (e.kind === "done" || (e.kind === "run_status" && /^(done|error)$/.test(e.text || ""))) {
+    onRunEnd();
+  }
+  if (stick) log.scrollTop = log.scrollHeight;
+}
+
+// buildEventNode renders one event through the rich renderers (paired tools,
+// collapsed thinking, perm ack, verify badge). The live console and the
+// run-detail drawer share this path so both transcripts look identical.
+function buildEventNode(e, tools) {
   const kind = e.kind || "";
-  let node;
   switch (kind) {
     case "content":
-      node = evDiv("content", "content", e.text);
-      break;
+      return evDiv("content", "content", e.text);
     case "thinking":
-      node = thinkingEl(e.text);
-      break;
+      return thinkingEl(e.text);
     case "tool_start":
-      node = toolEl(e, false);
-      break;
+      return toolEl(e, false, tools);
     case "tool_end":
-      node = toolEl(e, true);
-      break;
+      return toolEl(e, true, tools);
     case "perm":
-      node = permEl(e);
-      break;
+      return permEl(e);
     case "plan":
-      node = evDiv("plan", "plan", e.text);
-      break;
+      return evDiv("plan", "plan", e.text);
     case "err":
-      node = evDiv("err", "err", e.text);
-      break;
+      return evDiv("err", "err", e.text);
     case "done":
-      node = evDiv("done", "done", e.text);
-      break;
+      return evDiv("done", "done", e.text);
     case "verify":
-      node = verifyEl(e);
-      break;
+      return verifyEl(e);
     case "run_status":
-      node = evDiv("run_status", "run_status", e.text);
-      break;
+      return evDiv("run_status", "run_status", e.text);
+    case "routine_fire":
+      return evDiv("routine_fire", "routine_fire", "routine " + e.text + " fired");
     default:
-      node = evDiv("unknown", kind, e.text);
+      return evDiv("unknown", kind, e.text);
   }
-  log.appendChild(node);
-  log.scrollTop = log.scrollHeight;
 }
 
 function evDiv(cls, label, text) {
@@ -185,7 +477,10 @@ function thinkingEl(text) {
 
 // toolEl renders tool_start/tool_end. A tool_start opens a row that stays
 // "running" until its matching tool_end (same tool name, FIFO) arrives.
-function toolEl(e, isEnd) {
+// tools is an optional pairing map; it defaults to the live-console map so
+// the drawer can keep its own state without disturbing streaming runs.
+function toolEl(e, isEnd, tools) {
+  tools = tools || openTools;
   const tool = e.tool || "tool";
   const d = document.createElement("div");
   d.className = "ev tool " + (isEnd ? "tool_end" : "tool_start");
@@ -199,16 +494,16 @@ function toolEl(e, isEnd) {
     st.className = "tool-status";
     st.textContent = " running";
     d.appendChild(st);
-    openTools.set(tool, d);
+    tools.set(tool, d);
   } else {
     // Pair with the most recent open start for this tool.
-    const open = openTools.get(tool);
+    const open = tools.get(tool);
     if (open) {
       const st = open.querySelector(".tool-status");
       if (st) st.textContent = e.is_error ? " failed" : " done";
       open.classList.add("closed");
       if (e.is_error) open.classList.add("err");
-      openTools.delete(tool);
+      tools.delete(tool);
     }
     if (e.is_error) d.classList.add("err");
     if (e.text) d.appendChild(document.createTextNode(" " + sanitize(e.text)));
@@ -252,9 +547,43 @@ function verifyEl(e) {
   return d;
 }
 
+// onRunEnd fires when a terminal event (done) is seen: stop the
+// onRunEnd stops the elapsed timer and refreshes the roster so run history
+// updates. It also hides the stop button — the run is over.
+function onRunEnd() {
+  stopElapsed();
+  const sb = $("stopBtn");
+  if (sb) {
+    sb.hidden = true;
+    // Reset in case a missed terminal event left it disabled at "stopping…".
+    sb.disabled = false;
+    sb.textContent = "Stop";
+  }
+  refresh().catch(() => {});
+}
+
 function clearLog() {
   logEl().innerHTML = "";
   openTools.clear();
+  logEvents = [];
+}
+
+// ---- elapsed timer -------------------------------------------------------
+
+function startElapsed() {
+  runStart = Date.now();
+  stopElapsed();
+  const tick = () => {
+    if (!runStart) return;
+    const s = Math.floor((Date.now() - runStart) / 1000);
+    const el = $("elapsed");
+    if (el) el.textContent = s < 60 ? s + "s" : Math.floor(s/60) + "m " + (s%60) + "s";
+  };
+  tick();
+  elapsedTimer = setInterval(tick, 1000);
+}
+function stopElapsed() {
+  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
 }
 
 // ---- /api/stream client -------------------------------------------------
@@ -266,7 +595,8 @@ function handleEvent(line) {
   let ev;
   try { ev = JSON.parse(line); } catch { return; }
   if (!ev || typeof ev !== "object") return;
-  appendEvent(ev);
+  logEvents.push(ev);
+  if (matchesFilter(ev, evFilter)) appendEvent(ev);
 }
 
 // feedStreamLine appends a chunk to the buffer and emits complete lines.
@@ -281,12 +611,15 @@ function feedStreamLine(chunk) {
 }
 
 // connectStream opens the NDJSON stream. It reconnects with backoff and,
-// when a run is active, replays that run's events via ?run= on reconnect.
+// when a run is active, resumes from the last event it rendered (?since=)
+// so a reconnect appends only the gap instead of replaying duplicates.
 function connectStream() {
   if (streamES) { try { streamES.close(); } catch {} streamES = null; }
-  const url = streamRunId
-    ? "/api/stream?run=" + encodeURIComponent(streamRunId)
-    : "/api/stream";
+  let url = "/api/stream";
+  if (streamRunId) {
+    url += "?run=" + encodeURIComponent(streamRunId);
+    if (logEvents.length) url += "&since=" + logEvents.length;
+  }
   const es = new EventSource(url);
   streamES = es;
   es.onopen = () => { streamOpen = true; streamRetries = 0; setStreamState("live"); };
@@ -304,15 +637,39 @@ function connectStream() {
 
 function setStreamState(state) {
   const el = $("streamState");
+  const pill = $("streamPill");
   if (el) el.textContent = state;
+  if (pill) {
+    pill.classList.remove("live", "reconnecting");
+    if (state === "live" || state === "reconnecting") pill.classList.add(state);
+  }
+}
+
+// stopRun cancels the active run's executor context server-side. The
+// stream then delivers the run_status error event and onRunEnd cleans up.
+async function stopRun() {
+  const id = streamRunId || activeRun;
+  if (!id) return;
+  const btn = $("stopBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "stopping…"; }
+  try {
+    await api("POST", "/api/v1/runs/" + id + "/stop");
+    toast("run stopped", "ok");
+  } catch (e) {
+    showErr(e.message);
+    if (btn) { btn.disabled = false; btn.textContent = "\u25a0 stop"; }
+  }
 }
 
 // startStream begins streaming for a run (or the global feed if id is null).
 function startStream(runId) {
   streamRunId = runId || null;
+  const sb = $("stopBtn");
+  if (sb) { sb.hidden = !runId; sb.disabled = false; sb.textContent = "\u25a0 stop"; }
   if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
   streamBuf = "";
   connectStream();
+  if (runId) startElapsed(); else { runStart = null; stopElapsed(); }
 }
 
 // stopStream tears down the stream client.
@@ -321,6 +678,8 @@ function stopStream() {
   if (streamES) { try { streamES.close(); } catch {} streamES = null; }
   streamOpen = false;
   streamRunId = null;
+  const sb = $("stopBtn");
+  if (sb) sb.hidden = true;
   setStreamState("idle");
 }
 
@@ -331,8 +690,17 @@ function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = nul
 async function pollOnce() {
   if (!activeRun) return;
   const ev = await api("GET", "/api/v1/runs/"+activeRun+"/events");
-  clearLog();
-  for (const e of ev.events||[]) appendEvent(e);
+  // Append only the events we have not rendered yet instead of rebuilding
+  // the whole log every 500ms — the rebuild was the log's flicker source.
+  const all = ev.events || [];
+  if (all.length < logEvents.length) {
+    // Fewer events than rendered (run restarted / replay reset): full redraw.
+    clearLog();
+  }
+  for (const e of all.slice(logEvents.length)) {
+    logEvents.push(e);
+    if (matchesFilter(e, evFilter)) appendEvent(e);
+  }
   if (ev.status && ev.status !== "running") {
     stopPoll();
     activeRun = null;
@@ -347,38 +715,259 @@ function startPoll(id) {
   pollTimer = setInterval(() => pollOnce().catch(e => showErr(e.message)), 500);
 }
 
+// ---- run detail drawer ---------------------------------------------------
+
+let drawerRunId = null;
+
+// detHash is a small deterministic integer hash so sparkline bars keep a
+// stable organic shape across re-renders instead of reshuffling randomly.
+function detHash(i) {
+  let x = ((i * 2654435761) >>> 0) ^ ((i << 13) >>> 0);
+  x ^= x >>> 13;
+  x = (x * 1274126177) >>> 0;
+  return x % 18;
+}
+
+// sparkline renders one bar per event bucket, height derived deterministically
+// from position + kind so filtering or reopening never changes the shape.
+function sparkline(events) {
+  const el = $("drawerSpark");
+  if (!events || !events.length) { el.innerHTML = ""; return; }
+  const kinds = events.map(kindOf);
+  const buckets = [];
+  const n = Math.min(events.length, 90);
+  const step = Math.max(1, Math.floor(events.length / n));
+  for (let i = 0; i < events.length; i += step) {
+    buckets.push(kinds.slice(i, i + step));
+  }
+  el.innerHTML = buckets.map((bucket, bi) => {
+    const k = bucket[0];
+    const cls = k === "tool" ? "k-tool" : k === "err" ? "k-err" : k === "done" ? "k-done"
+      : k === "verify" ? "k-verify" : k === "thinking" ? "k-thinking" : "";
+    const h = 22 + detHash(bi * 7 + k.length); // stable per position+kind
+    return `<i class="${cls}" style="height:${h}px"></i>`;
+  }).join("");
+}
+
+function renderDrawerLog() {
+  const log = $("drawerLog");
+  log.innerHTML = "";
+  // Local pairing map: the drawer renders its own transcript through the same
+  // rich renderers as the live console without touching its open-tools state.
+  const localTools = new Map();
+  const evs = (drawerEvents || []);
+  for (const e of evs) {
+    if (!matchesFilter(e, drawerFilter)) continue;
+    log.appendChild(buildEventNode(e, localTools));
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+let drawerEvents = [];
+
+async function openDrawer(runId) {
+  drawerRunId = runId;
+  const run = await api("GET", "/api/v1/runs/" + runId);
+  const evs = (await api("GET", "/api/v1/runs/" + runId + "/events")).events || [];
+  drawerEvents = evs;
+  const botName = {};
+  for (const b of roster.bots) botName[b.id] = b.name;
+  $("drawerBot").textContent = botName[run.bot_id] || run.bot_id || "—";
+  $("drawerTitle").textContent = run.id.slice(0, 8) + " · " + (run.status || "");
+  const meta = [
+    ["status", run.status],
+    ["intent", run.intent],
+    ["bot", botName[run.bot_id] || run.bot_id || "—"],
+    ["route", run.route || run.pin || "—"],
+    ["yolo", run.yolo ? "on" : "off"],
+    ["verify", run.verify ? "on" : "off"],
+    ["events", String(evs.length)],
+    ["created", (run.created_at || "").replace("T", " ").slice(0, 19)]
+  ];
+  $("drawerMeta").innerHTML = meta.map(([k, v]) =>
+    `<div class="meta"><div class="mk">${esc(k)}</div><div class="mv">${esc(v)}</div></div>`).join("");
+  $("drawerPrompt").textContent = run.prompt || "";
+  sparkline(evs);
+  renderDrawerLog();
+  $("drawer").classList.add("open");
+  $("drawer").setAttribute("aria-hidden", "false");
+}
+
+function closeDrawer() {
+  $("drawer").classList.remove("open");
+  $("drawer").setAttribute("aria-hidden", "true");
+}
+
+$("drawerClose").onclick = closeDrawer;
+$("drawerScrim").onclick = closeDrawer;
+$("drawerStream").onclick = () => {
+  closeDrawer();
+  clearLog(); stopPoll(); activeRun = null;
+  gotoPanel("run");
+  startStream(drawerRunId);
+};
+$("drawerCopy").onclick = async () => {
+  const text = drawerEvents.map(e => {
+    const t = e.text ? " " + sanitize(e.text) : "";
+    return `[${e.kind}]${t}`;
+  }).join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("transcript copied", "ok");
+  } catch { toast("copy failed", "err"); }
+};
+
+// ---- command palette -----------------------------------------------------
+
+const paletteItems = () => [
+  {ico:"◎", txt:"Overview", kbd:"1", go:() => gotoPanel("overview")},
+  {ico:"◍", txt:"Teammates", kbd:"2", go:() => gotoPanel("bots")},
+  {ico:"▶", txt:"New run", kbd:"r", go:() => gotoPanel("run")},
+  {ico:"↻", txt:"Routines", kbd:"4", go:() => gotoPanel("routines")},
+  {ico:"✦", txt:"Skills", kbd:"5", go:() => gotoPanel("skills")},
+  {ico:"⇄", txt:"Routes", kbd:"6", go:() => gotoPanel("routes")},
+  {ico:"♥", txt:"Model health", kbd:"7", go:() => gotoPanel("health")},
+  {ico:"⟳", txt:"Probe routes", kbd:"", go:() => { gotoPanel("health"); probeRoutes(); }},
+  {ico:"⌘", txt:"Refresh mesh models", kbd:"", go:() => { loadMesh().then(refresh); }},
+  {ico:"◆", txt:"Refresh direct models", kbd:"", go:() => { loadDirect().then(refresh); }},
+  {ico:"◍", txt:"New teammate", kbd:"", go:() => { gotoPanel("bots"); $("botName").focus(); }},
+  {ico:"✦", txt:"New skill", kbd:"", go:() => { gotoPanel("skills"); $("skillName").focus(); }},
+];
+
+let paletteSel = 0;
+function openPalette() {
+  paletteSel = 0;
+  $("paletteInput").value = "";
+  renderPalette("");
+  $("palette").classList.add("open");
+  $("palette").setAttribute("aria-hidden", "false");
+  $("paletteInput").focus();
+}
+function closePalette() {
+  $("palette").classList.remove("open");
+  $("palette").setAttribute("aria-hidden", "true");
+}
+function renderPalette(q) {
+  const list = $("paletteList");
+  const items = paletteItems().filter(it =>
+    !q || it.txt.toLowerCase().includes(q.toLowerCase()));
+  list.innerHTML = items.map((it, i) =>
+    `<div class="palette-item${i === paletteSel ? " sel" : ""}" data-i="${i}">
+      <span class="ico">${it.ico}</span><span class="txt">${it.txt}</span><span class="kbd">${it.kbd}</span>
+    </div>`).join("");
+  list.querySelectorAll(".palette-item").forEach(el => el.onclick = () => {
+    const it = items[+el.dataset.i];
+    closePalette();
+    it.go();
+  });
+}
+$("paletteInput").oninput = e => { paletteSel = 0; renderPalette(e.target.value); };
+$("paletteInput").onkeydown = e => {
+  const items = paletteItems().filter(it =>
+    !e.target.value || it.txt.toLowerCase().includes(e.target.value.toLowerCase()));
+  if (e.key === "ArrowDown") { e.preventDefault(); paletteSel = (paletteSel + 1) % Math.max(items.length,1); renderPalette(e.target.value); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); paletteSel = (paletteSel - 1 + Math.max(items.length,1)) % Math.max(items.length,1); renderPalette(e.target.value); }
+  else if (e.key === "Enter") { e.preventDefault(); const it = items[paletteSel]; if (it) { closePalette(); it.go(); } }
+};
+$("paletteScrim").onclick = closePalette;
+
+// ---- keyboard shortcuts --------------------------------------------------
+
+document.addEventListener("keydown", e => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    $("palette").classList.contains("open") ? closePalette() : openPalette();
+    return;
+  }
+  if (e.key === "Escape") {
+    if ($("palette").classList.contains("open")) closePalette();
+    else if ($("drawer").classList.contains("open")) closeDrawer();
+    return;
+  }
+  if (typing) return;
+  if (e.key === "r" || e.key === "R") { gotoPanel("run"); return; }
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= 7) {
+    const names = ["overview","bots","run","routines","skills","routes","health"];
+    gotoPanel(names[n-1]);
+  }
+});
+
+// ---- auto model-health ---------------------------------------------------
+
+async function probeRoutes() {
+  try {
+    const h = await api("GET", "/api/v1/health/models");
+    const probes = h.probes || [];
+    const okN = probes.filter(p => p.ok).length;
+    const el = $("routeHealth");
+    if (!el) return;
+    if (!probes.length) { el.innerHTML = `<span class="led warn"></span>routes — no probes`; return; }
+    const allOk = okN === probes.length;
+    el.innerHTML = `<span class="led ${allOk ? "ok" : "err"}"></span>routes ${okN}/${probes.length} up`;
+    // also fill the health table if it exists
+    const tb = $("health")?.querySelector("tbody");
+    if (tb) tb.innerHTML = probes.map(p => {
+      const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
+      return `<tr><td>${esc(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc((p.ids||[]).join(", "))}</td><td class="tag">${esc(p.error||"")}${mm}</td></tr>`;
+    }).join("");
+  } catch (e) {
+    const el = $("routeHealth");
+    if (el) el.innerHTML = `<span class="led err"></span>routes — ${esc(e.message || "probe failed")}`;
+  }
+}
+
 // ---- actions ------------------------------------------------------------
 
-$("createBot").onclick = async () => {
-  showErr("");
+// withBusy disables a button while its async action is in flight, so a
+// slow request can't be double-submitted and the UI shows progress.
+function withBusy(btn, fn) {
+  return async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try { await fn(); }
+    finally { btn.disabled = false; }
+  };
+}
+$("createBot").onclick = withBusy($("createBot"), async () => {
   try {
     await api("POST", "/api/v1/bots", {name:$("botName").value, role:$("botRole").value, route:$("botRoute").value});
+    toast("teammate added", "ok");
     await refresh();
   } catch (e) { showErr(e.message); }
-};
-$("createSkill").onclick = async () => {
-  showErr("");
+});
+$("memBtn").onclick = withBusy($("memBtn"), async () => {
+  try {
+    await api("POST", "/api/v1/bots/"+$("memBot").value+"/remember", {note:$("memNote").value});
+    $("memNote").value = "";
+    toast("remembered", "ok");
+    await refresh();
+  } catch (e) { showErr(e.message); }
+});
+$("createSkill").onclick = withBusy($("createSkill"), async () => {
   try {
     await api("POST", "/api/v1/skills", {name:$("skillName").value, body:$("skillBody").value});
+    toast("skill added", "ok");
     await refresh();
   } catch (e) { showErr(e.message); }
-};
-$("createRtn").onclick = async () => {
-  showErr("");
+});
+$("createRtn").onclick = withBusy($("createRtn"), async () => {
   try {
     await api("POST", "/api/v1/routines", {bot_id:$("rtnBot").value, skill_id:$("rtnSkill").value, trigger:$("rtnTrigger").value});
+    toast("routine scheduled", "ok");
     await refresh();
   } catch (e) { showErr(e.message); }
-};
-$("sendHandoff").onclick = async () => {
-  showErr("");
+});
+$("sendHandoff").onclick = withBusy($("sendHandoff"), async () => {
   try {
-    await api("POST", "/api/v1/handoff", {from:$("fromBot").value, to:$("toBot").value, body:$("handoffBody").value});
+    const out = await api("POST", "/api/v1/handoff", {from:$("fromBot").value, to:$("toBot").value, body:$("handoffBody").value, run:$("handoffRun").checked});
+    toast("handoff sent", "ok");
     await refresh();
+    if (out.run && out.run.id) { clearLog(); stopPoll(); activeRun = null; gotoPanel("run"); startStream(out.run.id); }
   } catch (e) { showErr(e.message); }
-};
-$("runBtn").onclick = async () => {
-  showErr("");
+});
+$("runBtn").onclick = withBusy($("runBtn"), async () => {
   try {
     const run = await api("POST", "/api/v1/runs", {
       bot_id: $("runBot").value,
@@ -391,35 +980,147 @@ $("runBtn").onclick = async () => {
     clearLog();
     stopPoll();
     activeRun = null;
+    gotoPanel("run");
     startStream(run.id);
   } catch (e) { showErr(e.message); }
+});
+// \u2318\u21a9 sends the run prompt without leaving the keyboard.
+$("prompt").onkeydown = e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    $("runBtn").click();
+  }
 };
+// Overview quick run: one prompt + one click. Defaults mirror the Run
+// panel (intent=code, no yolo/verify) so the easiest use case is trivial.
+$("qRun").onclick = withBusy($("qRun"), async () => {
+  const prompt = $("qPrompt").value.trim();
+  if (!prompt) { $("qPrompt").focus(); return; }
+  try {
+    const run = await api("POST", "/api/v1/runs", {
+      bot_id: $("qBot").value,
+      prompt,
+      intent: "code"
+    });
+    $("qPrompt").value = "";
+    clearLog();
+    stopPoll();
+    activeRun = null;
+    gotoPanel("run");
+    startStream(run.id);
+  } catch (e) { showErr(e.message); }
+});
+$("qPrompt").onkeydown = e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    $("qRun").click();
+  }
+};
+// Overview quick remember: teach a teammate without leaving home.
+$("qMemBtn").onclick = withBusy($("qMemBtn"), async () => {
+  const note = $("qMemNote").value.trim();
+  if (!note) { $("qMemNote").focus(); return; }
+  try {
+    await api("POST", "/api/v1/bots/"+$("qMemBot").value+"/remember", {note});
+    $("qMemNote").value = "";
+    toast("remembered", "ok");
+    await refresh();
+  } catch (e) { showErr(e.message); }
+});
+$("qMemNote").onkeydown = e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    $("qMemBtn").click();
+  }
+};
+$("stopBtn").onclick = () => { stopRun().catch(e => showErr(e.message)); };
 async function testRun(id) {
-  showErr("");
   try {
     const rt = await api("POST", "/api/v1/routines/"+id+"/test-run");
     await refresh();
-    if (rt.run_id) { clearLog(); stopPoll(); activeRun = null; startStream(rt.run_id); }
+    if (rt.run_id) { clearLog(); stopPoll(); activeRun = null; gotoPanel("run"); startStream(rt.run_id); }
   } catch (e) { showErr(e.message); }
 }
 async function enableRtn(id) {
-  showErr("");
-  try { await api("POST", "/api/v1/routines/"+id+"/enable"); await refresh(); }
-  catch (e) { showErr(e.message); }
+  try {
+    await api("POST", "/api/v1/routines/"+id+"/enable");
+    toast("routine enabled", "ok");
+    await refresh();
+  } catch (e) { showErr(e.message); }
+}
+async function pauseRtn(id, paused) {
+  try {
+    await api("POST", "/api/v1/routines/"+id+"/pause", { paused });
+    toast(paused ? "routine paused" : "routine resumed", "ok");
+    await refresh();
+  } catch (e) { showErr(e.message); }
+}
+async function delRtn(id) {
+  try {
+    await api("DELETE", "/api/v1/routines/"+id);
+    toast("routine deleted", "ok");
+    await refresh();
+  } catch (e) { showErr(e.message); }
+}
+async function delBot(id) {
+  try {
+    await api("DELETE", "/api/v1/bots/"+id);
+    toast("bot deleted", "ok");
+    await refresh();
+  } catch (e) { showErr(e.message); }
+}
+async function delSkill(id) {
+  try {
+    await api("DELETE", "/api/v1/skills/"+id);
+    toast("skill deleted", "ok");
+    await refresh();
+  } catch (e) { showErr(e.message); }
+}
+// relTime renders a short relative timestamp ("2m ago"); blank on parse
+// failure so the row degrades gracefully instead of showing "Invalid Date".
+function relTime(iso) {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return Math.floor(s) + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+// runDuration renders a run's wall time ("12s", "4m03s"); empty while
+// running or when timestamps are missing/unparseable.
+function runDuration(r) {
+  if (!r || !r.created_at) return "";
+  const start = Date.parse(r.created_at);
+  if (isNaN(start)) return "";
+  const end = r.ended_at ? Date.parse(r.ended_at) : Date.now();
+  if (isNaN(end)) return "";
+  const s = Math.max(0, Math.floor((end - start) / 1000));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  return m + "m" + String(s % 60).padStart(2, "0") + "s";
 }
 $("probeBtn").onclick = async () => {
-  showErr("");
   try {
     const h = await api("GET", "/api/v1/health/models");
     const tb = $("health").querySelector("tbody");
     tb.innerHTML = (h.probes||[]).map(p => {
       const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
-      return `<tr><td>${esc(p.id)}</td><td>${p.ok?"ok":"fail"}</td><td>${esc((p.ids||[]).join(", "))}</td><td class="tag">${esc(p.error||"")}${mm}</td></tr>`;
+      return `<tr><td>${esc(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc((p.ids||[]).join(", "))}</td><td class="tag">${esc(p.error||"")}${mm}</td></tr>`;
     }).join("");
   } catch (e) { showErr(e.message); }
 };
 
 // ---- init ---------------------------------------------------------------
 
+showSkeletons();
 refresh().catch(e => showErr(e.message));
+loadMesh().catch(e => showErr(e.message));
+loadDirect().catch(e => showErr(e.message));
+probeRoutes();
 startStream(null);
+const meshRefreshBtn = $("meshRefresh");
+if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch(e => showErr(e.message));
+const directRefreshBtn = $("directRefresh");
+if (directRefreshBtn) directRefreshBtn.onclick = () => loadDirect().catch(e => showErr(e.message));

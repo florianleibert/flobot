@@ -3,84 +3,296 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>flobot</title>
+<title>flobot — agent control</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header>
-  <h1>flobot <span class="sub">standalone · actor local · no pairing</span></h1>
-  <span class="sub">127.0.0.1:4120 · exec flocode2 · <span id="streamState">idle</span></span>
-</header>
-<p id="err"></p>
-<main>
-<section>
-  <h2>Bots</h2>
-  <div class="row">
-    <input id="botName" placeholder="name" value="Coder">
-    <input id="botRole" placeholder="role" value="coder">
-    <select id="botRoute">
-      <option value="glm">glm</option>
-      <option value="qwen">qwen</option>
-      <option value="muse">muse</option>
-      <option value="local">local</option>
-    </select>
-    <button type="button" id="createBot">Add</button>
-  </div>
-  <ul class="list" id="bots"></ul>
 
-  <div id="handoff">
-    <h2>Handoff</h2>
-    <div class="row">
-      <select id="fromBot"></select>
-      <select id="toBot"></select>
-      <input id="handoffBody" placeholder="work item">
-      <button type="button" id="sendHandoff">Send</button>
+<!-- ambient aurora behind every glass surface -->
+<div class="aurora" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
+<div class="noise" aria-hidden="true"></div>
+
+<div class="app">
+
+  <!-- ============ sidebar ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 36 36" fill="none">
+          <defs>
+            <linearGradient id="markg" x1="6" y1="4" x2="30" y2="32" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#7c9bff"/><stop offset=".55" stop-color="#a78bfa"/><stop offset="1" stop-color="#3ee0f2"/>
+            </linearGradient>
+          </defs>
+          <rect x="2" y="2" width="32" height="32" rx="10" fill="url(#markg)" fill-opacity=".18"/>
+          <rect x="2" y="2" width="32" height="32" rx="10" stroke="#ffffff" stroke-opacity=".28"/>
+          <path d="M11 24V12l14 12V12" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span class="brand-txt"><strong>flobot</strong><span class="sub">agent control</span></span>
     </div>
-    <ul class="list" id="msgs"></ul>
-  </div>
 
-  <h2>Skills</h2>
-  <div class="row">
-    <input id="skillName" placeholder="name">
-  </div>
-  <textarea id="skillBody" placeholder="reviewable how-to (markdown)"></textarea>
-  <div class="row"><button type="button" id="createSkill">Add skill</button></div>
-  <ul class="list" id="skills"></ul>
+    <nav class="nav" id="nav">
+      <div class="label">Workspace</div>
+      <button data-panel="overview" class="active"><span class="ico">◎</span><span class="txt">Overview</span></button>
+      <button data-panel="bots"><span class="ico">◍</span><span class="txt">Teammates</span><span class="count" id="navBots">0</span></button>
+      <button data-panel="run"><span class="ico">▶</span><span class="txt">Run</span><span class="count" id="navRuns">0</span></button>
+      <button data-panel="routines"><span class="ico">↻</span><span class="txt">Routines</span><span class="count" id="navRtn">0</span></button>
+      <button data-panel="skills"><span class="ico">✦</span><span class="txt">Skills</span><span class="count" id="navSkills">0</span></button>
+      <div class="label">System</div>
+      <button data-panel="routes"><span class="ico">⇄</span><span class="txt">Routes</span></button>
+      <button data-panel="health"><span class="ico">♥</span><span class="txt">Model health</span></button>
+    </nav>
 
-  <h2>Routines</h2>
-  <div class="row">
-    <select id="rtnBot"></select>
-    <select id="rtnSkill"></select>
-    <input id="rtnTrigger" placeholder="trigger" value="manual">
-    <button type="button" id="createRtn">Add</button>
+    <div class="side-foot">
+      <div class="foot-line"><span class="led"></span><span>local</span></div>
+      <div class="foot-line dim" id="routeHealth">routes —</div>
+      <div class="foot-line dim">127.0.0.1:4120 · exec flocode2</div>
+    </div>
+  </aside>
+
+  <!-- ============ stage ============ -->
+  <div class="stage">
+
+    <header class="topbar">
+      <div class="crumb"><h1 id="panelTitle">Overview</h1></div>
+      <div class="meta">
+        <span class="hide-sm tagline">standalone · actor local</span>
+        <span class="pill" id="streamPill"><span class="led"></span><span id="streamState">idle</span></span>
+      </div>
+    </header>
+
+    <main class="panels">
+
+      <!-- Overview -->
+      <section class="panel active" id="panel-overview" data-title="Overview">
+        <div class="panel-head"><h2>Overview</h2><span class="desc">everything your team is doing, at a glance</span></div>
+        <div class="card">
+          <h3>Quick run</h3>
+          <div class="row">
+            <select id="qBot"></select>
+            <button class="primary" type="button" id="qRun"><svg viewBox="0 0 12 12" width=10 height=10 fill="currentColor"><path d="M2 1l9 5-9 5z"/></svg>Run</button>
+          </div>
+          <textarea id="qPrompt" placeholder="# what should this teammate do? (⌘⏎ to run)"></textarea>
+        </div>
+        <div class="card">
+          <h3>Remember</h3>
+          <div class="row">
+            <select id="qMemBot"></select>
+            <input id="qMemNote" placeholder="memory note for this teammate (⌘⏎)">
+            <button type="button" id="qMemBtn">Remember</button>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat acc"><span class="num" id="statBots">0</span><span class="lbl">Teammates</span></div>
+          <div class="stat"><span class="num" id="statRoutines">0</span><span class="lbl">Routines</span></div>
+          <div class="stat"><span class="num" id="statRuns">0</span><span class="lbl">Runs</span></div>
+          <div class="stat ok"><span class="num" id="statMesh">0</span><span class="lbl">Mesh models</span></div>
+        </div>
+        <div class="console">
+          <div>
+            <div class="card">
+              <h3>Recent runs</h3>
+              <ul class="list" id="runHistory"></ul>
+            </div>
+            <div class="card">
+              <h3>Handoffs</h3>
+              <ul class="list" id="msgs"></ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Teammates -->
+      <section class="panel" id="panel-bots" data-title="Teammates">
+        <div class="panel-head"><h2>Teammates</h2><span class="desc">named specialists with their own model route and memory</span></div>
+        <div class="card">
+          <h3>New teammate</h3>
+          <div class="row">
+            <input id="botName" placeholder="name" value="Coder">
+            <input id="botRole" placeholder="role" value="coder">
+            <select id="botRoute">
+              <option value="glm">glm</option>
+              <option value="qwen">qwen</option>
+              <option value="muse">muse</option>
+              <option value="local">local</option>
+            </select>
+            <button type="button" id="createBot">Add</button>
+          </div>
+          <p class="tag" id="meshNote">Mesh models: <span id="meshCount">…</span> <button type="button" class="ghost" id="meshRefresh">refresh</button></p>
+          <ul class="list" id="meshModels"></ul>
+        </div>
+        <div class="card">
+          <h3>Direct models</h3>
+          <p class="tag">Meta model API, key stays on this Mac. Use when amesh is down or to force a direct route.</p>
+          <p class="tag">Direct models: <span id="directCount">…</span> <button type="button" class="ghost" id="directRefresh">refresh</button></p>
+          <ul class="list" id="directModels"></ul>
+        </div>
+        <div class="card">
+          <h3>Roster</h3>
+          <ul class="list" id="bots"></ul>
+        </div>
+        <div class="card">
+          <h3>Memory</h3>
+          <div class="row">
+            <select id="memBot"></select>
+            <input id="memNote" placeholder="memory note for this teammate">
+            <button type="button" id="memBtn">Remember</button>
+          </div>
+        </div>
+        <div class="card" id="handoff">
+          <h3>Handoff</h3>
+          <div class="row">
+            <select id="fromBot"></select>
+            <span class="tag arrow">→</span>
+            <select id="toBot"></select>
+            <input id="handoffBody" placeholder="work item">
+            <label class="check"><input type="checkbox" id="handoffRun" checked> run recipient</label>
+            <button type="button" id="sendHandoff">Send</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Run -->
+      <section class="panel" id="panel-run" data-title="Run">
+        <div class="panel-head"><h2>Run</h2><span class="desc">headless CODE without yolo denies mutating tools · test-run uses intent=ask (60s)</span></div>
+        <div class="card">
+          <h3>New run</h3>
+          <div class="row">
+            <select id="runBot"></select>
+            <select id="intent">
+              <option value="code">code</option>
+              <option value="ask">ask</option>
+              <option value="plan">plan</option>
+            </select>
+            <label class="check"><input type="checkbox" id="yolo"> yolo</label>
+            <label class="check"><input type="checkbox" id="verify"> verify</label>
+            <input id="worktree" placeholder="worktree (optional)">
+          </div>
+          <textarea id="prompt" placeholder="# what should this teammate do?"></textarea>
+          <div class="row end"><button class="primary" type="button" id="runBtn"><svg viewBox="0 0 12 12" width=10 height=10 fill=currentColor><path d="M2 1l9 5-9 5z"/></svg>Run</button></div>
+        </div>
+        <div class="card console-card">
+          <h3>Events</h3>
+          <div class="evfilters" id="evFilters">
+            <button type="button" class="chipf active" data-kind="all">all</button>
+            <button type="button" class="chipf" data-kind="content">content</button>
+            <button type="button" class="chipf" data-kind="thinking">thinking</button>
+            <button type="button" class="chipf" data-kind="tool">tools</button>
+            <button type="button" class="chipf" data-kind="perm">perm</button>
+            <button type="button" class="chipf" data-kind="plan">plan</button>
+            <button type="button" class="chipf" data-kind="err">errors</button>
+            <button type="button" class="chipf" data-kind="done">done</button>
+            <button type="button" class="chipf" data-kind="verify">verify</button>
+          </div>
+          <div class="run-head"><span class="who" id="runWho">all runs</span><span class="spacer"></span><button type="button" class="ghost" id="stopBtn" hidden>&#9632; stop</button><span class="elapsed" id="elapsed"></span></div>
+          <div id="log"></div>
+        </div>
+      </section>
+
+      <!-- Routines -->
+      <section class="panel" id="panel-routines" data-title="Routines">
+        <div class="panel-head"><h2>Routines</h2><span class="desc">unattended work on a schedule — every 5m, every 1h, …</span></div>
+        <div class="card">
+          <h3>New routine</h3>
+          <div class="row">
+            <select id="rtnBot"></select>
+            <select id="rtnSkill"></select>
+            <input id="rtnTrigger" placeholder='trigger (manual or every 5m)' value='manual'>
+            <button type="button" id='createRtn'>Add</button>
+          </div>
+        </div>
+        <div class='card'>
+          <h3>Scheduled</h3>
+          <ul class='list' id='routines'></ul>
+        </div>
+      </section>
+
+      <!-- Skills -->
+      <section class='panel' id='panel-skills' data-title='Skills'>
+        <div class='panel-head'><h2>Skills</h2><span class='desc'>reviewable how-tos a teammate can be routine-fired against</span></div>
+        <div class='card'>
+          <h3>New skill</h3>
+          <div class='row'><input id='skillName' placeholder='name'></div>
+          <textarea id='skillBody' placeholder='how-to (markdown)'></textarea>
+          <div class='row end'><button type='button' id='createSkill'>Add skill</button></div>
+        </div>
+        <div class='card'>
+          <h3>Library</h3>
+          <ul class='list' id='skills'></ul>
+        </div>
+      </section>
+
+      <!-- Routes -->
+      <section class='panel' id='panel-routes' data-title='Routes'>
+        <div class='panel-head'><h2>Routes</h2><span class='desc'>model routes available to teammates</span></div>
+        <div class='card'><table id='routes'><tbody></tbody></table></div>
+      </section>
+
+      <!-- Health -->
+      <section class='panel' id='panel-health' data-title='Model health'>
+        <div class='panel-head'><h2>Model health</h2><span class='desc'>probe each route's /v1/models endpoint</span></div>
+        <div class='card'>
+          <div class='row end'><button type='button' id='probeBtn'>Probe /v1/models</button></div>
+          <table id='health'><tbody></tbody></table>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- scroll-edge blur where content meets the pinned topbar -->
+    <footer></footer>
+
+  </div><!-- /stage -->
+</div><!-- /app -->
+
+<!-- run detail drawer -->
+<div class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-scrim" id="drawerScrim"></div>
+  <aside class="drawer-panel" role="dialog" aria-label="Run detail">
+    <header class="drawer-head">
+      <div class="drawer-title"><span id="drawerBot"></span><h2 id="drawerTitle">Run</h2></div>
+      <button type="button" class="ghost" id="drawerClose" aria-label="Close">✕</button>
+    </header>
+    <div class="drawer-body">
+      <div class="meta-grid" id="drawerMeta"></div>
+      <div class="prompt-block"><h3>Prompt</h3><pre id="drawerPrompt"></pre></div>
+      <h3>Activity</h3>
+      <div class="spark" id="drawerSpark"></div>
+      <h3>Transcript</h3>
+      <div class="evfilters sm" id="drawerFilters">
+        <button type="button" class="chipf active" data-kind="all">all</button>
+        <button type="button" class="chipf" data-kind="content">content</button>
+        <button type="button" class="chipf" data-kind="thinking">thinking</button>
+        <button type="button" class="chipf" data-kind="tool">tools</button>
+        <button type="button" class="chipf" data-kind="perm">perm</button>
+        <button type="button" class="chipf" data-kind="plan">plan</button>
+        <button type="button" class="chipf" data-kind="err">errors</button>
+        <button type="button" class="chipf" data-kind="done">done</button>
+        <button type="button" class="chipf" data-kind="verify">verify</button>
+      </div>
+      <div class="drawer-log" id="drawerLog"></div>
+    </div>
+    <footer class="drawer-foot">
+      <button type="button" class="ghost" id="drawerStream">stream live</button>
+      <span class="spacer"></span>
+      <button type="button" id="drawerCopy">Copy transcript</button>
+    </footer>
+  </aside>
+</div>
+
+<!-- command palette -->
+<div class="palette" id="palette" aria-hidden="true">
+  <div class="palette-scrim" id="paletteScrim"></div>
+  <div class="palette-box">
+    <input id="paletteInput" placeholder="Jump to…" autocomplete="off" spellcheck="false">
+    <div class="palette-list" id="paletteList"></div>
+    <div class="palette-hint"><span>⌘K</span> palette · <span>1–7</span> panels · <span>r</span> new run · <span>esc</span> close</div>
   </div>
-  <ul class="list" id="routines"></ul>
-</section>
-<section>
-  <h2>Run</h2>
-  <p class="note">Headless CODE without yolo denies mutating tools. Test-run uses intent=ask (60s).</p>
-  <div class="row">
-    <select id="runBot"></select>
-    <select id="intent">
-      <option value="code">code</option>
-      <option value="ask">ask</option>
-      <option value="plan">plan</option>
-    </select>
-    <label><input type="checkbox" id="yolo"> yolo</label>
-    <label><input type="checkbox" id="verify"> verify</label>
-    <input id="worktree" placeholder="worktree (optional)">
-  </div>
-  <textarea id="prompt" placeholder="prompt"></textarea>
-  <div class="row"><button class="primary" type="button" id="runBtn">Run</button></div>
-  <h2>Events</h2>
-  <div id="log"></div>
-  <h2>Routes</h2>
-  <table id="routes"><tbody></tbody></table>
-  <h2>Model health</h2>
-  <div class="row"><button type="button" id="probeBtn">Probe /v1/models</button></div>
-  <table id="health"><tbody></tbody></table>
-</section>
-</main>
+</div>
+
+<div id='toasts'></div>
+
 <script src="app.js"></script>
 </body>
 </html>
