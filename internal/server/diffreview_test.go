@@ -158,6 +158,27 @@ func TestRunDiffReviewFlow(t *testing.T) {
 	if state, _ := applyResp["reviewState"].(string); state != "partial" {
 		t.Fatalf("reviewState = %v, want partial (resp %v)", state, applyResp)
 	}
+	// G1: review metrics are stamped on apply (PRD §11).
+	if ra, _ := applyResp["hunksAccepted"].(float64); ra != 1 {
+		t.Fatalf("hunksAccepted = %v, want 1 (resp %v)", applyResp["hunksAccepted"], applyResp)
+	}
+	if rt, _ := applyResp["hunksTotal"].(float64); rt < 2 {
+		t.Fatalf("hunksTotal = %v, want >= 2 (a.txt + new.txt)", applyResp["hunksTotal"])
+	}
+	roster = getRunJSON(t, ts, "/api/v1/roster")
+	runs, _ = roster["runs"].([]any)
+	for _, r := range runs {
+		if m, ok := r.(map[string]any); ok && m["id"] == runID {
+			mine = m
+			break
+		}
+	}
+	if mine == nil || mine["reviewedAt"] == nil {
+		t.Fatalf("roster run missing reviewedAt after apply: %v", mine)
+	}
+	if ht, _ := mine["hunksTotal"].(float64); ht < 2 {
+		t.Fatalf("roster hunksTotal = %v, want >= 2", mine["hunksTotal"])
+	}
 	// a.txt got the appended line; new.txt must not exist.
 	got, err := os.ReadFile(filepath.Join(wsDir, "a.txt"))
 	if err != nil {

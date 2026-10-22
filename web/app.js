@@ -10,6 +10,7 @@
 
 const $ = id => document.getElementById(id);
 let roster = {bots:[], skills:[], routines:[], messages:[], routes:[], runs:[]};
+let runFilter = "all"; // "all" | "review" — needs-review filter (G2)
 let activeRun = null;
 let pollTimer = null;
 let elapsedTimer = null;
@@ -278,7 +279,12 @@ function render() {
   // its events into the log (Grok Bot-style run visibility).
   const botName = {};
   for (const b of roster.bots) botName[b.id] = b.name;
-  setHTML($("runHistory"), (roster.runs||[]).slice(0, 20).map(r => {
+  // "Needs review" filter (research R95/G2): pending-review runs with a
+  // diff are the supervisory queue. Default view = all runs.
+  const allRuns = (roster.runs||[]).slice(0, 20);
+  const needsReview = allRuns.filter(r => r.diffSummary && (!r.reviewState || r.reviewState === "pending"));
+  const shown = runFilter === "review" ? needsReview : allRuns;
+  setHTML($("runHistory"), shown.map(r => {
     const chip = r.status === "done" ? "ok" : (r.status === "running" ? "acc" : (r.status === "stopped" ? "warn" : "err"));
     const dur = runDuration(r);
     // AC-2f: show the run's diff and review state when a summary exists.
@@ -287,15 +293,30 @@ function render() {
       ? ` <span class="tag" title="${ds.files} files">+${esc(ds.additions||0)}/−${esc(ds.deletions||0)}</span>` : "";
     const revTag = r.reviewState && r.reviewState !== "pending"
       ? ` <span class="chip ${r.reviewState === "accepted" ? "ok" : r.reviewState === "partial" ? "acc" : "warn"}">${esc(r.reviewState)}</span>` : "";
+    // Review metrics (PRD §11): accept rate once a decision is recorded.
+    const rateTag = r.hunksTotal
+      ? ` <span class="tag" title="hunks accepted/total">${esc(r.hunksAccepted||0)}/${esc(r.hunksTotal)}</span>` : "";
     return `<li class="runrow" data-runrow="${esc(r.id)}">
       <div class="body">
-        <div class="title"><span class="runid">${esc(r.id.slice(0,8))}</span> <span class="chip ${chip}">${esc(r.status)}</span>${dur ? ` <span class="tag">${esc(dur)}</span>` : ""}${diffTag}${revTag}</div>
+        <div class="title"><span class="runid">${esc(r.id.slice(0,8))}</span> <span class="chip ${chip}">${esc(r.status)}</span>${dur ? ` <span class="tag">${esc(dur)}</span>` : ""}${diffTag}${revTag}${rateTag}</div>
         <div class="clip">${esc(botName[r.bot_id] || r.bot_id || "—")} · ${esc(r.intent)} · ${esc(relTime(r.created_at))} · ${esc((r.prompt||"").slice(0,80))}${r.error ? " · " + esc(r.error) : ""}</div>
       </div></li>`;
   }).join("")
-    || `<li class="empty"><span class="ico">▶</span>No runs yet — start one with <b>r</b> or the Run panel.</li>`);
+    || `<li class="empty"><span class="ico">▶</span>${runFilter === "review" ? "No runs waiting for review." : "No runs yet — start one with <b>r</b> or the Run panel."}</li>`);
   $("runHistory").querySelectorAll("[data-runrow]").forEach(li =>
     li.onclick = () => { openDrawer(li.dataset.runrow).catch(e => showErr(e.message)); });
+
+  // Needs-review filter toggle (G2): the button shows the pending count
+  // and switches the list between all runs and the review queue.
+  const fbtn = $("runFilterBtn");
+  if (fbtn) {
+    fbtn.textContent = "needs review: " + needsReview.length;
+    fbtn.classList.toggle("acc", runFilter === "review");
+    fbtn.onclick = () => {
+      runFilter = runFilter === "review" ? "all" : "review";
+      render();
+    };
+  }
 }
 
 // showSkeletons fills the primary lists with loading placeholders until the
@@ -546,7 +567,24 @@ function toolEl(e, isEnd, tools) {
       tools.delete(tool);
     }
     if (e.is_error) d.classList.add("err");
-    if (e.text) d.appendChild(document.createTextNode(" " + sanitize(e.text)));
+    if (e.text) {
+      // Collapsible long output (G4, Zed #58333 pattern): short results
+      // stay inline; long ones collapse behind a summary line.
+      const t = sanitize(e.text);
+      if (t.length > 240 || t.split("\n").length > 4) {
+        const det = document.createElement("details");
+        det.className = "tool-out";
+        const sum = document.createElement("summary");
+        sum.textContent = " " + t.split("\n")[0].slice(0, 60) + "… (" + t.split("\n").length + " lines)";
+        det.appendChild(sum);
+        const pre = document.createElement("pre");
+        pre.textContent = t;
+        det.appendChild(pre);
+        d.appendChild(det);
+      } else {
+        d.appendChild(document.createTextNode(" " + t));
+      }
+    }
   }
   return d;
 }

@@ -487,6 +487,13 @@ th { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spac
 .ev.thinking { color:var(--muted); font-style:italic; }
 .ev.thinking summary { cursor:pointer; list-style:none; }
 .ev.thinking summary::before { content:"▸ "; }
+
+/* Collapsible long tool output (G4): same affordance as thinking blocks. */
+details.tool-out { color:var(--muted); }
+details.tool-out summary { cursor:pointer; list-style:none; }
+details.tool-out summary::before { content:"▸ "; }
+details.tool-out[open] summary::before { content:"▾ "; }
+details.tool-out pre { margin:2px 0 0 0; padding:4px 6px; white-space:pre-wrap; word-break:break-word; }
 .ev.thinking[open] summary::before { content:"▾ "; }
 .ev.thinking .body { padding-left:14px; white-space:pre-wrap; }
 

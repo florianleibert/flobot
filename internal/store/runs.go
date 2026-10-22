@@ -27,6 +27,10 @@ type RunSummary struct {
 	// historical post state, not a fresh capture of the workspace.
 	PostTree    string    `json:"postTree,omitempty"`
 	ReviewState  string    `json:"reviewState"` // pending|accepted|rejected|partial
+	// Review metrics (PRD §11): decision timestamp and hunk accept rate.
+	ReviewedAt   string `json:"reviewedAt,omitempty"`
+	HunksAccepted int  `json:"hunksAccepted,omitempty"`
+	HunksTotal    int   `json:"hunksTotal,omitempty"`
 	// Result contract (taskclient backend; zero values on executor path).
 	Confidence         float64 `json:"confidence,omitempty"`
 	RequiresHumanReview bool   `json:"requiresHumanReview,omitempty"`

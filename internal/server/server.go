@@ -418,6 +418,9 @@ func (s *Server) runsWithSummaries() []store.Run {
 		}
 		runs[i].DiffSummary = sum.DiffSummary
 		runs[i].ReviewState = sum.ReviewState
+		runs[i].ReviewedAt = sum.ReviewedAt
+		runs[i].HunksAccepted = sum.HunksAccepted
+		runs[i].HunksTotal = sum.HunksTotal
 	}
 	return runs
 }

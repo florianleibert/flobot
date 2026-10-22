@@ -636,10 +636,35 @@ func (s *Server) applyDiff(w http.ResponseWriter, r *http.Request) {
 			state = "accepted"
 		}
 	}
-	_ = s.runStore().SetReviewState(id, state)
+	// Review metrics (PRD §11): hunk accept rate + decision timestamp.
+	hunksTotal := 0
+	for _, fd := range fds {
+		if len(fd.Hunks) > 0 {
+			hunksTotal += len(fd.Hunks)
+		} else {
+			hunksTotal++ // whole-file decision counts as one
+		}
+	}
+	hunksAccepted := 0
+	for _, a := range applied {
+		if hs, ok := a["hunks"].([]int); ok {
+			hunksAccepted += len(hs)
+		} else {
+			hunksAccepted++ // whole-file keep
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_ = s.runStore().Mutate(id, func(sum *store.RunSummary) bool {
+		sum.ReviewState = state
+		sum.ReviewedAt = now
+		sum.HunksAccepted = hunksAccepted
+		sum.HunksTotal = hunksTotal
+		return true
+	})
 	s.snaps.evict(id)
 	s.hub.publish(store.Event{Kind: "review_done", Text: id})
-	writeJSON(w, map[string]any{"applied": applied, "skipped": skipped, "reviewState": state})
+	writeJSON(w, map[string]any{"applied": applied, "skipped": skipped, "reviewState": state,
+		"hunksAccepted": hunksAccepted, "hunksTotal": hunksTotal})
 }
 
 // rejectDiff marks a run rejected and reverts the workspace to the
@@ -692,7 +717,14 @@ func (s *Server) rejectDiff(w http.ResponseWriter, r *http.Request) {
 		}
 		safetyID = safety.ID
 	}
-	_ = s.runStore().SetReviewState(id, "rejected")
+	_ = s.runStore().Mutate(id, func(sum *store.RunSummary) bool {
+		sum.ReviewState = "rejected"
+		sum.ReviewedAt = time.Now().UTC().Format(time.RFC3339)
+		sum.HunksAccepted = 0
+		// Total hunks unknown here without recomputing the diff; 0
+		// means "not recorded" (omitempty) rather than "zero of zero".
+		return true
+	})
 	s.snaps.evict(id)
 	s.hub.publish(store.Event{Kind: "review_done", Text: id})
 	writeJSON(w, map[string]any{"runId": id, "reviewState": "rejected", "safetyCheckpoint": safetyID})

@@ -110,6 +110,10 @@ type Run struct {
 	// state without duplicating the summary fields on the in-memory Run.
 	DiffSummary *DiffStat `json:"diffSummary,omitempty"`
 	ReviewState string    `json:"reviewState,omitempty"` // pending|accepted|rejected|partial
+	// Review metrics (PRD §11), merged from RunStore like the above.
+	ReviewedAt    string `json:"reviewedAt,omitempty"`
+	HunksAccepted int    `json:"hunksAccepted,omitempty"`
+	HunksTotal    int    `json:"hunksTotal,omitempty"`
 }
 
 // Store is the in-memory authority. Nothing persists across restart.
