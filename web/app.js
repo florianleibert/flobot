@@ -79,7 +79,12 @@ async function api(method, path, body) {
   }
   const r = await fetch(path, opt);
   const text = await r.text();
-  if (!r.ok) throw new Error(text.trim() || r.statusText);
+  if (!r.ok) {
+    // Prefer the parsed error message over the raw JSON body.
+    let msg = text.trim() || r.statusText;
+    try { const j = JSON.parse(text); if (j && j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
   if (!text) return null;
   try { return JSON.parse(text); } catch { return text; }
 }
@@ -117,6 +122,8 @@ nav.querySelectorAll("button[data-panel]").forEach(btn => {
     document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
     const p = $("panel-" + btn.dataset.panel);
     if (p) p.classList.add("active");
+    // lazy-init the Code Studio editor panel
+    if (btn.dataset.panel === "editor" && window.codeStudioInit) window.codeStudioInit();
     const title = $("panelTitle");
     if (title && p) {
       title.textContent = p.dataset.title || p.querySelector("h2")?.textContent || "";
@@ -274,9 +281,15 @@ function render() {
   setHTML($("runHistory"), (roster.runs||[]).slice(0, 20).map(r => {
     const chip = r.status === "done" ? "ok" : (r.status === "running" ? "acc" : (r.status === "stopped" ? "warn" : "err"));
     const dur = runDuration(r);
+    // AC-2f: show the run's diff and review state when a summary exists.
+    const ds = r.diffSummary;
+    const diffTag = ds && (ds.files || ds.additions || ds.deletions)
+      ? ` <span class="tag" title="${ds.files} files">+${esc(ds.additions||0)}/−${esc(ds.deletions||0)}</span>` : "";
+    const revTag = r.reviewState && r.reviewState !== "pending"
+      ? ` <span class="chip ${r.reviewState === "accepted" ? "ok" : r.reviewState === "partial" ? "acc" : "warn"}">${esc(r.reviewState)}</span>` : "";
     return `<li class="runrow" data-runrow="${esc(r.id)}">
       <div class="body">
-        <div class="title"><span class="runid">${esc(r.id.slice(0,8))}</span> <span class="chip ${chip}">${esc(r.status)}</span>${dur ? ` <span class="tag">${esc(dur)}</span>` : ""}</div>
+        <div class="title"><span class="runid">${esc(r.id.slice(0,8))}</span> <span class="chip ${chip}">${esc(r.status)}</span>${dur ? ` <span class="tag">${esc(dur)}</span>` : ""}${diffTag}${revTag}</div>
         <div class="clip">${esc(botName[r.bot_id] || r.bot_id || "—")} · ${esc(r.intent)} · ${esc(relTime(r.created_at))} · ${esc((r.prompt||"").slice(0,80))}${r.error ? " · " + esc(r.error) : ""}</div>
       </div></li>`;
   }).join("")
@@ -411,9 +424,32 @@ function appendEvent(e) {
   // A run is terminal on "done" or on a run_status of done/error/stopped;
   // all three must refresh the roster so RECENT RUNS never goes stale.
   if (e.kind === "done" || (e.kind === "run_status" && /^(done|error|stopped)$/.test(e.text || ""))) {
-    onRunEnd();
+    onRunEnd(e.kind === "run_status" ? e.text : "done");
   }
   if (stick) log.scrollTop = log.scrollHeight;
+  // Code Studio: breathe the review surface while a run is in flight,
+  // settle it when the run ends, and load the diff when it's ready.
+  const review = document.getElementById("edReview");
+  if (review) {
+    if (e.kind === "run_status" && /^(running|queued)$/.test(e.text || "")) {
+      review.classList.add("live");
+    } else if (e.kind === "run_status" && /^(done|error|stopped)$/.test(e.text || "")) {
+      review.classList.remove("live");
+    } else if (e.kind === "diff_ready") {
+      if (window.codeStudio) {
+        window.codeStudio.openRunDiff(e.text);
+      } else {
+        // Editor panel not yet opened: stash the pending run so
+        // codeStudioInit can consume it when the user opens the tab.
+        window.codeStudioPendingRun = e.text;
+      }
+    } else if (e.kind === "review_done") {
+      // A review finished (possibly in another tab/window): refresh
+      // the tree and checkpoints so the editor does not show stale
+      // workspace state.
+      if (window.codeStudio) window.codeStudio.refresh();
+    }
+  }
 }
 
 // buildEventNode renders one event through the rich renderers (paired tools,
@@ -442,6 +478,10 @@ function buildEventNode(e, tools) {
       return verifyEl(e);
     case "run_status":
       return evDiv("run_status", "run_status", e.text);
+    case "result_contract":
+      return resultContractEl(e.text);
+    case "diff_ready":
+      return evDiv("done", "diff", "diff ready — review in Editor");
     case "routine_fire":
       return evDiv("routine_fire", "routine_fire", "routine " + e.text + " fired");
     default:
@@ -550,7 +590,9 @@ function verifyEl(e) {
 // onRunEnd fires when a terminal event (done) is seen: stop the
 // onRunEnd stops the elapsed timer and refreshes the roster so run history
 // updates. It also hides the stop button — the run is over.
-function onRunEnd() {
+// status is the terminal status ("done" | "error" | "stopped"); it is
+// forwarded to the Electron shell for the completion notification.
+function onRunEnd(status) {
   stopElapsed();
   const sb = $("stopBtn");
   if (sb) {
@@ -559,6 +601,14 @@ function onRunEnd() {
     sb.disabled = false;
     sb.textContent = "Stop";
   }
+  // Code Studio AC-2e: ask the Electron shell for a completion
+  // notification. The main process drops it when the window is focused,
+  // so this is a no-op while the user is watching the run.
+  try {
+    if (window.flobotDesktop && window.flobotDesktop.notifyRunEnd) {
+      window.flobotDesktop.notifyRunEnd({ status: status || "done" });
+    }
+  } catch {}
   refresh().catch(() => {});
 }
 
@@ -789,6 +839,16 @@ async function openDrawer(runId) {
   $("drawerPrompt").textContent = run.prompt || "";
   sparkline(evs);
   renderDrawerLog();
+  // Review-diff button: opens the Editor panel with this run's diff.
+  const rb = $("drawerReview");
+  if (rb) {
+    rb.hidden = false;
+    rb.onclick = () => {
+      closeDrawer();
+      gotoPanel("editor");
+      if (window.codeStudio) window.codeStudio.openRunDiff(runId);
+    };
+  }
   $("drawer").classList.add("open");
   $("drawer").setAttribute("aria-hidden", "false");
 }
@@ -823,6 +883,7 @@ const paletteItems = () => [
   {ico:"◎", txt:"Overview", kbd:"1", go:() => gotoPanel("overview")},
   {ico:"◍", txt:"Teammates", kbd:"2", go:() => gotoPanel("bots")},
   {ico:"▶", txt:"New run", kbd:"r", go:() => gotoPanel("run")},
+  {ico:"❯", txt:"Editor", kbd:"e", go:() => gotoPanel("editor")},
   {ico:"↻", txt:"Routines", kbd:"4", go:() => gotoPanel("routines")},
   {ico:"✦", txt:"Skills", kbd:"5", go:() => gotoPanel("skills")},
   {ico:"⇄", txt:"Routes", kbd:"6", go:() => gotoPanel("routes")},
@@ -875,7 +936,38 @@ $("paletteScrim").onclick = closePalette;
 
 document.addEventListener("keydown", e => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+  // §7.3 global keyboard map. Cmd-P / Cmd-. / Cmd-Shift-R / Cmd-Shift-Z
+  // work even while typing (they are not text keys), so handle them before
+  // the typing guard.
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === "p") {
+    // File quick-open (Code Studio). Opens the editor panel and its
+    // palette; Cmd-P again closes it.
+    e.preventDefault();
+    if (window.codeStudioInit) window.codeStudioInit();
+    gotoPanel("editor");
+    if (window.codeStudio && window.codeStudio.openQuick) window.codeStudio.openQuick();
+    return;
+  }
+  if (mod && e.key === ".") {
+    // Stop the active run.
+    e.preventDefault();
+    stopRun().catch(e => showErr(e.message));
+    return;
+  }
+  if (mod && e.shiftKey && e.key.toLowerCase() === "r") {
+    // Open the review for the latest run that has a diff.
+    e.preventDefault();
+    openLatestReview();
+    return;
+  }
+  if (mod && e.shiftKey && e.key.toLowerCase() === "z") {
+    // Restore the latest checkpoint (one-keystroke undo of a run).
+    e.preventDefault();
+    restoreLatestCheckpoint();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === "k") {
     e.preventDefault();
     $("palette").classList.contains("open") ? closePalette() : openPalette();
     return;
@@ -893,6 +985,38 @@ document.addEventListener("keydown", e => {
     gotoPanel(names[n-1]);
   }
 });
+
+// openLatestReview jumps to the Editor panel with the diff of the most
+// recent run that has one. The roster runs are newest-first; the first
+// with a diffSummary is the one to review. Falls back to the newest run
+// regardless so Cmd-Shift-R always does something visible.
+function openLatestReview() {
+  const runs = roster.runs || [];
+  let target = runs.find(r => r.diffSummary) || runs[0];
+  if (!target) { toast("no runs yet", "err"); return; }
+  if (window.codeStudioInit) window.codeStudioInit();
+  gotoPanel("editor");
+  if (window.codeStudio) window.codeStudio.openRunDiff(target.id);
+}
+
+// restoreLatestCheckpoint restores the newest checkpoint, with a confirm
+// (it rewrites the workspace). Mirrors the per-checkpoint restore button
+// in the Editor panel; AC-2d's "one keystroke from anywhere".
+async function restoreLatestCheckpoint() {
+  let cps;
+  try {
+    const r = await api("GET", "/api/v1/checkpoints?limit=1");
+    cps = r.checkpoints || [];
+  } catch (e) { showErr(e.message); return; }
+  if (!cps.length) { toast("no checkpoints yet", "err"); return; }
+  const cp = cps[0];
+  if (!confirm("restore checkpoint " + cp.id + "? current state is saved as a safety checkpoint")) return;
+  try {
+    const r2 = await api("POST", "/api/v1/checkpoints/" + encodeURIComponent(cp.id) + "/restore", {});
+    toast("restored (safety: " + r2.safetyCheckpoint + ")");
+    if (window.codeStudio) window.codeStudio.refresh();
+  } catch (e) { showErr(e.message); }
+}
 
 // ---- auto model-health ---------------------------------------------------
 
@@ -1124,3 +1248,55 @@ const meshRefreshBtn = $("meshRefresh");
 if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch(e => showErr(e.message));
 const directRefreshBtn = $("directRefresh");
 if (directRefreshBtn) directRefreshBtn.onclick = () => loadDirect().catch(e => showErr(e.message));
+
+// ---- Code Studio exports (editor.js) --------------------------------------
+// editor.js is a separate script; expose the shared helpers it needs.
+window.api = api;
+window.toast = toast;
+window.showErr = showErr;
+window.esc = esc;
+
+// resultContractEl renders the taskclient result contract as chips:
+// confidence, tests, and a requires_human_review banner when set.
+function resultContractEl(payload) {
+  let c = {};
+  try { c = JSON.parse(payload || "{}"); } catch {}
+  const d = document.createElement("div");
+  d.className = "ev result-contract";
+  const chips = document.createElement("span");
+  chips.className = "rc-chips";
+  const conf = document.createElement("span");
+  conf.className = "rc-chip";
+  const pct = Math.round((c.confidence || 0) * 100);
+  conf.textContent = "confidence " + pct + "%";
+  conf.classList.add(pct >= 70 ? "ok" : pct >= 40 ? "mid" : "low");
+  chips.appendChild(conf);
+  if (c.tests_total) {
+    const t = document.createElement("span");
+    t.className = "rc-chip " + (c.tests_passed === c.tests_total ? "ok" : "low");
+    t.textContent = "tests " + c.tests_passed + "/" + c.tests_total;
+    chips.appendChild(t);
+  }
+  d.appendChild(chips);
+  if (c.summary) {
+    const s = document.createElement("div");
+    s.className = "rc-summary";
+    s.textContent = c.summary;
+    d.appendChild(s);
+  }
+  if (c.patch_sha256) {
+    const p = document.createElement("span");
+    p.className = "rc-chip";
+    p.title = "patch sha256 " + c.patch_sha256;
+    p.textContent = "patch " + String(c.patch_sha256).slice(0, 8) +
+      (c.patch_changed_files ? " · " + c.patch_changed_files + " files" : "");
+    d.appendChild(p);
+  }
+  if (c.requires_human_review) {
+    const b = document.createElement("span");
+    b.className = "rc-banner";
+    b.textContent = "requires human review";
+    d.appendChild(b);
+  }
+  return d;
+}

@@ -54,13 +54,18 @@ Loopback bind only. Never import flocode/amesh modules; exec the flocode binary.
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", server.DefaultAddr(), "loopback listen address")
+	wsDir := fs.String("workspace", "", "workspace root for the editor (default: cwd)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := server.CheckLoopbackAddr(*addr); err != nil {
 		return err
 	}
-	s := server.New(store.New())
+	opts := []server.Option{}
+	if *wsDir != "" {
+		opts = append(opts, server.WithWorkDir(*wsDir))
+	}
+	s := server.New(store.New(), opts...)
 	fmt.Fprintf(os.Stderr, "flobot listening on http://%s\n", *addr)
 	return s.ListenAndServe(*addr)
 }

@@ -105,6 +105,11 @@ type Run struct {
 	EndedAt    string  `json:"ended_at,omitempty"`
 	Owner      string  `json:"-"`
 	Events     []Event `json:"-"`
+	// Code Studio AC-2f: merged from the persisted RunStore by
+	// Server.runsWithSummaries so run history shows the diff and review
+	// state without duplicating the summary fields on the in-memory Run.
+	DiffSummary *DiffStat `json:"diffSummary,omitempty"`
+	ReviewState string    `json:"reviewState,omitempty"` // pending|accepted|rejected|partial
 }
 
 // Store is the in-memory authority. Nothing persists across restart.
@@ -707,6 +712,20 @@ func (s *Store) HasRunningRun(botID string) bool {
 	defer s.mu.Unlock()
 	for _, run := range s.runs {
 		if run.BotID == botID && run.Status == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+// AnyRunningRun reports whether any run is in "running" status. Diff
+// review uses it to fail closed when a concurrent run could be writing
+// the same workspace.
+func (s *Store) AnyRunningRun() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.runs {
+		if run.Status == "running" {
 			return true
 		}
 	}

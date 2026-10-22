@@ -705,6 +705,224 @@ th { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spac
   .console { grid-template-columns:1fr; }
 }
 
-@media (prefers-reduced-motion) {
+@media (prefers-reduced-motion: reduce) {
   * { animation:none !important; transition:none !important; }
+}
+
+/* ============ Code Studio editor panel ============ */
+
+.ed-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 14px;
+  min-height: 420px;
+}
+.ed-side {
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  background: rgba(255,255,255,.03);
+  overflow: auto;
+  max-height: 60vh;
+}
+.ed-side-head {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  position: sticky;
+  top: 0;
+  background: rgba(10,12,20,.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  z-index: 2;
+}
+.ed-tree { padding: 6px 0; }
+.ed-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: rgba(255,255,255,.82);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ed-node:hover { background: rgba(255,255,255,.06); }
+.ed-node.active { background: rgba(124,155,255,.18); color: #fff; }
+.ed-node.dir .ed-label { color: rgba(255,255,255,.95); }
+.ed-ico { width: 12px; opacity: .6; font-size: 10px; }
+.ed-main {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  background: rgba(255,255,255,.03);
+  overflow: hidden;
+}
+.ed-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.ed-path { font-size: 12px; color: rgba(255,255,255,.9); }
+.ed-status { font-size: 11px; color: rgba(255,255,255,.45); }
+.ed-text {
+  flex: 1;
+  width: 100%;
+  min-height: 380px;
+  background: transparent;
+  border: 0;
+  color: rgba(255,255,255,.92);
+  font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+  padding: 12px 14px;
+  resize: vertical;
+  outline: none;
+}
+.ed-text:focus { background: rgba(255,255,255,.02); }
+
+/* run diff review */
+.ed-review-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ed-review-empty { color: rgba(255,255,255,.4); font-size: 12.5px; padding: 8px 0; }
+.ed-diffstat { font-size: 12px; color: rgba(255,255,255,.7); }
+.ed-diffstat .add { color: #4ade80; }
+.ed-diffstat .del { color: #f87171; }
+.ed-diffstat.sm { font-size: 11px; }
+.ed-file { margin-bottom: 14px; border: 1px solid rgba(255,255,255,.07); border-radius: 10px; overflow: hidden; }
+.ed-file-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: rgba(255,255,255,.04);
+}
+.ed-hunk { border-top: 1px solid rgba(255,255,255,.05); }
+.ed-hunk.focused { box-shadow: inset 2px 0 0 var(--acc, #7c9bff); background: rgba(124,155,255,.05); }
+.ed-hunk-head { padding: 4px 10px; background: rgba(255,255,255,.02); }
+.ed-review-keys {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: rgba(255,255,255,.45);
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  background: rgba(255,255,255,.015);
+}
+.ed-hunk-body {
+  margin: 0;
+  padding: 6px 0;
+  font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  overflow-x: auto;
+  max-height: 320px;
+}
+.ed-line { display: block; padding: 0 10px; white-space: pre; }
+.ed-line.add { background: rgba(74,222,128,.12); color: #b6f2c5; }
+.ed-line.del { background: rgba(248,113,113,.12); color: #f8c1c1; }
+.ed-line.ctx { color: rgba(255,255,255,.6); }
+
+/* checkpoints */
+.ed-cp {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  font-size: 12px;
+}
+.ed-cp-tree { font-family: ui-monospace, Menlo, monospace; color: rgba(255,255,255,.75); }
+
+/* quick-open reuses .palette styles */
+#edQuick .palette-box { margin-top: 10vh; }
+
+/* ============ Code Studio: breathing / fade-in effects ============ */
+
+/* Tree nodes cascade in with a soft fade+rise as the tree renders. */
+.ed-node {
+  animation: edFadeIn .45s cubic-bezier(.22,.61,.36,1) both;
+}
+/* stagger: JS sets --ed-i per node; cap the delay so deep trees stay snappy */
+@keyframes edFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Editor content breathes in when a file opens. */
+.ed-text {
+  animation: edBreatheIn .5s cubic-bezier(.22,.61,.36,1) both;
+}
+@keyframes edBreatheIn {
+  from { opacity: 0; transform: scale(.995); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* "unsaved" status pill pulses gently while there are pending edits. */
+.ed-status.unsaved {
+  color: #fbbf24;
+  animation: edPulse 2.2s ease-in-out infinite;
+}
+@keyframes edPulse {
+  0%, 100% { opacity: .55; }
+  50%      { opacity: 1; }
+}
+
+/* Review hunks fade in staggered; the whole review card breathes
+   faintly while a run is in flight (JS adds .live). */
+.ed-hunk { animation: edFadeIn .4s ease-out both; }
+#edReview.live {
+  animation: edBreathe 3.2s ease-in-out infinite;
+}
+@keyframes edBreathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124,155,255,0); }
+  50%      { box-shadow: 0 0 24px 0 rgba(124,155,255,.10); }
+}
+
+/* Checkpoint rows fade in like the tree. */
+.ed-cp { animation: edFadeIn .45s ease-out both; }
+
+/* Respect reduced-motion: kill all loops, keep one-shot fades instant. */
+@media (prefers-reduced-motion: reduce) {
+  .ed-node, .ed-text, .ed-hunk, .ed-cp { animation: none; }
+  .ed-status.unsaved, #edReview.live { animation: none; }
+  .rc-chip, .rc-banner { animation: none; }
+}
+
+/* result contract chips (taskclient backend) */
+.ev.result-contract {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rc-chips { display: inline-flex; gap: 6px; }
+.rc-chip {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.14);
+  color: rgba(255,255,255,.85);
+  animation: edFadeIn .5s ease-out both;
+}
+.rc-chip.ok  { border-color: rgba(74,222,128,.5);  color: #b6f2c5; }
+.rc-chip.mid { border-color: rgba(251,191,36,.5);  color: #fde68a; }
+.rc-chip.low { border-color: rgba(248,113,113,.5); color: #f8c1c1; }
+.rc-banner {
+  font-size: 10.5px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(251,191,36,.15);
+  border: 1px solid rgba(251,191,36,.5);
+  color: #fde68a;
+  animation: edPulse 2.2s ease-in-out infinite;
+}
+.rc-summary {
+  font-size: 11px;
+  color: #9aa4b2;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

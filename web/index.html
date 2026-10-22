@@ -37,6 +37,7 @@
       <button data-panel="overview" class="active"><span class="ico">◎</span><span class="txt">Overview</span></button>
       <button data-panel="bots"><span class="ico">◍</span><span class="txt">Teammates</span><span class="count" id="navBots">0</span></button>
       <button data-panel="run"><span class="ico">▶</span><span class="txt">Run</span><span class="count" id="navRuns">0</span></button>
+      <button data-panel="editor"><span class="ico">❯</span><span class="txt">Editor</span></button>
       <button data-panel="routines"><span class="ico">↻</span><span class="txt">Routines</span><span class="count" id="navRtn">0</span></button>
       <button data-panel="skills"><span class="ico">✦</span><span class="txt">Skills</span><span class="count" id="navSkills">0</span></button>
       <div class="label">System</div>
@@ -184,9 +185,43 @@
             <button type="button" class="chipf" data-kind="err">errors</button>
             <button type="button" class="chipf" data-kind="done">done</button>
             <button type="button" class="chipf" data-kind="verify">verify</button>
+            <button type="button" class="chipf" data-kind="result_contract">contract</button>
           </div>
           <div class="run-head"><span class="who" id="runWho">all runs</span><span class="spacer"></span><button type="button" class="ghost" id="stopBtn" hidden>&#9632; stop</button><span class="elapsed" id="elapsed"></span></div>
           <div id="log"></div>
+        </div>
+      </section>
+
+      <!-- Editor (Code Studio) -->
+      <section class="panel" id="panel-editor" data-title="Editor">
+        <div class="panel-head"><h2>Editor</h2><span class="desc">workspace files · <span id="edRoot">…</span></span></div>
+        <div class="ed-layout">
+          <div class="ed-side">
+            <div class="ed-side-head">
+              <button type="button" class="ghost" id="edQuickOpen" title="quick open (⌘P)">⌘P</button>
+              <button type="button" class="ghost" id="edNew" title="new file">+ new</button>
+              <button type="button" class="ghost" id="edRefresh" title="refresh">⟳</button>
+            </div>
+            <div class="ed-tree" id="edTree"></div>
+          </div>
+          <div class="ed-main">
+            <div class="ed-toolbar">
+              <code class="ed-path" id="edPath">—</code>
+              <span class="ed-status" id="edStatus"></span>
+              <span class="spacer"></span>
+              <button type="button" class="ghost" id="edDelete">delete</button>
+              <button type="button" class="primary" id="edSave">save (⌘S)</button>
+            </div>
+            <textarea class="ed-text" id="edText" spellcheck="false" placeholder="select a file in the tree, or ⌘P to quick-open" disabled></textarea>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Run diff review</h3>
+          <div id="edReview"></div>
+        </div>
+        <div class="card">
+          <h3>Checkpoints</h3>
+          <div id="edCheckpoints"></div>
         </div>
       </section>
 
@@ -270,11 +305,13 @@
         <button type="button" class="chipf" data-kind="err">errors</button>
         <button type="button" class="chipf" data-kind="done">done</button>
         <button type="button" class="chipf" data-kind="verify">verify</button>
+        <button type="button" class="chipf" data-kind="result_contract">contract</button>
       </div>
       <div class="drawer-log" id="drawerLog"></div>
     </div>
     <footer class="drawer-foot">
       <button type="button" class="ghost" id="drawerStream">stream live</button>
+      <button type="button" class="ghost" id="drawerReview" hidden>Review diff</button>
       <span class="spacer"></span>
       <button type="button" id="drawerCopy">Copy transcript</button>
     </footer>
@@ -293,6 +330,17 @@
 
 <div id='toasts'></div>
 
+<!-- quick-open palette (Code Studio) -->
+<div class="palette" id="edQuick" aria-hidden="true">
+  <div class="palette-scrim" id="edQuickScrim"></div>
+  <div class="palette-box">
+    <input id="edQuickInput" placeholder="Go to file…" autocomplete="off" spellcheck="false">
+    <div class="palette-list" id="edQuickList"></div>
+    <div class="palette-hint"><span>↑↓</span> navigate · <span>↵</span> open · <span>esc</span> close</div>
+  </div>
+</div>
+
 <script src="app.js"></script>
+<script src="editor.js"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, Notification } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -205,6 +205,30 @@ function createWindow() {
   win.loadURL(baseUrl);
   win.on('closed', () => (win = null));
 }
+
+// --- run-completion notifications (Code Studio AC-2e) ----------------------
+
+// notifyRunEnd shows an OS notification only when the window is not
+// focused (flow-protection: no interruption while the user is watching
+// the run). Payload carries only {status, files} — never content, never
+// secrets. Clicking the notification focuses the window.
+ipcMain.on('flobot:run-end', (_evt, payload) => {
+  if (!win || win.isFocused()) return; // silent while focused
+  const status = payload && payload.status || 'done';
+  const files = Number(payload && payload.files) || 0;
+  const label = status === 'error' ? 'failed'
+    : status === 'stopped' ? 'stopped' : 'finished';
+  const body = files > 0
+    ? `run ${label} · ${files} file${files === 1 ? '' : 's'} changed — review the diff`
+    : `run ${label}`;
+  try {
+    const n = new Notification({ title: 'flobot', body, silent: false });
+    n.on('click', () => {
+      if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+    });
+    n.show();
+  } catch {}
+});
 
 // --- app lifecycle ----------------------------------------------------------
 

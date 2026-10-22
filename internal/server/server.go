@@ -14,16 +14,20 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/florianleibert/flobot/internal/amesh"
+	"github.com/florianleibert/flobot/internal/checkpoint"
 	"github.com/florianleibert/flobot/internal/executor"
 	"github.com/florianleibert/flobot/internal/routes"
 	"github.com/florianleibert/flobot/internal/schedule"
 	"github.com/florianleibert/flobot/internal/store"
+	"github.com/florianleibert/flobot/internal/taskclient"
+	"github.com/florianleibert/flobot/internal/workspace"
 	"github.com/florianleibert/flobot/web"
 )
 
@@ -38,6 +42,7 @@ const (
 type Server struct {
 	store   *store.Store
 	exec    *executor.Exec
+	taskExec *taskclient.Adapter
 	index   string
 	probes  []Probe
 	client  *http.Client
@@ -57,6 +62,33 @@ type Server struct {
 
 	hubOnce sync.Once
 	hub     *hub
+
+	// ws is the lazily-initialized workspace view over workDir (Code Studio).
+	ws   *workspace.Workspace
+	wsMu sync.Mutex
+
+	// cp is the checkpoint store; rs the persisted run summaries; snaps
+	// the in-memory pre/post-run git trees (Code Studio Phase 2).
+	cp     *checkpoint.Store
+	cpMu   sync.Mutex
+	rs     *store.RunStore
+	rsOnce sync.Once
+	snaps  *runSnapshots
+	// revMu serializes diff-review mutations (apply/reject) so two
+	// concurrent reviews cannot interleave workspace writes.
+	revMu sync.Mutex
+	// contracts stashes result-contract payloads that arrive (via the
+	// event stream) before capturePostRun writes the run summary.
+	contracts   map[string]contractPayload
+	contractsMu sync.Mutex
+}
+
+// contractPayload is the parsed result_contract event payload.
+type contractPayload struct {
+	Confidence          float64
+	RequiresHumanReview bool
+	TestsPassed         int
+	TestsTotal          int
 }
 
 type Option func(*Server)
@@ -88,7 +120,27 @@ func New(st *store.Store, opts ...Option) *Server {
 	if s.store == nil {
 		s.store = store.New()
 	}
+	// Backend selection: FLOBOT_BACKEND=taskclient routes runs over the
+	// flocode task API (FLOCODE_TASK_URL, default loopback:7777); unset
+	// or "executor" keeps the child-process executor. Any other value is
+	// a config error and fails fast rather than silently degrading.
+	switch b := os.Getenv("FLOBOT_BACKEND"); b {
+	case "", "executor":
+	case "taskclient":
+		base := os.Getenv("FLOCODE_TASK_URL")
+		if base == "" {
+			base = "http://127.0.0.1:7777"
+		}
+		s.taskExec = &taskclient.Adapter{
+			Client:   taskclient.New(base, nil),
+			Fallback: &executor.Exec{},
+		}
+	default:
+		log.Printf("flobot: invalid FLOBOT_BACKEND %q (want \"taskclient\" or \"executor\"); using executor", b)
+	}
 	s.hubOnce.Do(func() { s.hub = newHub() })
+	s.snaps = newRunSnapshots()
+	s.contracts = map[string]contractPayload{}
 	// Restore the roster from disk. A missing state file is not an error.
 	if err := s.store.Load(); err != nil {
 		log.Printf("flobot: load state: %v", err)
@@ -127,6 +179,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.indexHTML)
 	mux.HandleFunc("GET /styles.css", s.stylesCSS)
 	mux.HandleFunc("GET /app.js", s.appJS)
+	mux.HandleFunc("GET /editor.js", s.editorJS)
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /api/v1/roster", s.roster)
 	mux.HandleFunc("POST /api/v1/bots", s.createBot)
@@ -151,6 +204,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/direct/models", s.directModels)
 	mux.HandleFunc("GET /api/v1/local", s.localStatus)
 	mux.HandleFunc("POST /api/v1/local/pin", s.localPin)
+	mux.HandleFunc("GET /api/v1/workspace/root", s.workspaceRoot)
+	mux.HandleFunc("GET /api/v1/workspace/tree", s.workspaceTree)
+	mux.HandleFunc("GET /api/v1/workspace/file", s.workspaceFileGet)
+	mux.HandleFunc("PUT /api/v1/workspace/file", s.workspaceFilePut)
+	mux.HandleFunc("POST /api/v1/workspace/file", s.workspaceFilePost)
+	mux.HandleFunc("DELETE /api/v1/workspace/file", s.workspaceFileDelete)
+	mux.HandleFunc("POST /api/v1/workspace/rename", s.workspaceRename)
+	mux.HandleFunc("POST /api/v1/runs/{id}/diff/apply", s.applyDiff)
+	mux.HandleFunc("POST /api/v1/runs/{id}/diff/reject", s.rejectDiff)
+	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
+	mux.HandleFunc("GET /api/v1/checkpoints", s.listCheckpoints)
+	mux.HandleFunc("POST /api/v1/checkpoints/{id}/restore", s.restoreCheckpoint)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	return sameOrigin(mux)
 }
@@ -279,7 +344,24 @@ func (s *Server) ListenAndServe(addr string) error {
 		// Graceful drain: in-flight requests get 10s, then close.
 		shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(shCtx)
+		err := srv.Shutdown(shCtx)
+		// Shutdown returns when handlers finish, but detached work
+		// (applyDiff's 2-min apply loop, running runs) outlives them.
+		// Wait briefly for reviews to finish so a Ctrl-C mid-apply
+		// does not kill the workspace half-reverted.
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			// TryLock: a held lock means a review is mid-flight.
+			if s.revMu.TryLock() {
+				idle := s.store == nil || !s.store.AnyRunningRun()
+				s.revMu.Unlock()
+				if idle {
+					break
+				}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return err
 	}
 }
 
@@ -298,6 +380,11 @@ func (s *Server) appJS(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, web.AppJS)
 }
 
+func (s *Server) editorJS(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	_, _ = io.WriteString(w, web.EditorJS)
+}
+
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "service": "flobot"})
 }
@@ -311,9 +398,28 @@ func (s *Server) roster(w http.ResponseWriter, _ *http.Request) {
 		"skills":       s.store.ListSkills(Actor),
 		"routines":     s.store.ListRoutines(Actor),
 		"messages":     s.store.ListMessages(Actor),
-		"runs":         s.store.ListRuns(Actor),
+		"runs":         s.runsWithSummaries(),
 		"routes":       routes.DefaultRoutes(),
 	})
+}
+
+// runsWithSummaries returns the in-memory runs with the persisted
+// diffSummary/reviewState merged in (AC-2f: run history shows both). The
+// summaries live in the RunStore (survives restarts); the in-memory Run
+// struct carries no diff fields, so the merge is the single place that
+// reconciles them for the roster and the runs list.
+func (s *Server) runsWithSummaries() []store.Run {
+	runs := s.store.ListRuns(Actor)
+	rs := s.runStore()
+	for i := range runs {
+		sum, ok := rs.Get(runs[i].ID)
+		if !ok {
+			continue
+		}
+		runs[i].DiffSummary = sum.DiffSummary
+		runs[i].ReviewState = sum.ReviewState
+	}
+	return runs
 }
 
 func (s *Server) createBot(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +433,7 @@ func (s *Server) createBot(w http.ResponseWriter, r *http.Request) {
 	}
 	bot, err := s.store.CreateBot(Actor, body.Name, body.Role, body.Route)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -347,7 +453,7 @@ func (s *Server) updateBot(w http.ResponseWriter, r *http.Request) {
 	}
 	bot, err := s.store.UpdateBot(r.PathValue("id"), Actor, body.Name, body.Role, body.Route)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -356,7 +462,7 @@ func (s *Server) updateBot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteBot(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteBot(r.PathValue("id"), Actor); err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -374,7 +480,7 @@ func (s *Server) rememberBot(w http.ResponseWriter, r *http.Request) {
 	}
 	bot, err := s.store.Remember(r.PathValue("id"), Actor, body.Note)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -398,7 +504,7 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
 	}
 	msg, err := s.store.Handoff(Actor, body.From, body.To, body.Body)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -406,12 +512,12 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
 	if body.Run {
 		bot, err := s.store.GetBot(body.To, Actor)
 		if err != nil {
-			httpError(w, err)
+			s.httpError(w, err)
 			return
 		}
 		pin, cfgOverride, err := s.resolveRoute(r.Context(), bot.Route)
 		if err != nil {
-			httpError(w, err)
+			s.httpError(w, err)
 			return
 		}
 		prompt := "Handoff from " + body.From + ":\n\n" + body.Body
@@ -421,7 +527,7 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
 		}
 		run, err := s.store.CreateRun(Actor, bot.ID, prompt, intent, false, false, "", pin, bot.Route)
 		if err != nil {
-			httpError(w, err)
+			s.httpError(w, err)
 			return
 		}
 		s.spawn(run, executor.Request{
@@ -447,7 +553,7 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	sk, err := s.store.CreateSkill(Actor, body.Name, body.Body)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -456,7 +562,7 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteSkill(r.PathValue("id"), Actor); err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -474,7 +580,7 @@ func (s *Server) createRoutine(w http.ResponseWriter, r *http.Request) {
 	}
 	rt, err := s.store.CreateRoutine(Actor, body.BotID, body.SkillID, body.Trigger)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -485,33 +591,33 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rt, err := s.store.GetRoutine(id, Actor)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	bot, err := s.store.GetBot(rt.BotID, Actor)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	sk, err := s.store.GetSkill(rt.SkillID, Actor)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	pin, cfgOverride, err := s.resolveRoute(r.Context(), bot.Route)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	prompt := "Test-run the following skill. Ask/read only; do not mutate the workspace.\n\n" + sk.Body
 	run, err := s.store.CreateRun(Actor, bot.ID, prompt, "ask", false, false, "", pin, bot.Route)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	rt, err = s.store.TestRun(rt.ID, Actor, run.ID, "")
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -543,7 +649,7 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enableRoutine(w http.ResponseWriter, r *http.Request) {
 	rt, err := s.store.EnableRoutine(r.PathValue("id"), Actor)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -562,7 +668,7 @@ func (s *Server) pauseRoutine(w http.ResponseWriter, r *http.Request) {
 	}
 	rt, err := s.store.PauseRoutine(r.PathValue("id"), Actor, body.Paused)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -571,7 +677,7 @@ func (s *Server) pauseRoutine(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteRoutine(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteRoutine(r.PathValue("id"), Actor); err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.persist()
@@ -653,7 +759,7 @@ func (s *Server) directModels(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", routes.DirectBaseURL+"/models", nil)
 	if err != nil {
-		httpError(w, fmt.Errorf("build models request: %w", err))
+		s.httpError(w, fmt.Errorf("build models request: %w", err))
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -745,12 +851,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	bot, err := s.store.GetBot(body.BotID, Actor)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	pin, cfgOverride, err := s.resolveRoute(r.Context(), bot.Route)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	intent := strings.TrimSpace(body.Intent)
@@ -765,7 +871,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := s.store.CreateRun(Actor, bot.ID, prompt, intent, body.Yolo, body.Verify, body.Worktree, pin, bot.Route)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	s.spawn(run, executor.Request{
@@ -783,13 +889,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]any{"runs": s.store.ListRuns(Actor)})
+	writeJSON(w, map[string]any{"runs": s.runsWithSummaries()})
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 	run, err := s.store.GetRun(r.PathValue("id"), Actor)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	run.Events = nil
@@ -799,7 +905,7 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runEvents(w http.ResponseWriter, r *http.Request) {
 	run, err := s.store.GetRun(r.PathValue("id"), Actor)
 	if err != nil {
-		httpError(w, err)
+		s.httpError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{
@@ -811,6 +917,12 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) spawn(run store.Run, req executor.Request) {
+	// A run started mid-apply/reject would write the workspace while
+	// applyDiff rebuilds files from pre-run content, silently
+	// clobbering the run's edits. Serialize against reviews: wait
+	// for an in-flight review to finish before the run starts.
+	s.revMu.Lock()
+	s.revMu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelsMu.Lock()
 	if s.cancels == nil {
@@ -818,6 +930,19 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 	}
 	s.cancels[run.ID] = cancel
 	s.cancelsMu.Unlock()
+	// Pre-run git snapshot (single choke point: createRun, handoff,
+	// testRun, fireRoutine). Fail-closed: snapshot errors never block
+	// the run, they only disable diff review for it. Runs in its own
+	// goroutine so the HTTP create-run request does not block on
+	// `git add -A` of a large worktree; the run itself waits on
+	// snapDone so the pre tree can never capture the run's own writes.
+	snapDone := make(chan struct{})
+	go func() {
+		defer close(snapDone)
+		s.revMu.Lock()
+		s.revMu.Unlock()
+		s.capturePreRun(run.ID)
+	}()
 	go func() {
 		defer func() {
 			s.cancelsMu.Lock()
@@ -830,9 +955,17 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 				// Publish so stream clients learn the run died; without this
 				// the UI waits forever on a panicked run.
 				s.hub.publish(store.Event{Kind: "run_status", Text: "error"})
+				// The normal path's capturePostRun is skipped on panic;
+				// still record a summary and evict per-run state so a
+				// panicked run cannot leak snaps/contracts entries.
+				s.snaps.evict(run.ID)
+				s.contractsMu.Lock()
+				delete(s.contracts, run.ID)
+				s.contractsMu.Unlock()
 			}
 		}()
-		res := s.exec.Run(ctx, req, func(ev executor.Event) {
+		<-snapDone
+		res := s.runBackend(ctx, req, func(ev executor.Event) {
 			_ = s.store.AppendEvent(run.ID, Actor, store.Event{
 				Kind:    ev.Kind,
 				TurnID:  ev.TurnID,
@@ -847,6 +980,11 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 				Tool:    ev.Tool,
 				IsError: ev.IsError,
 			})
+			// Capture the result contract (taskclient backend) for the
+			// run summary: confidence, tests, requires_human_review.
+			if ev.Kind == "result_contract" {
+				s.noteResultContract(run.ID, ev.Text)
+			}
 		})
 		status := "done"
 		errText := ""
@@ -860,6 +998,8 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 			errText = ""
 		}
 		_ = s.store.FinishRun(run.ID, Actor, status, errText)
+		// Post-run snapshot + diff + run summary (fail-closed).
+		s.capturePostRun(run.ID, run.BotID, status)
 		s.hub.publish(store.Event{Kind: "run_status", Text: status})
 	}()
 }
@@ -1044,7 +1184,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bo
 	return true
 }
 
-func httpError(w http.ResponseWriter, err error) {
+func (s *Server) httpError(w http.ResponseWriter, err error) {
 	code := http.StatusBadRequest
 	switch {
 	case errors.Is(err, store.ErrDenied):
@@ -1058,8 +1198,45 @@ func httpError(w http.ResponseWriter, err error) {
 		code = http.StatusGatewayTimeout
 	case errors.Is(err, routes.ErrLocalUnpinned):
 		code = http.StatusBadRequest
+	case errors.Is(err, workspace.ErrProtected):
+		code = http.StatusForbidden
+	case errors.Is(err, workspace.ErrNotInWorkspace):
+		code = http.StatusBadRequest
+	case errors.Is(err, workspace.ErrTooLarge):
+		code = http.StatusRequestEntityTooLarge
+	case errors.Is(err, workspace.ErrExists):
+		code = http.StatusConflict
+	case errors.Is(err, workspace.ErrShaMismatch):
+		code = http.StatusConflict
 	}
-	http.Error(w, err.Error(), code)
+
+	// Scrub absolute paths from the message: git/os errors embed the
+	// operator's home layout and workspace root, which must not leak
+	// if the surface is ever bound beyond localhost.
+	msg := s.scrubPaths(err.Error())
+	http.Error(w, msg, code)
+}
+
+// scrubPaths replaces absolute path prefixes in an error message with
+// their last two segments. It is best-effort: it targets the known
+// leak vectors (workspace root, home dir, temp dirs) rather than every
+// possible path.
+func (s *Server) scrubPaths(msg string) string {
+	for _, root := range []string{s.home, s.workDir} {
+		if root == "" {
+			continue
+		}
+		for strings.Contains(msg, root) {
+			msg = strings.Replace(msg, root, filepath.Base(root), 1)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		msg = strings.ReplaceAll(msg, home, "~")
+	}
+	if tmp := os.TempDir(); tmp != "" && tmp != "/" {
+		msg = strings.ReplaceAll(msg, tmp, "$TMPDIR")
+	}
+	return msg
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
