@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/florianleibert/flobot/internal/executor"
+	"github.com/florianleibert/flobot/internal/routes"
 	"github.com/florianleibert/flobot/internal/schedule"
 	"github.com/florianleibert/flobot/internal/store"
 )
@@ -393,6 +394,55 @@ func TestDefaultAddrIsLoopback(t *testing.T) {
 	}
 	if err := CheckLoopbackAddr(DefaultAddr()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestStopRunRecordsStoppedStatus proves a user-initiated stop finishes the
+// run as "stopped", not the misleading "error" that a cancelled executor
+// context would otherwise produce. Regression for the fix that added the
+// stopped map to the server.
+func TestStopRunRecordsStoppedStatus(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fake binary sleeps 5s before emitting events, so there is a real
+	// window in which the run is running and can be stopped.
+	ex := &executor.Exec{
+		Bin: bin,
+		Environ: func() []string {
+			return []string{"FLOCODE_FAKE_SLEEP=5"}
+		},
+	}
+	srv := New(store.New(), WithExec(ex), WithWorkDir(dir))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "S", "role": "r", "route": "glm"})
+	run := postJSON(t, ts, "/api/v1/runs", map[string]any{
+		"bot_id": bot["id"], "prompt": "hello", "intent": "code",
+	})
+	runID, _ := run["id"].(string)
+	if runID == "" {
+		t.Fatalf("run = %v", run)
+	}
+
+	// Stop the running run.
+	resp, err := http.Post(ts.URL+"/api/v1/runs/"+runID+"/stop", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("stop -> %d %s", resp.StatusCode, b)
+	}
+
+	// The run must finish as "stopped", not "error".
+	ev := waitEvents(t, ts, runID)
+	if st, _ := ev["status"].(string); st != "stopped" {
+		t.Fatalf("status = %q, want stopped (events=%s)", st, eventKinds(ev))
 	}
 }
 
@@ -782,5 +832,113 @@ func TestRememberAndRunWithMemory(t *testing.T) {
 	}
 	if !strings.Contains(argv, "do the thing") {
 		t.Fatalf("prompt missing: %s", argv)
+	}
+}
+
+func TestLocalPinEndpointAndHealthReflectsIt(t *testing.T) {
+	srv := New(store.New())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	// New() loads persisted state, which may restore a local pin written by
+	// an earlier test; force unpinned so this test controls the lifecycle.
+	routes.SetLocalPin("")
+	defer routes.SetLocalPin("")
+
+	// Unpinned status.
+	res := getJSON(t, ts, "/api/v1/local")
+	if res["pinned"] != false {
+		t.Fatalf("unpinned local: %v", res)
+	}
+
+	// Health reports unpinned.
+	h := getJSON(t, ts, "/api/v1/health/models")
+	probes, _ := h["probes"].([]any)
+	var local ProbeResult
+	for _, p := range probes {
+		m, _ := p.(map[string]any)
+		if m["id"] == "local" {
+			b, _ := json.Marshal(m)
+			_ = json.Unmarshal(b, &local)
+		}
+	}
+	if local.OK || !strings.Contains(local.Error, "unpinned") {
+		t.Fatalf("unpinned local health: %+v", local)
+	}
+
+	// Pin local via the endpoint.
+	resp, err := http.Post(ts.URL+"/api/v1/local/pin", "application/json",
+		strings.NewReader(`{"pin":"qwen3-coder-30b-a3b-mlx"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("pin local -> %d %s", resp.StatusCode, b)
+	}
+	var pinned map[string]any
+	if err := json.Unmarshal(b, &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if pinned["pinned"] != true || pinned["pin"] != "qwen3-coder-30b-a3b-mlx" {
+		t.Fatalf("pinned: %v", pinned)
+	}
+
+	// Health now reflects the pin.
+	h = getJSON(t, ts, "/api/v1/health/models")
+	probes, _ = h["probes"].([]any)
+	for _, p := range probes {
+		m, _ := p.(map[string]any)
+		if m["id"] == "local" {
+			b, _ := json.Marshal(m)
+			_ = json.Unmarshal(b, &local)
+		}
+	}
+	if !strings.Contains(local.Error, "pinned to qwen3-coder-30b-a3b-mlx") {
+		t.Fatalf("pinned local health: %+v", local)
+	}
+}
+
+func TestBotCreateAcceptsLocalAndRunFailsUntilPinned(t *testing.T) {
+	srv := New(store.New())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	// New() loads persisted state, which may restore a local pin written by
+	// an earlier test; force unpinned so this test controls the lifecycle.
+	routes.SetLocalPin("")
+	defer routes.SetLocalPin("")
+
+	// A bot on the local route can be created even before the route is
+	// pinned (shape-valid); the failure surfaces at run time.
+	bot := postJSON(t, ts, "/api/v1/bots", map[string]any{"name": "L", "role": "tools", "route": "local"})
+	bid, _ := bot["id"].(string)
+
+	// Running on an unpinned local route fails with a clear error.
+	resp, err := http.Post(ts.URL+"/api/v1/runs", "application/json",
+		strings.NewReader(`{"bot_id":"`+bid+`","prompt":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == 200 {
+		t.Fatalf("unpinned local run should fail: %s", b)
+	}
+	if !strings.Contains(string(b), "unpinned") {
+		t.Fatalf("unpinned local run error: %s", b)
+	}
+
+	// Pin local; now the same bot can run.
+	routes.SetLocalPin("qwen3-coder-30b-a3b-mlx")
+	defer routes.SetLocalPin("")
+	resp, err = http.Post(ts.URL+"/api/v1/runs", "application/json",
+		strings.NewReader(`{"bot_id":"`+bid+`","prompt":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("pinned local run -> %d %s", resp.StatusCode, b)
 	}
 }

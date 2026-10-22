@@ -3,6 +3,7 @@ package routes
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,64 @@ func TestRouteJSONHasNoSecretsOrURLs(t *testing.T) {
 	} {
 		if strings.Contains(low, leak) {
 			t.Fatalf("route JSON leaked %q: %s", leak, raw)
+		}
+	}
+}
+
+func TestLocalPinLifecycle(t *testing.T) {
+	// Unpinned by default: shape-valid, but not resolvable.
+	if err := Validate("local"); err != nil {
+		t.Fatalf("local shape should always validate: %v", err)
+	}
+	if _, err := ResolvePin("local"); !errors.Is(err, ErrLocalUnpinned) {
+		t.Fatalf("unpinned local resolve: %v", err)
+	}
+	// Pin it.
+	SetLocalPin("qwen3-coder-30b-a3b-mlx")
+	defer SetLocalPin("")
+	if err := Validate("local"); err != nil {
+		t.Fatalf("pinned local validate: %v", err)
+	}
+	pin, err := ResolvePin("local")
+	if err != nil || pin != "qwen3-coder-30b-a3b-mlx" {
+		t.Fatalf("pinned local resolve = %q %v", pin, err)
+	}
+	// Unpin.
+	SetLocalPin("")
+	if err := Validate("local"); err != nil {
+		t.Fatalf("re-unpinned local still shape-valid: %v", err)
+	}
+	if _, err := ResolvePin("local"); !errors.Is(err, ErrLocalUnpinned) {
+		t.Fatalf("re-unpinned local resolve: %v", err)
+	}
+}
+
+func TestValidateRouteShapes(t *testing.T) {
+	cases := []struct {
+		id   string
+		want error
+	}{
+		{"", nil},             // defaults to glm
+		{"glm", nil},          // documented
+		{"qwen", nil},         // documented
+		{"muse", nil},         // documented
+		{"local", nil},        // shape-valid even unpinned
+		{"mesh/glm-5.2-fp8", nil}, // shape-valid; readiness at spawn
+		{"mesh/", fmt.Errorf("empty mesh route")},
+		{"direct/muse-spark-1.3", nil},
+		{"direct/", fmt.Errorf("empty direct route")},
+		{"nope", fmt.Errorf("unknown route")},
+	}
+	for _, c := range cases {
+		err := Validate(c.id)
+		if c.want == nil && err != nil {
+			t.Fatalf("Validate(%q) = %v, want nil", c.id, err)
+		}
+		if c.want != nil && err == nil {
+			t.Fatalf("Validate(%q) = nil, want error", c.id)
+		}
+		if c.want != nil && !strings.Contains(err.Error(), "unknown route") && c.id == "nope" {
+			t.Fatalf("Validate(%q) = %v, want unknown-route error", c.id, err)
 		}
 	}
 }

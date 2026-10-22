@@ -64,7 +64,11 @@ func (s *Server) probeRoutes(ctx context.Context) []ProbeResult {
 	for _, rt := range routes.DefaultRoutes() {
 		switch rt.ID {
 		case "local":
-			out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "unpinned"})
+			if routes.LocalPin() == "" {
+				out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "unpinned"})
+			} else {
+				out = append(out, ProbeResult{ID: rt.ID, IDs: []string{}, Error: "pinned to " + routes.LocalPin()})
+			}
 		case "muse":
 			out = append(out, s.probeModels(ctx, Probe{ID: rt.ID, URL: MuseProbeURL, Auth: true}))
 		default:

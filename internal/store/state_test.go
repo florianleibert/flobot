@@ -112,6 +112,33 @@ func TestStateInitializesPinnedDefaults(t *testing.T) {
 	}
 }
 
+// TestStateLocalPinRoundTrip proves the local route pin survives a
+// save/load cycle, so pinning local is not lost on restart.
+func TestStateLocalPinRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	st := NewState()
+	st.SetPath(path)
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	routes.SetLocalPin("qwen3-coder-30b-a3b-mlx")
+	defer routes.SetLocalPin("")
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := NewState()
+	loaded.SetPath(path)
+	if err := loaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := routes.LocalPin(); got != "qwen3-coder-30b-a3b-mlx" {
+		t.Fatalf("local pin after load = %q, want qwen3-coder-30b-a3b-mlx", got)
+	}
+}
+
 // TestStateLoadRoundTrip checks that a saved roster loads back intact.
 func TestStateLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()

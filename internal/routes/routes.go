@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/florianleibert/flobot/internal/amesh"
 )
@@ -22,6 +23,30 @@ type Route struct {
 
 // ErrLocalUnpinned is returned when route id "local" has no pin yet.
 var ErrLocalUnpinned = errors.New("local route is unpinned")
+
+// localPin holds the flocode pin for the local MLX route, guarded so HTTP
+// handler goroutines can pin/unpin it concurrently with route resolution.
+var localPin struct {
+	sync.RWMutex
+	pin string
+}
+
+// LocalPin returns the current pin for the "local" route ("" when unpinned).
+func LocalPin() string {
+	localPin.RLock()
+	defer localPin.RUnlock()
+	return localPin.pin
+}
+
+// SetLocalPin records the pin for the "local" route. An empty pin unpins it.
+func SetLocalPin(pin string) {
+	localPin.Lock()
+	defer localPin.Unlock()
+	localPin.pin = strings.TrimSpace(pin)
+}
+
+// IsLocal reports whether id is the "local" route.
+func IsLocal(id string) bool { return strings.TrimSpace(id) == "local" }
 
 // PinMap maps route ids to flocode --model pin names. local is omitted
 // until a pin exists. Base URLs stay in flocode config, not this map.
@@ -143,6 +168,41 @@ func Lookup(id string) (Route, bool) {
 	return Route{}, false
 }
 
+// Validate reports whether id is a known route shape. It returns a precise,
+// user-facing reason when the route id is unusable. Pinning and readiness
+// are runtime concerns resolved at spawn time (ResolvePin / ResolveMeshPin):
+// a bot may be created on "local" before it is pinned, and on a mesh route
+// before that model is ready.
+//
+//   - documented routes (glm, qwen, local, muse): valid by construction.
+//   - mesh/<id>: valid when the model id is non-empty.
+//   - direct/<id>: valid when the model id is non-empty.
+func Validate(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = "glm"
+	}
+	if IsLocal(id) {
+		return nil
+	}
+	if amesh.IsMeshRoute(id) {
+		if amesh.ModelIDFromRoute(id) == "" {
+			return fmt.Errorf("empty mesh route %q", id)
+		}
+		return nil
+	}
+	if IsDirectRoute(id) {
+		if ModelIDFromDirectRoute(id) == "" {
+			return fmt.Errorf("empty direct route %q", id)
+		}
+		return nil
+	}
+	if _, ok := PinMap[id]; ok {
+		return nil
+	}
+	return fmt.Errorf("unknown route %q", id)
+}
+
 // ResolvePin maps a route id to a flocode pin name. Base URLs are not
 // returned; they live only in flocode config. Mesh routes resolve their pin
 // against the live amesh catalog via ResolveMeshPin.
@@ -152,6 +212,9 @@ func ResolvePin(routeID string) (string, error) {
 		id = "glm"
 	}
 	if id == "local" {
+		if pin := LocalPin(); pin != "" {
+			return pin, nil
+		}
 		return "", ErrLocalUnpinned
 	}
 	if amesh.IsMeshRoute(id) {

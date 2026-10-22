@@ -30,6 +30,9 @@ type stateFile struct {
 	Routines []Routine         `json:"routines"`
 	Messages []Message         `json:"messages"`
 	Owners   map[string]string `json:"owners,omitempty"`
+	// LocalPin is the flocode pin for the "local" route ("" when unpinned).
+	// It is a model pin name, not a secret.
+	LocalPin string `json:"local_pin,omitempty"`
 }
 
 // State is the persisted roster. It is the on-disk authority for bots,
@@ -165,10 +168,12 @@ func (s *State) apply(st stateFile) {
 		s.routines[rt.ID] = rt
 	}
 	s.messages = append([]Message(nil), st.Messages...)
+	routes.SetLocalPin(st.LocalPin)
 }
 
 // applyDefaults seeds the roster with the pinned glm/qwen/muse teammates.
 func (s *State) applyDefaults() {
+	routes.SetLocalPin("")
 	s.bots = make(map[string]Bot)
 	for _, b := range defaultBots() {
 		s.bots[b.ID] = b
@@ -195,6 +200,7 @@ func (s *State) Save() error {
 		Routines: make([]Routine, 0, len(s.routines)),
 		Messages: append([]Message(nil), s.messages...),
 		Owners:   make(map[string]string),
+		LocalPin: routes.LocalPin(),
 	}
 	for _, b := range s.bots {
 		st.Bots = append(st.Bots, b)

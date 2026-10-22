@@ -51,6 +51,9 @@ type Server struct {
 	// stop a runaway run; spawn deletes its entry when the run finishes.
 	cancels   map[string]context.CancelFunc
 	cancelsMu sync.Mutex
+	// stopped records runs cancelled via POST /api/v1/runs/{id}/stop so their
+	// terminal status reads "stopped" instead of a misleading "error".
+	stopped map[string]bool
 
 	hubOnce sync.Once
 	hub     *hub
@@ -146,6 +149,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/health/models", s.healthModels)
 	mux.HandleFunc("GET /api/v1/mesh/models", s.meshModels)
 	mux.HandleFunc("GET /api/v1/direct/models", s.directModels)
+	mux.HandleFunc("GET /api/v1/local", s.localStatus)
+	mux.HandleFunc("POST /api/v1/local/pin", s.localPin)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	return sameOrigin(mux)
 }
@@ -693,6 +698,39 @@ func (s *Server) directModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// localStatus reports whether the "local" route is pinned and, if so, to
+// which flocode pin. The pin name is not a secret.
+func (s *Server) localStatus(w http.ResponseWriter, _ *http.Request) {
+	pin := routes.LocalPin()
+	writeJSON(w, map[string]any{
+		"schema": "flobot.local.v1",
+		"route":  "local",
+		"pinned": pin != "",
+		"pin":    pin,
+	})
+}
+
+// localPin pins the "local" route to a flocode model pin, or unpins it with
+// an empty pin. This is how the route wizard makes the local MLX route
+// usable. The pin name is not a secret; it never carries a key.
+func (s *Server) localPin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Pin string `json:"pin"`
+	}
+	if !decodeJSON(w, r, smallBodyLimit, &body) {
+		return
+	}
+	routes.SetLocalPin(body.Pin)
+	s.persist()
+	pin := routes.LocalPin()
+	writeJSON(w, map[string]any{
+		"schema": "flobot.local.v1",
+		"route":  "local",
+		"pinned": pin != "",
+		"pin":    pin,
+	})
+}
+
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BotID    string `json:"bot_id"`
@@ -784,6 +822,7 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 		defer func() {
 			s.cancelsMu.Lock()
 			delete(s.cancels, run.ID)
+			delete(s.stopped, run.ID)
 			s.cancelsMu.Unlock()
 			cancel()
 			if rec := recover(); rec != nil {
@@ -815,6 +854,11 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 			status = "error"
 			errText = res.Err.Error()
 		}
+		if s.wasStopped(run.ID) {
+			// A user-initiated stop is not an error; surface it as such.
+			status = "stopped"
+			errText = ""
+		}
 		_ = s.store.FinishRun(run.ID, Actor, status, errText)
 		s.hub.publish(store.Event{Kind: "run_status", Text: status})
 	}()
@@ -826,11 +870,24 @@ func (s *Server) stopRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.cancelsMu.Lock()
 	cancel, ok := s.cancels[id]
+	if ok {
+		if s.stopped == nil {
+			s.stopped = make(map[string]bool)
+		}
+		s.stopped[id] = true
+	}
 	s.cancelsMu.Unlock()
 	if ok {
 		cancel()
 	}
 	writeJSON(w, map[string]any{"id": id, "stopped": ok})
+}
+
+// wasStopped reports whether id was cancelled by POST /runs/{id}/stop.
+func (s *Server) wasStopped(id string) bool {
+	s.cancelsMu.Lock()
+	defer s.cancelsMu.Unlock()
+	return s.stopped[id]
 }
 
 // stream is the NDJSON event feed. It replays the events of the run given

@@ -118,6 +118,13 @@ func resolvePin(ctx context.Context, route string) (pin, cfgOverride string, err
 		}
 		return mp.Pin, mp.Config, nil
 	}
+	if routes.IsDirectRoute(route) {
+		mid := routes.ModelIDFromDirectRoute(route)
+		if mid == "" {
+			return "", "", fmt.Errorf("empty direct route %q", route)
+		}
+		return amesh.PinName(mid), routes.DirectConfigTOML(mid), nil
+	}
 	pin, err = routes.ResolvePin(route)
 	return pin, "", err
 }

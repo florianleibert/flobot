@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flobot — route playbook &amp; prompt generator</title>
+<style>
+:root{
+  --bg:#0b0d10; --panel:#12151a; --panel2:#171b21; --line:#232a33;
+  --ink:#e8edf2; --dim:#8b98a5; --faint:#5b6672;
+  --go:#3ddc84; --do:#5aa9ff; --skip:#ff5d5d; --gold:#f5c451;
+  --violet:#b48cff; --cyan:#4fd6e0; --pink:#ff7ab8;
+  --ease:cubic-bezier(.22,1,.36,1);
+  font-size:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:20}
+header .logo{font-weight:700;letter-spacing:.02em}
+header .logo em{color:var(--gold);font-style:normal}
+header .sub{color:var(--dim);font-size:13px}
+header .count{margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums;font-size:13px}
+#bar{height:3px;background:var(--line)}
+#bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--do),var(--go));transition:width .45s var(--ease)}
+main{flex:1;width:min(1080px,100%);margin:0 auto;padding:26px 20px 40px}
+/* tabs */
+#tabs{display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap}
+#tabs button{font:inherit;font-weight:600;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--dim);padding:10px 16px;cursor:pointer;transition:transform .12s var(--ease),background .15s,border-color .15s}
+#tabs button:hover{transform:translateY(-1px)}
+#tabs button.active{background:#0d1f38;border-color:#1d4a80;color:var(--do)}
+.tab{display:none;animation:fadein .35s var(--ease)}
+.tab.active{display:block}
+@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+h1{font-size:30px;line-height:1.15;letter-spacing:-.02em;margin-bottom:8px}
+h2{font-size:22px;letter-spacing:-.01em;margin-bottom:6px}
+.lead{color:var(--dim);max-width:640px;margin-bottom:20px}
+.lead b{color:var(--ink)}
+/* hero diagram */
+.hero{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px 26px;margin-bottom:22px}
+.hero svg{width:100%;height:auto;display:block}
+.node rect,.node ellipse{fill:var(--panel2);stroke-width:1.5}
+.node text{fill:var(--ink);font-size:12px;font-weight:600}
+.node .sub{fill:var(--faint);font-size:10px;font-weight:500}
+.flowline{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-dasharray:7 7;animation:dashflow 1s linear infinite}
+@keyframes dashflow{to{stroke-dashoffset:-14}}
+.pulse{animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+.kind-chip{cursor:pointer}
+.kind-chip rect{fill:none;stroke-width:1.5;transition:.2s}
+.kind-chip text{fill:var(--dim);font-size:11px}
+.kind-chip.active rect{fill:#0d1f38}
+.kind-chip.active text{fill:#fff}
+/* route cards */
+.route-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:26px}
+.r-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 16px;position:relative;overflow:hidden;transition:transform .15s var(--ease),border-color .15s}
+.r-card:hover{transform:translateY(-2px);border-color:#33404f}
+.r-card .rk{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.r-card .rk .rid{font-family:ui-monospace,monospace;font-weight:700;font-size:15px}
+.r-card .rk .role{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
+.r-card .model{color:var(--dim);font-size:12.5px;font-family:ui-monospace,monospace;margin-bottom:10px}
+.r-card .purpose{color:var(--dim);font-size:13px;margin-bottom:12px}
+.r-card .meter{display:flex;gap:3px}
+.r-card .meter i{height:4px;flex-basis:0;flex-grow:1;border-radius:2px;background:#2a323c}
+.r-card .meter i.on{background:#5aa9ff}
+.r-card .src{margin-top:12px;font-size:11px;color:var(--faint)}
+.r-card.glm{border-top-color:#5aa9ff}.r-card.qwen{border-top-color:#3ddc84}.r-card.local{border-top-color:#f5c451}.r-card.muse{border-top-color:#ff7ab8}.r-card.mesh{border-top-color:#4fd6e0}.r-card.direct{border-top-color:#b48cff}
+.badge{display:none}
+/* decide quiz */
+#quiz-head{display:none}
+#quiz-head.show{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+#quiz-head .score{font-size:13px;color:var(--dim)}
+#quiz-head .score b{color:var(--gold)}
+.qcard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px 28px;max-width:none}
+.qcard .kicker{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
+.qcard .kicker .n{color:var(--gold);font-weight:700}
+.qcard h3{font-size:21px;line-height:1.25;margin-bottom:12px}
+.qcard .scenario{color:var(--dim);margin-bottom:20px}
+.qcard .scenario b{color:var(--ink)}
+.qopts{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.qopt{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:14px 16px;cursor:pointer;text-align:left;transition:.15s var(--ease)}
+.qopt:hover{border-color:#33404f;transform:translateY(-1px)}
+.qopt .qid{font-family:ui-monospace,monospace;font-weight:700;color:#fff}
+.qopt .qwhy{color:var(--faint);font-size:12px;margin-top:4px}
+.qopt.correct{border-color:#1d5c3a;background:#0e2b1c}
+.qopt.correct .qid{color:#3ddc84}
+.qopt.wrong{border-color:#6b2626;background:#2b1111}
+.qopt.wrong .qid{color:#ff5d5d}
+.qopt.dimmed{opacity:.4}
+.qcard .explain{border-left:3px solid var(--gold);padding-left:14px;color:var(--dim);font-size:14px;margin-top:18px;min-height:20px}
+.qcard .explain b{color:#fff}
+.qcard .acts{margin-top:20px}
+button.btn{font:inherit;font-weight:600;border-radius:10px;border:none;background:#0d1f38;color:#5aa9ff;padding:11px 18px;cursor:pointer}
+button.btn:hover{filter:brightness(1.15)}
+button.btn[disabled]{opacity:.35;cursor:default}
+/* summary */
+#qsummary{display:none}
+#qsummary h2{margin-bottom:6px}
+#qsummary .sub{color:var(--dim);margin-bottom:20px}
+.qgroup{margin-bottom:20px}
+.qgroup h4{font-size:12px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:8px}
+.qgroup ul{list-style:none}
+.qgroup li{display:flex;align-items:baseline;gap:10px;padding:9px 14px;background:var(--panel);border-left-width:.5em solid var(--go);border-radius:.25em solid var(--line)}
+/* generator */
+.gen-grid{display:grid;grid-template-columns:.95fr 1.05fr;gap:20px}
+@media(max-width:860px){.gen-grid{grid-template-columns:1fr}}
+.gpanel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px}
+.gpanel h3{font-size:16px;margin-bottom:14px}
+.gpanel .hint{color:var(--faint);font-size:12px;margin-bottom:12px}
+label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);margin:14px 0 6px}
+input[type=text],textarea,select{width:100%;font:inherit;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--ink);padding:10px 12px}
+input[type=text]:focus,textarea:focus,select:focus{outline:none;border-color:#1d4a80}
+textarea{resize:vertical;min-height:70px}
+select{cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-size:12.5px;border:1px solid var(--line);border-radius:99px;padding:6px 12px;cursor:pointer;background:var(--panel2);color:var(--dim);transition:.15s}
+.chip:hover{border-color:#33404f}
+.chip.on{background:#0d1f38;border-color:#1d4a80;color:#fff}
+.chip .k{opacity:.6;font-size:11px;margin-right:4px}
+#out{background:#0a0c0e;border:1px solid var(--line);border-radius:12px;padding:16px;font:12.5px/1.6 ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;min-height:220px;max-height:420px;overflow:auto;color:#c9e3d0}
+#out .cmt{color:#5b6672}
+#out .key{color:#7fb3ff}
+#out .str{color:#9fd0a8}
+#copyBtn{margin-top:12px}
+#genStatus{color:var(--go);font-size:13px;margin-top:10px;min-height:18px}
+footer{padding:12px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:12px;display:flex;gap:18px;flex-wrap:wrap}
+footer a{color:var(--dim);text-decoration:none}
+kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font:12px ui-monospace,monospace}
+@media(max-width:640px){.route-grid{grid-template-columns:1fr}.qcard{padding:20px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">flo<em>bot</em> · route playbook</div>
+  <div class="sub">the model-routing model — decide, then generate</div>
+  <div class="count" id="count"></div>
+</header>
+<div id="bar"><i id="barfill"></i></div>
+<main>
+  <div id="tabs">
+    <button data-tab="routes" class="active">⇄ Routes</button>
+    <button data-tab="decide">⚖ Decide</button>
+    <button data-tab="gen">⚙ Prompt generator</button>
+  </div>
+
+  <!-- ============ TAB 1: ROUTES ============ -->
+  <section class="tab active" id="tab-routes">
+    <h1>Every model is a route.</h1>
+    <p class="lead">flobot pins a <b>model</b> to each <b>route</b> — a named, documented combination of a role, a source, and a purpose. A teammate (bot) is just a route plus a memory. Pick the right route and the right prompt, and the whole crew lines up.</p>
+
+    <div class="hero">
+      <svg viewBox="0 0 900 250" role="img" aria-label="Route flow diagram">
+        <defs>
+          <linearGradient id="gradGo" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#5aa9ff"/><stop offset="1" stop-color="#3ddc84"/>
+          </linearGradient>
+        </defs>
+        <!-- prompt -->
+        <g class="node">
+          <rect x="20" y="95" width="130" height="60" rx="12"/>
+          <text x="85" y="120" text-anchor="middle">prompt</text>
+          <text class="sub" x="85" y="138" text-anchor="middle">what you want done</text>
+        </g>
+        <!-- route selector -->
+        <g class="node">
+          <rect x="210" y="85" width="150" height="80" rx="14"/>
+          <text x="285" y="112" text-anchor="middle">route</text>
+          <text class="sub" x="285" y="130" text-anchor="middle">glm · qwen · local</text>
+          <text class="sub" x="285" y="146" text-anchor="middle">muse · mesh/ · direct/</text>
+        </g>
+        <!-- pin -->
+        <g class="node">
+          <rect x="420" y="95" width="130" height="60" rx="12"/>
+          <text x="485" y="120" text-anchor="middle">pin</text>
+          <text class="sub" x="485" y="138" text-anchor="middle">flocode --model</text>
+        </g>
+        <!-- backend -->
+        <g class="node">
+          <rect x="610" y="85" width="130" height="60" rx="12"/>
+          <text x="675" y="120" text-anchor="middle">backend</text>
+          <text class="sub" x="675" y="138" text-anchor="middle">amesh · meta · local</text>
+        </g>
+        <!-- output -->
+        <g class="node">
+          <rect x="790" y="95" width="95" height="60" rx="12"/>
+          <text x="837" y="120" text-anchor="middle">result</text>
+          <text class="sub" x="837" y="138" text-anchor="middle">events → UI</text>
+        </g>
+        <!-- flows -->
+        <path class="flowline" d="M150 125 H205" stroke="#5aa9ff"/>
+        <path class="flowline" d="M360 125 H415" stroke="#5aa9ff"/>
+        <path class="flowline" d="M550 125 H605" stroke="#5aa9ff"/>
+        <path class="flowline" d="M740 125 H785" stroke="#5aa9ff"/>
+        <!-- kind chips -->
+        <g class="kind-chip active" data-kind="glm"><rect x="20" y="195" width="120" height="34" rx="17"/><text x="80" y="216" text-anchor="middle">glm · orchestrator</text></g>
+        <g class="kind-chip" data-kind="qwen"><rect x="150" y="195" width="120" height="34" rx="17"/><text x="210" y="216" text-anchor="middle">qwen · coder</text></g>
+        <g class="kind-chip" data-kind="local"><rect x="280" y="195" width="120" height="34" rx="17"/><text x="340" y="216" text-anchor="middle">local · tools</text></g>
+        <g class="kind-chip" data-kind="muse"><rect x="410" y="195" width="120" height="34" rx="17"/><text x="470" y="216" text-anchor="middle">muse · chief-of-staff</text></g>
+        <g class="kind-chip" data-kind="mesh"><rect x="540" y="195" width="140" height="34" rx="17"/><text x="610" y="216" text-anchor="middle">mesh/ · any peer</text></g>
+        <g class="kind-chip" data-kind="direct"><rect x="690" y="195" width="150" height="34" rx="17"/><text x="765" y="216" text-anchor="middle">direct/ · meta api</text></g>
+      </svg>
+    </div>
+
+    <h2>The documented crew</h2>
+    <p class="lead">Four routes ship by default. Each is a deliberate division of labor — cheap where cheap is fine, strong where it matters.</p>
+    <div class="route-grid" id="routeGrid"></div>
+
+    <h2>Two more kinds: mesh and direct</h2>
+    <p class="lead"><b>mesh/&lt;model&gt;</b> routes come from the live amesh catalog — any ready model served by a mesh peer becomes a route. <b>direct/&lt;model&gt;</b> pins any model on the Meta API; the key stays on this Mac and never reaches the browser. Both are dynamic: whatever the server reports is what you can pin.</p>
+  </section>
+
+  <!-- ============ TAB 2: DECIDE ============ -->
+  <section class="tab" id="tab-decide">
+    <h1>Which route for which job?</h1>
+    <p class="lead">Step through real scenarios and pick the route you'd send. Each answer teaches the trade-off — then shows you the crew's reasoning.</p>
+    <div id="quiz-head"><span class="score">score: <b id="qscore">0</b>/<span id="qtotal"></span></span><span style="margin-left:auto;color:var(--faint)" id="qpos"></span></div>
+    <div id="qstage"></div>
+    <div id="qsummary">
+      <h2>Your routing instincts</h2>
+      <div class="sub">You matched the crew on N of M. Replay any scenario to sharpen the call.</div>
+      <div class="qgroup"><h4 style="color:var(--go)">Matched</h4><ul id="qlist-ok"></ul></div>
+      <div class="qgroup"><h4 style="color:var(--skip)">Missed</h4><ul id="qlist-no"></ul></div>
+      <button class="btn" id="qagain">↻ go again</button>
+    </div>
+  </section>
+
+  <!-- ============ TAB 3: GENERATOR ============ -->
+  <section class="tab" id="tab-gen">
+    <h1>Prompt generator</h1>
+    <p class="lead">Describe the job, pick a route and guardrails — get a ready-to-run flobot prompt plus the exact API call.</p>
+    <div class="gen-grid">
+      <div class="gpanel">
+        <label for="gTask">What do you want done?</label>
+        <textarea id="gTask" placeholder='e.g. "Review the auth refactor in internal/auth and flag anything that breaks the session model."'></textarea>
+
+        <label for="gRoute">Route</label>
+        <select id="gRoute"></select>
+
+        <label for="gIntent">Intent</label>
+        <select id="gIntent">
+          <option value="code">code — mutate the repo</option>
+          <option value="ask">ask — read-only, no mutation</option>
+        </select>
+
+        <label>Guardrails</label>
+        <div class="chips" id="gGuards">
+          <span class="chip on" data-guard="verify" data-k="v">verify — run tests before done</span>
+          <span class="chip" data-guard="yolo" data-k="y">yolo — skip approval gate</span>
+          <span class="chip" data-guard="worktree" data-k="w">worktree — isolated checkout</span>
+        </div>
+
+        <button class="btn" id="gGen" style="margin-top:16px">⚙ Generate</button>
+        <div id="genStatus"></div>
+      </div>
+      <div class="gpanel">
+        <h3>Output</h3>
+        <p class="hint">A prompt to paste into the Run panel, then the exact API call.</p>
+        <pre id="out"></pre>
+        <button class="btn" id="copyBtn">⧉ Copy</button>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>
+  <span>source: internal/routes + internal/amesh + internal/server</span>
+  <span>keys: pick a tab, click through, generate</span>
+</footer>
+<script>
+// ---- data ----------------------------------------------------------------
+
+const ROUTES = [
+  {id:"glm", short:"glm", role:"orchestrator", model:"glm-5.2-fp8", source:"amesh-mesh",
+   purpose:"Multi-agent planning, handoff, and long-horizon review.",
+   dims:[5,5,2,1], color:"#5aa9ff"},
+  {id:"qwen", short:"qwen", role:"coder", model:"qwen3.8-27b-fp8", source:"amesh-qwen-node",
+   purpose:"Repo-native coding on a working Qwen 3.8 node.",
+   dims:[5,4,2,2], color:"#3ddc84"},
+  {id:"local", short:"local", role:"tools", model:"qwen3-coder-30b-a3b-mlx", source:"this-mac",
+   purpose:"Local tool calls. No mesh hop. Read-only system info by default.",
+   dims:[4,4,2,1], color:"#f5c451"},
+  {id:"muse", short:"muse", role:"chief-of-staff", model:"muse-spark-1.3", source:"meta-model-api",
+   purpose:"1M-context planning. Key stays on this Mac; never in the browser.",
+   dims:[5,5,2,2], color:"#ff7ab8"},
+  {id:"mesh/<model>", short:"mesh", role:"mesh", model:"any ready peer", source:"amesh-mesh",
+   purpose:"Any ready model served by an amesh mesh peer — dynamic, from the live catalog.",
+   dims:[4,4,3,2], color:"#4fd6e0"},
+  {id:"direct/<model>", short:"direct", role:"direct", model:"any meta api model", source:"meta-model-api",
+   purpose:"Any model on the Meta model API. Key stays on this Mac.",
+   dims:[4,4,3,2], color:"#b48cff"},
+];
+const byShort = s => ROUTES.find(r => r.short === s);
+
+// Decide quiz: scenario → the route the crew would send.
+const QUIZ = [
+  {scenario:"You're about to refactor a 400-line function in a hot code path. You need a model that can hold the whole file, reason about the change, and actually edit the repo.",
+   answer:"qwen", why:"qwen is the repo-native coder — it edits, runs tests, and verifies. For a code mutation you want the coder, not the planner."},
+  {scenario:"A teammate is about to run a multi-step plan across three repos with handoffs. You need long-horizon reasoning and the ability to orchestrate other agents.",
+   answer:"glm", why:"glm is the orchestrator — planning, handoff, and long-horizon review are its whole job."},
+  {scenario:"You want to check local system info — CPU load, disk space, running processes — without sending anything off this Mac.",
+   answer:"local", why:"local is the tools route: no mesh hop, read-only system info by default. Nothing leaves the machine."},
+  {scenario:"You're drafting a 1M-token architecture doc that spans your whole workspace and want frontier-grade reasoning with your key staying on this Mac.",
+   answer:"muse", why:"muse is the chief-of-staff — 1M-context planning, key stays local, never in the browser."},
+  {scenario:"amesh is down but you still need a Meta model for a task. You want a route that pins any Meta API model directly.",
+   answer:"direct", why:"direct/<model> is the fallback when amesh is unreachable — it forces a direct route to the Meta API."},
+  {scenario:"A mesh peer just brought up a brand-new model you've never heard of. You want to use it without touching config.",
+   answer:"mesh", why:"mesh/<model> is dynamic — any ready model in the live amesh catalog becomes a selectable route."},
+];
+
+// ---- helpers -------------------------------------------------------------
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// ---- tabs ----------------------------------------------------------------
+
+const tabs = document.querySelectorAll("#tabs button");
+function activateTab(name){
+  tabs.forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+}
+tabs.forEach(btn => btn.addEventListener("click", () => activateTab(btn.dataset.tab)));
+// deep-link: open #decide or #gen directly
+const initial = (location.hash || "").replace("#","");
+if (["routes","decide","gen"].includes(initial)) activateTab(initial);
+
+// ---- route cards ---------------------------------------------------------
+
+function renderRoutes(){
+  $("routeGrid").innerHTML = ROUTES.map(r => `
+    <div class="r-card ${r.id.split("/")[0]}">
+      <div class="rk"><span class="rid">${esc(r.id)}</span><span class="role">${esc(r.role)}</span></div>
+      <div class="model">${esc(r.model)}</div>
+      <div class="purpose">${esc(r.purpose)}</div>
+      <div class="meter">${[1,2,3,4].map(k=>`<i class="${k<=r.dims[k-1]?"on":""}"></i>`).join("")}</div>
+      <div class="src">source: ${esc(r.source)}</div>
+    </div>`).join("");
+}
+
+// ---- diagram kind chips --------------------------------------------------
+
+document.querySelectorAll(".kind-chip").forEach(chip => {
+  chip.addEventListener("click", () => {
+    document.querySelectorAll(".kind-chip").forEach(c => c.classList.remove("active"));
+    chip.classList.add("active");
+    const kind = chip.dataset.kind;
+    const card = [...document.querySelectorAll(".r-card")].find(c => c.classList.contains(kind));
+    if (card) card.scrollIntoView({behavior:"smooth", block:"center"});
+  });
+});
+
+// ---- decide quiz ---------------------------------------------------------
+
+let qi = 0, qscore = 0, qresults = [];
+$("qtotal").textContent = QUIZ.length;
+$("quiz-head").classList.add("show");
+
+function renderQuiz(){
+  $("qpos").textContent = `${qi+1} / ${QUIZ.length}`;
+  if (qi >= QUIZ.length){ showQSummary(); return; }
+  const q = QUIZ[qi];
+  const opts = ["glm","qwen","local","muse","mesh","direct"].filter(o => o !== q.answer);
+  // shuffle
+  for (let i = opts.length-1; i>0; i--){ const j = Math.floor(Math.random()*(i+1)); [opts[i],opts[j]]=[opts[j],opts[i]]; }
+  const choices = [q.answer, ...opts.slice(0,3)];
+  for (let i = choices.length-1; i>0; i--){ const j = Math.floor(Math.random()*(i+1)); [choices[i],choices[j]]=[choices[j],choices[i]]; }
+  $("qstage").innerHTML = `
+    <div class="qcard">
+      <div class="kicker"><span class="n">${String(qi+1).padStart(2,"0")}</span><span>scenario</span></div>
+      <h3>Which route do you send?</h3>
+      <div class="scenario">${esc(q.scenario)}</div>
+      <div class="qopts">
+        ${choices.map(o => `<button class="qopt" data-o="${o}"><div class="qid">${esc(o)}</div><div class="qwhy">${esc(byShort(o)?.role || "")}</div></button>`).join("")}
+      </div>
+      <div class="explain" id="qexplain"></div>
+      <div class="acts"><button class="btn" id="qnext" disabled>next →</button></div>
+    </div>`;
+  $("qstage").querySelectorAll(".qopt").forEach(b => b.addEventListener("click", () => {
+    const picked = b.dataset.o;
+    const correct = picked === q.answer;
+    if (correct) qscore++;
+    qresults[qi] = correct;
+    $("qscore").textContent = qscore;
+    $("qstage").querySelectorAll(".qopt").forEach(x => {
+      x.classList.add("dimmed");
+      if (x.dataset.o === q.answer) x.classList.add("correct");
+      else if (x === b) x.classList.add("wrong");
+    });
+    $("qexplain").innerHTML = `<b>${correct ? "Correct — " + esc(q.answer) : "The crew sends " + esc(q.answer)}.</b> ${esc(q.why)}`;
+    $("qnext").disabled = false;
+  }));
+  $("qnext").onclick = () => { qi++; renderQuiz(); };
+}
+
+function showQSummary(){
+  $("qstage").innerHTML = "";
+  $("qsummary").style.display = "block";
+  $("qsummary").querySelector(".sub").textContent =
+    `You matched the crew on ${qscore} of ${QUIZ.length}. Replay any scenario to sharpen the call.`;
+  for (const ok of [true,false]){
+    const ul = $("qlist-" + (ok?"ok":"no"));
+    ul.innerHTML = "";
+    let n = 0;
+    QUIZ.forEach((q,i) => {
+      if (!!qresults[i] === ok){
+        n++;
+        const li = document.createElement("li");
+        li.style.cssText = "padding:9px 14px;background:var(--panel);border:1px solid var(--line);border-left:4px solid " + (ok ? "var(--go)" : "var(--skip)") + ";border-radius:10px;margin-bottom:6px";
+        li.innerHTML = `<span style="color:var(--faint)">${String(i+1).padStart(2,"0")}</span> ${esc(q.scenario.slice(0,90))}… <span style="color:var(--gold)">→ ${esc(q.answer)}</span>`;
+        ul.appendChild(li);
+      }
+    });
+    if (!n) ul.innerHTML = `<li style="color:var(--faint)">— none —</li>`;
+  }
+}
+
+$("qagain").addEventListener("click", () => {
+  qi = 0; qscore = 0; qresults = []; $("qscore").textContent = "0";
+  $("qsummary").style.display = "none";
+  renderQuiz();
+});
+
+// ---- generator -----------------------------------------------------------
+
+function fillRouteSelect(){
+  const sel = $("gRoute");
+  sel.innerHTML = ROUTES.map(r => `<option value="${esc(r.id)}">${esc(r.id)} — ${esc(r.role)}</option>`).join("");
+}
+
+function activeGuards(){
+  return [...document.querySelectorAll("#gGuards .chip.on")].map(c => c.dataset.guard);
+}
+
+function generate(){
+  const task = $("gTask").value.trim();
+  const route = $("gRoute").value;
+  const intent = $("gIntent").value;
+  const guards = activeGuards();
+  if (!task){ $("genStatus").textContent = "describe the task first"; return; }
+  if (!route){ $("genStatus").textContent = "pick a route"; return; }
+
+  const r = ROUTES.find(x => x.id === route);
+  const lines = [];
+  lines.push(`# flobot run — ${route} (${r ? r.role : ""})`);
+  lines.push(`# intent: ${intent}` + (guards.length ? ` · guards: ${guards.join(", ")}` : ""));
+  lines.push("");
+  lines.push(task);
+  lines.push("");
+  if (guards.includes("verify")) lines.push("Verify: run the test suite and only report done when it passes.");
+  if (guards.includes("worktree")) lines.push("Worktree: do this in an isolated checkout; leave my main tree untouched.");
+  if (guards.includes("yolo")) lines.push("Yolo: you may act without pausing for approval on consequential steps.");
+
+  const prompt = lines.join("\n");
+  const body = JSON.stringify({
+    bot_id: "<bot-id>",
+    prompt,
+    intent,
+    yolo: guards.includes("yolo"),
+    verify: guards.includes("verify"),
+    worktree: guards.includes("worktree")
+  }, null, 2);
+
+  const out =
+`# --- prompt to paste into Run ---
+${prompt}
+
+# --- or call the API ---
+curl -s -X POST http://127.0.0.1:4120/api/v1/runs \\
+  -H 'Content-Type: application/json' \\
+  -d '${body.replace(/'/g, "'\\''")}'`;
+  $("out").textContent = out;
+  $("genStatus").textContent = "generated ✓";
+}
+
+// ---- init ----------------------------------------------------------------
+
+renderRoutes();
+fillRouteSelect();
+renderQuiz();
+
+document.querySelectorAll("#gGuards .chip").forEach(chip => {
+  chip.addEventListener("click", () => chip.classList.toggle("on"));
+});
+$("gGen").addEventListener("click", generate);
+$("copyBtn").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("out").textContent); $("genStatus").textContent = "copied ✓"; }
+  catch { $("genStatus").textContent = "copy blocked (file://) — select manually"; }
+});
+</script>
+
+</body>
+</html>

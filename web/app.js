@@ -272,7 +272,7 @@ function render() {
   const botName = {};
   for (const b of roster.bots) botName[b.id] = b.name;
   setHTML($("runHistory"), (roster.runs||[]).slice(0, 20).map(r => {
-    const chip = r.status === "done" ? "ok" : (r.status === "running" ? "acc" : "err");
+    const chip = r.status === "done" ? "ok" : (r.status === "running" ? "acc" : (r.status === "stopped" ? "warn" : "err"));
     const dur = runDuration(r);
     return `<li class="runrow" data-runrow="${esc(r.id)}">
       <div class="body">
@@ -408,9 +408,9 @@ function appendEvent(e) {
   const log = logEl();
   const stick = nearBottom(log);
   log.appendChild(buildEventNode(e));
-  // A run is terminal on "done" or on a run_status of done/error; both must
-  // refresh the roster so RECENT RUNS never goes stale after an error run.
-  if (e.kind === "done" || (e.kind === "run_status" && /^(done|error)$/.test(e.text || ""))) {
+  // A run is terminal on "done" or on a run_status of done/error/stopped;
+  // all three must refresh the roster so RECENT RUNS never goes stale.
+  if (e.kind === "done" || (e.kind === "run_status" && /^(done|error|stopped)$/.test(e.text || ""))) {
     onRunEnd();
   }
   if (stick) log.scrollTop = log.scrollHeight;
@@ -646,7 +646,7 @@ function setStreamState(state) {
 }
 
 // stopRun cancels the active run's executor context server-side. The
-// stream then delivers the run_status error event and onRunEnd cleans up.
+// stream then delivers the run_status stopped event and onRunEnd cleans up.
 async function stopRun() {
   const id = streamRunId || activeRun;
   if (!id) return;

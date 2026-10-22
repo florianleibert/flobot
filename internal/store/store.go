@@ -135,6 +135,10 @@ func (s *Store) SetPersistPath(p string) {
 // A failed save is never fatal, but it is logged to stderr so a broken
 // state file is not silently ignored.
 func (s *Store) Save() error {
+	// Snapshot under the Store lock so concurrent mutations (e.g. two
+	// handoffs) cannot race with State.Save reading s.messages.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err := s.State.Save()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "flobot: state save failed: %v\n", err)
@@ -150,8 +154,8 @@ func (s *Store) CreateBot(owner, name, role, route string) (Bot, error) {
 	if name == "" {
 		return Bot{}, fmt.Errorf("name required")
 	}
-	if _, ok := routes.Lookup(route); !ok {
-		return Bot{}, fmt.Errorf("unknown route %q", route)
+	if err := routes.Validate(route); err != nil {
+		return Bot{}, err
 	}
 	if strings.TrimSpace(role) == "" {
 		role = "specialist"
@@ -206,8 +210,8 @@ func (s *Store) UpdateBot(id, actor, name, role, route string) (Bot, error) {
 		bot.Role = role
 	}
 	if route = strings.TrimSpace(route); route != "" {
-		if _, ok := routes.Lookup(route); !ok {
-			return Bot{}, fmt.Errorf("unknown route %q", route)
+		if err := routes.Validate(route); err != nil {
+			return Bot{}, err
 		}
 		bot.Route = route
 	}

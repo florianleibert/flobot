@@ -171,10 +171,11 @@ async function stopServer() {
   serverProc = null;
   await new Promise((resolve) => {
     let settled = false;
-    const done = () => { if (!settled) { settled = true; clearTimeout(killTimer); resolve(); } };
+    let killTimer = null;
+    const done = () => { if (!settled) { settled = true; if (killTimer) clearTimeout(killTimer); resolve(); } };
     // If the proc already exited (exitCode set), 'exit' will never fire again.
     if (proc.exitCode !== null || proc.signalCode) return done();
-    const killTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} done(); }, 3000);
+    killTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} done(); }, 3000);
     proc.once('exit', done);
     try { proc.kill('SIGTERM'); } catch { done(); }
   });
