@@ -17,7 +17,7 @@ var StylesCSS string
 // BundleTag marks where the production bundle script lives in index.html.
 // The Go server serves the page with this tag intact; local vite dev swaps
 // it for the module entry via IndexHTMLForLocalDev.
-const BundleTag = `<!-- bundle:start --><script src="/app.js"></script><!-- bundle:end -->`
+const BundleTag = `<!-- bundle:start --><link rel="stylesheet" href="/styles.css"><script src="/app.js"></script><!-- bundle:end -->`
 
 // IndexHTMLForLocalDev swaps the embedded production bundle tag for the
 // vite module entry so the same embedded index.html also works under
