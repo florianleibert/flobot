@@ -921,6 +921,7 @@ const paletteItems = () => [
   {ico:"◎", txt:"Overview", kbd:"1", go:() => gotoPanel("overview")},
   {ico:"◍", txt:"Teammates", kbd:"2", go:() => gotoPanel("bots")},
   {ico:"▶", txt:"New run", kbd:"r", go:() => gotoPanel("run")},
+  {ico:"◉", txt:"Needs review queue", kbd:"n", go:() => { gotoPanel("overview"); runFilter = "review"; render(); }},
   {ico:"❯", txt:"Editor", kbd:"e", go:() => gotoPanel("editor")},
   {ico:"↻", txt:"Routines", kbd:"4", go:() => gotoPanel("routines")},
   {ico:"✦", txt:"Skills", kbd:"5", go:() => gotoPanel("skills")},
@@ -1017,9 +1018,20 @@ document.addEventListener("keydown", e => {
   }
   if (typing) return;
   if (e.key === "r" || e.key === "R") { gotoPanel("run"); return; }
+  // "n" toggles the needs-review filter from anywhere (research R95/G2:
+  // the pending-review queue is the supervisory loop — make it one
+  // keystroke, not a mouse trip to the Overview panel).
+  if (e.key === "n" || e.key === "N") {
+    gotoPanel("overview");
+    runFilter = runFilter === "review" ? "all" : "review";
+    render();
+    return;
+  }
+  // 1–8 panel shortcuts. Keep in sync with the nav order in index.html
+  // (overview, teammates, run, editor, routines, skills, routes, health).
   const n = parseInt(e.key, 10);
-  if (n >= 1 && n <= 7) {
-    const names = ["overview","bots","run","routines","skills","routes","health"];
+  if (n >= 1 && n <= 8) {
+    const names = ["overview","bots","run","editor","routines","skills","routes","health"];
     gotoPanel(names[n-1]);
   }
 });
