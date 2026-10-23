@@ -179,7 +179,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.indexHTML)
 	mux.HandleFunc("GET /styles.css", s.stylesCSS)
 	mux.HandleFunc("GET /app.js", s.appJS)
-	mux.HandleFunc("GET /editor.js", s.editorJS)
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /api/v1/roster", s.roster)
 	mux.HandleFunc("POST /api/v1/bots", s.createBot)
@@ -378,11 +377,6 @@ func (s *Server) stylesCSS(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) appJS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	_, _ = io.WriteString(w, web.AppJS)
-}
-
-func (s *Server) editorJS(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	_, _ = io.WriteString(w, web.EditorJS)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

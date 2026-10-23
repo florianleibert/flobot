@@ -1,1352 +1,2303 @@
-// flobot web UI — mission control for local agents.
-// Connects to /api/stream (NDJSON) and renders every event kind:
-// content, thinking (collapsed), tool_start/tool_end (paired),
-// perm (mock ack), plan, err, done, verify (badge).
-//
-// Security: the UI never displays secrets or API keys. Every string that
-// reaches the DOM passes through sanitize() first, which masks the
-// documented key file (~/.accounts/meta.ai) and any MODEL_API_KEY
-// material, and esc() HTML-escapes the result.
-
-const $ = id => document.getElementById(id);
-let roster = {bots:[], skills:[], routines:[], messages:[], routes:[], runs:[]};
-let runFilter = "all"; // "all" | "review" — needs-review filter (G2)
-let activeRun = null;
-let pollTimer = null;
-let elapsedTimer = null;
-let runStart = null;
-
-// ---- stream state -------------------------------------------------------
-
-let streamES = null;
-let streamBuf = "";
-let streamOpen = false;
-let streamRetries = 0;
-let streamTimer = null;
-let streamRunId = null;
-
-// ---- secret sanitization ------------------------------------------------
-
-// secretPatterns mask anything that looks like credential material before
-// it can be rendered. They are deliberately broad: better to over-mask.
-const secretPatterns = [
-  /MODEL_API_KEY\s*[=:]\s*\S+/g,
-  /sk-[A-Za-z0-9_\-]{8,}/g,
-  /Bearer\s+[A-Za-z0-9_\-\.]{8,}/g,
-  /~\/\.accounts\/meta\.ai/g,
-  /\/\.accounts\/meta\.ai/g,
-];
-
-function sanitize(s) {
-  let out = String(s ?? "");
-  for (const re of secretPatterns) out = out.replace(re, "[REDACTED]");
-  return out;
-}
-
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-// safe renders a value for the DOM: sanitize first, then HTML-escape.
-function safe(s) { return esc(sanitize(s)); }
-
-// ---- toasts (interaction feedback) --------------------------------------
-
-function toast(msg, cls) {
-  const host = $("toasts");
-  // Cap concurrent toasts so a burst of events can't stack a column of
-  // them over the UI; oldest fade out immediately.
-  while (host.children.length >= 4) host.firstChild.remove();
-  const t = document.createElement("div");
-  t.className = "toast" + (cls ? " " + cls : "");
-  t.textContent = msg;
-  host.appendChild(t);
-  setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .3s"; }, 3200);
-  setTimeout(() => t.remove(), 3600);
-}
-
-function showErr(e) {
-  if (!e) return;
-  toast(e, "err");
-}
-
-// ---- API ----------------------------------------------------------------
-
-async function api(method, path, body) {
-  const opt = {method, headers:{}};
-  if (body !== undefined) {
-    opt.headers["Content-Type"] = "application/json";
-    opt.body = JSON.stringify(body);
+/* Code Studio redesign — esbuild bundle of src/*.js, embedded via web/embed.go. Edit flobot-ui-redesign/src and rebuild web/app.js. */
+(() => {
+  // src/editor.js
+  var $ = (id) => document.getElementById(id);
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
-  const r = await fetch(path, opt);
-  const text = await r.text();
-  if (!r.ok) {
-    // Prefer the parsed error message over the raw JSON body.
-    let msg = text.trim() || r.statusText;
-    try { const j = JSON.parse(text); if (j && j.error) msg = j.error; } catch {}
-    throw new Error(msg);
+  function sanitize(s) {
+    let out = String(s ?? "");
+    for (const re of [/MODEL_API_KEY\s*[=:]\s*\S+/g, /sk-[A-Za-z0-9_\-]{8,}/g, /Bearer\s+[A-Za-z0-9_\-\.]{8,}/g, /~\/\.accounts\/meta\.ai/g, /\/\.accounts\/meta\.ai/g]) {
+      out = out.replace(re, "[REDACTED]");
+    }
+    return out;
   }
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { return text; }
-}
-
-function fillSelect(el, items, label) {
-  const cur = el.value;
-  const html = items.map(b => `<option value="${esc(b.id)}">${esc(label(b))}</option>`).join("");
-  if (el.innerHTML !== html) el.innerHTML = html;
-  if ([...el.options].some(o => o.value === cur)) el.value = cur;
-}
-
-// fillRouteSelect renders the documented routes from the live roster plus
-// any ready mesh models as options for the bot route. Fully reflective: no
-// hardcoded ids — whatever the server reports is what you can pin.
-function fillRouteSelect(el, mesh, direct) {
-  const cur = el.value;
-  const opts = (roster.routes || []).map(r =>
-    `<option value="${esc(r.id)}">${esc(r.id)}</option>`).join("");
-  const meshOpts = (mesh || []).map(m =>
-    `<option value="${esc(m.route)}">${esc(m.route)}${m.display ? " · " + esc(m.display) : ""}</option>`).join("");
-  const directOpts = (direct || []).map(m =>
-    `<option value="${esc(m.route)}">${esc(m.route)}${m.display ? " · " + esc(m.display) : ""}</option>`).join("");
-  const html = opts + meshOpts + directOpts;
-  if (el.innerHTML !== html) el.innerHTML = html;
-  if ([...el.options].some(o => o.value === cur)) el.value = cur;
-}
-
-// ---- navigation -----------------------------------------------------------
-
-const nav = $("nav");
-nav.querySelectorAll("button[data-panel]").forEach(btn => {
-  btn.onclick = () => {
-    nav.querySelectorAll("button").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
-    const p = $("panel-" + btn.dataset.panel);
-    if (p) p.classList.add("active");
-    // lazy-init the Code Studio editor panel
-    if (btn.dataset.panel === "editor" && window.codeStudioInit) window.codeStudioInit();
-    const title = $("panelTitle");
-    if (title && p) {
-      title.textContent = p.dataset.title || p.querySelector("h2")?.textContent || "";
-      // restart the pop animation so each switch feels deliberate
-      title.classList.remove("pop");
-      void title.offsetWidth;
-      title.classList.add("pop");
+  function safe(s) {
+    return esc(sanitize(s));
+  }
+  function toast(msg, cls) {
+    const t = document.createElement("div");
+    t.className = "toast" + (cls ? " " + cls : "");
+    t.textContent = msg;
+    document.getElementById("toasts")?.appendChild(t);
+    setTimeout(() => t.remove(), 2200);
+  }
+  var ed = {
+    tree: null,
+    openPath: null,
+    openSha: null,
+    dirty: false,
+    runs: [],
+    // diff review state
+    review: null,
+    // { runId, files, totals, checkpoint, reviewState }
+    sel: {},
+    // { [path]: { accepted:Set, rejected:Set } }
+    focus: null
+    // [path, hunkIndex]
+  };
+  function edApi(method, path, body) {
+    const opt = { method, headers: {} };
+    if (body !== void 0) {
+      opt.headers["Content-Type"] = "application/json";
+      opt.body = JSON.stringify(body);
+    }
+    return fetch(path, opt).then(async (r) => {
+      const text = await r.text();
+      if (!r.ok) throw new Error(text.trim() || r.statusText);
+      if (!text) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    });
+  }
+  var edExpanded = /* @__PURE__ */ new Set();
+  async function loadTree() {
+    try {
+      const root = await edApi("GET", "/api/v1/workspace/root");
+      $("edRoot").textContent = safe(root.root || root.name || "");
+    } catch (e) {
+      $("edRoot").textContent = "no workspace";
+    }
+    await renderTree();
+  }
+  async function renderTree() {
+    const host = $("edTree");
+    if (!host) return;
+    const frag = document.createDocumentFragment();
+    await renderLevel(frag, ".", 0);
+    host.replaceChildren(frag);
+  }
+  async function renderLevel(host, dir, depth) {
+    let entries;
+    try {
+      const r = await edApi("GET", "/api/v1/workspace/tree?dir=" + encodeURIComponent(dir));
+      entries = r.entries || [];
+    } catch (e) {
+      const div = document.createElement("div");
+      div.className = "ed-node err";
+      div.textContent = "tree unavailable";
+      host.appendChild(div);
+      return;
+    }
+    for (const e of entries) {
+      const node = document.createElement("div");
+      node.className = "ed-node" + (e.type === "dir" ? " dir" : "");
+      node.style.paddingLeft = 8 + depth * 14 + "px";
+      const ico = document.createElement("span");
+      ico.className = "ed-ico";
+      ico.textContent = e.type === "dir" ? edExpanded.has(e.path) ? "\u25BE" : "\u25B8" : "\u25E6";
+      const label = document.createElement("span");
+      label.className = "ed-label";
+      label.textContent = e.name;
+      if (e.type === "dir") label.textContent += "/";
+      node.appendChild(ico);
+      node.appendChild(label);
+      if (e.type === "file") {
+        node.title = e.path;
+        node.onclick = () => openFile(e.path);
+        if (e.path === ed.openPath) node.classList.add("active");
+      } else {
+        node.onclick = async () => {
+          if (edExpanded.has(e.path)) edExpanded.delete(e.path);
+          else edExpanded.add(e.path);
+          await renderTree();
+        };
+      }
+      host.appendChild(node);
+      if (e.type === "dir" && edExpanded.has(e.path)) {
+        await renderLevel(host, e.path, depth + 1);
+      }
+    }
+  }
+  async function openFile(path) {
+    try {
+      const f = await edApi("GET", "/api/v1/workspace/file?path=" + encodeURIComponent(path));
+      ed.openPath = f.path;
+      ed.openSha = f.sha256;
+      ed.dirty = false;
+      $("edPath").value = f.path;
+      $("edContent").value = f.content || "";
+      $("edDirty").textContent = "";
+      markOpen(f.path);
+    } catch (e) {
+      toast(safe(e.message), "err");
+    }
+  }
+  async function saveFile() {
+    if (!ed.openPath) return;
+    try {
+      const f = await edApi("PUT", "/api/v1/workspace/file?path=" + encodeURIComponent(ed.openPath), {
+        content: $("edContent").value,
+        baseSha256: ed.openSha
+      });
+      ed.openSha = f.sha256;
+      ed.dirty = false;
+      $("edDirty").textContent = "";
+      toast("saved " + ed.openPath, "ok");
+    } catch (e) {
+      toast(safe(e.message), "err");
+    }
+  }
+  function markOpen(path) {
+    $("edTree").querySelectorAll(".ed-node.file").forEach((n) => n.classList.remove("active"));
+    const el = $("edTree").querySelector(`.ed-node[title="${CSS.escape(path)}"]`);
+    if (el) el.classList.add("active");
+  }
+  function renderReviewState() {
+    const el = $("edReviewState");
+    if (!el) return;
+    const st = ed.review?.reviewState || ed.review?.review_state || "";
+    el.textContent = st ? st : "";
+    el.className = "tag " + st;
+    const j = ed.review?.judgeScore;
+    const existing = el.parentElement?.querySelector(".tag.judge");
+    if (existing) existing.remove();
+    if (typeof j === "number" && j > 0) {
+      const jt = document.createElement("span");
+      jt.className = "tag judge";
+      jt.textContent = Number(j).toFixed(1) + "/10";
+      jt.title = ed.review?.judgeRationale || "";
+      el.after(jt);
+    }
+  }
+  function renderDiff() {
+    const box = $("edDiff");
+    const files = ed.review?.files || [];
+    const badge = $("edDiffBadge");
+    if (badge) {
+      const pending = files.reduce((n, fd) => {
+        const sel = ed.sel[fd.path] || { accepted: /* @__PURE__ */ new Set(), rejected: /* @__PURE__ */ new Set() };
+        return n + (fd.hunks.length - sel.accepted.size);
+      }, 0);
+      badge.hidden = !pending;
+      badge.textContent = pending ? String(pending) : "";
+      badge.classList.toggle("warn", pending > 0);
+    }
+    if (!files.length) {
+      box.innerHTML = `<p class="tag">no run diff yet \u2014 run a mission, then review its changes here.</p>`;
+      return;
+    }
+    box.innerHTML = files.map((fd, fi) => {
+      const sel = ed.sel[fd.path] || { accepted: /* @__PURE__ */ new Set(), rejected: /* @__PURE__ */ new Set() };
+      const fileCls = ["ed-file-diff"];
+      if (sel.accepted.size === fd.hunks.length) fileCls.push("all-accepted");
+      const hunks = fd.hunks.map((h, hi) => {
+        const cls = ["ed-hunk"];
+        if (sel.accepted.has(hi)) cls.push("accepted");
+        if (sel.rejected.has(hi)) cls.push("rejected");
+        if (ed.focus[0] === fd.path && ed.focus[1] === hi) cls.push("focused");
+        const hm = /@@\s*-(\d+)(?:,\d+)?\s*\+(\d+)(?:,\d+)?\s*@@/.exec(h.header || "");
+        let oldNo = hm ? +hm[1] : 1, newNo = hm ? +hm[2] : 1;
+        const body = h.lines.map((l) => {
+          const t = l.type === "add" ? "add" : l.type === "del" ? "del" : "ctx";
+          let ln = "";
+          if (t === "add") {
+            ln = String(newNo++);
+          } else if (t === "del") {
+            ln = String(oldNo++);
+          } else {
+            ln = String(oldNo++) + ":" + String(newNo++);
+          }
+          return `<div class="dl ${t}"><span class="dn">${ln.padStart(5)}</span><span class="dt">${safe(l.text)}</span></div>`;
+        }).join("");
+        return `<div class="${cls.join(" ")}" data-fi="${fi}" data-hi="${hi}">
+        <div class="dh"><span class="tag">${safe(h.header)}</span><span class="spacer"></span>
+          <button type="button" class="ghost mini" data-act="a">\u2713 accept</button>
+          <button type="button" class="ghost mini" data-act="r">\u2717 reject</button></div>
+        ${body}
+      </div>`;
+      }).join("");
+      const meta = fd.isNew ? "new" : fd.isDelete ? "deleted" : fd.isRename ? "renamed" : "";
+      return `<div class="${fileCls.join(" ")}">
+      <div class="ed-file-head"><span class="tag">${safe(fd.path)}</span>
+        <span class="tag">+${fd.additions}/\u2212${fd.deletions}${meta ? " \xB7 " + meta : ""}</span></div>
+      ${hunks}
+    </div>`;
+    }).join("");
+  }
+  function toggleHunk(fdPath, hi, v) {
+    const sel = ed.sel[fdPath] || (ed.sel[fdPath] = { accepted: /* @__PURE__ */ new Set(), rejected: /* @__PURE__ */ new Set() });
+    if (v === true) {
+      sel.accepted.add(hi);
+      sel.rejected.delete(hi);
+    } else if (v === false) {
+      sel.rejected.add(hi);
+      sel.accepted.delete(hi);
+    } else {
+      sel.accepted.delete(hi);
+      sel.rejected.delete(hi);
+    }
+    renderDiff();
+  }
+  async function applySelection() {
+    if (!ed.review) return;
+    const selections = Object.keys(ed.sel).map((path) => {
+      const sel = ed.sel[path];
+      const idx = [...sel.accepted].sort((a, b) => a - b);
+      return { path, hunks: idx.length === (ed.review.files.find((f) => f.path === path)?.hunks.length || 0) ? "all" : idx };
+    }).filter((s) => s.hunks !== "all" || s.hunks.length);
+    if (!selections.length) {
+      toast("nothing selected to apply", "err");
+      return;
+    }
+    try {
+      const res = await edApi("POST", `/api/v1/runs/${ed.review.runId}/diff/apply`, { selections });
+      toast("applied \u2014 review state: " + (res.reviewState || "accepted"), "ok");
+      ed.sel = {};
+      await loadLatestDiff();
+      await loadTree();
+    } catch (e) {
+      toast(safe(e.message), "err");
+    }
+  }
+  async function revertRun() {
+    if (!ed.review?.runId) {
+      toast("no run diff loaded", "err");
+      return;
+    }
+    const id = ed.review.runId;
+    if (!confirm("Reject run " + id.slice(0, 8) + " and revert the workspace to its pre-run state?")) return;
+    try {
+      const res = await edApi("POST", `/api/v1/runs/${id}/diff/reject`);
+      toast("reverted \u2014 review state: " + (res.reviewState || "rejected"), "ok");
+      ed.sel = {};
+      await loadLatestDiff();
+      await loadTree();
+      await loadRuns();
+    } catch (e) {
+      toast(safe(e.message), "err");
+    }
+  }
+  async function loadLatestDiff() {
+    try {
+      const runs = await edApi("GET", "/api/v1/runs");
+      const list = runs.runs || runs || [];
+      const withDiff = list.filter((r) => r.diffSummary || r.diff_summary);
+      if (!withDiff.length) {
+        ed.review = null;
+        $("edDiff").innerHTML = `<p class="tag">no run diff yet \u2014 run a mission, then review its changes here.</p>`;
+        return;
+      }
+      const latest = withDiff[0];
+      const d = await edApi("GET", "/api/v1/runs/" + latest.id + "/diff");
+      d.judgeScore = latest.judgeScore;
+      d.judgeRationale = latest.judgeRationale;
+      ed.review = d;
+      ed.sel = {};
+      ed.focus = d.files?.length ? [d.files[0].path, 0] : null;
+      const diffPaths = (d.files || []).map((f) => f.path);
+      for (const p of diffPaths) edTouchedDiff.add(p);
+      const merged = [.../* @__PURE__ */ new Set([...diffPaths, ...edTouched])];
+      edTouched.length = 0;
+      edTouched.push(...merged.slice(0, 24));
+      renderTouched();
+      renderDiff();
+      renderReviewState();
+    } catch (e) {
+      $("edDiff").innerHTML = `<p class="tag">${safe(e.message)}</p>`;
+    }
+  }
+  function runDuration(r) {
+    const s = Date.parse(r.created_at || r.createdAt || "");
+    const e = Date.parse(r.ended_at || r.EndedAt || "");
+    if (isNaN(s) || isNaN(e) || e < s) return null;
+    const sec = Math.round((e - s) / 1e3);
+    if (sec < 60) return sec + "s";
+    if (sec < 3600) return Math.floor(sec / 60) + "m" + (sec % 60 ? " " + sec % 60 + "s" : "");
+    return Math.floor(sec / 3600) + "h" + Math.floor(sec % 3600 / 60) + "m";
+  }
+  async function loadRuns() {
+    const box = $("edRuns");
+    if (!box) return;
+    try {
+      const runs = await edApi("GET", "/api/v1/runs");
+      const list = (runs.runs || runs || []).slice(0, 30);
+      const badge = $("edRunsBadge");
+      if (badge) {
+        const pending = list.filter((r) => !r.reviewState || r.reviewState === "pending").length;
+        badge.hidden = !pending;
+        badge.textContent = pending ? String(pending) : "";
+        badge.classList.toggle("warn", pending > 0);
+      }
+      if (!list.length) {
+        box.innerHTML = `<p class="tag">no runs yet.</p>`;
+        return;
+      }
+      box.innerHTML = list.map((r) => {
+        const st = r.reviewState || r.review_state || "";
+        const badge2 = st ? `<span class="tag ${st === "accepted" ? "ok" : st === "rejected" ? "err" : ""}">${safe(st)}</span>` : "";
+        const ds = r.diffSummary || r.diff_summary;
+        const diffTag = ds ? `<span class="tag">+${ds.additions ?? "?"}/\u2212${ds.deletions ?? "?"}</span>` : "";
+        let durTag = "";
+        const dur = runDuration(r);
+        if (dur !== null) durTag = `<span class="tag">${dur}</span>`;
+        const j = r.judgeScore;
+        const judgeTag = typeof j === "number" && j > 0 ? `<span class="tag judge" title="${safe(r.judgeRationale || "")}">\u2605 ${Number(j).toFixed(1)}</span>` : "";
+        const statusChip = r.status === "done" ? `<span class="chip ok">done</span>` : r.status === "error" ? `<span class="chip err">error</span>` : r.status ? `<span class="chip">${safe(r.status)}</span>` : "";
+        return `<div class="ed-run-item${r.id === ed.review?.runId ? " sel" : ""}" data-id="${esc(r.id)}">
+        <span class="ck-time">${safe((r.createdAt || r.created_at || r.id).toString().slice(0, 19))}</span>
+        <span class="ck-note">${safe((r.prompt || r.title || "").slice(0, 60))}</span>
+        ${statusChip}${diffTag}${durTag}${judgeTag}${badge2}
+      </div>`;
+      }).join("");
+      box.querySelectorAll(".ed-run-item").forEach((item) => {
+        item.onclick = async () => {
+          try {
+            const d = await edApi("GET", "/api/v1/runs/" + item.dataset.id + "/diff");
+            ed.review = d;
+            ed.sel = {};
+            ed.focus = d.files?.length ? [d.files[0].path, 0] : null;
+            renderDiff();
+            renderReviewState();
+            switchTab("diff");
+            loadRuns();
+          } catch (e) {
+            toast(safe(e.message), "err");
+          }
+        };
+      });
+    } catch (e) {
+      box.innerHTML = `<p class="tag">${safe(e.message)}</p>`;
+    }
+  }
+  function wireEditorKeys() {
+    document.addEventListener("keydown", (e) => {
+      const panelVisible = document.getElementById("panel-editor")?.classList.contains("active");
+      if (!panelVisible) return;
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        saveFile();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("code-studio:quick-open"));
+        return;
+      }
+      if (typing) return;
+      if (!ed.review?.files?.length) return;
+      const files = ed.review.files;
+      if (e.key === "j") {
+        e.preventDefault();
+        const [fp, hi] = ed.focus || [files[0].path, 0];
+        const fh = files.find((f) => f.path === fp)?.hunks.length || 0;
+        if (hi + 1 < fh) ed.focus = [fp, hi + 1];
+        else {
+          const ni = files.findIndex((f) => f.path === fp) + 1;
+          ed.focus = ni < files.length ? [files[ni].path, 0] : [files[0].path, 0];
+        }
+        renderDiff();
+      } else if (e.key === "k") {
+        e.preventDefault();
+        const [fp, hi] = ed.focus || [files[0].path, 0];
+        if (hi > 0) ed.focus = [fp, hi - 1];
+        else {
+          const pi = files.findIndex((f) => f.path === fp) - 1;
+          const p = pi >= 0 ? files[pi] : files[files.length - 1];
+          ed.focus = [p.path, (p.hunks.length || 1) - 1];
+        }
+        renderDiff();
+      } else if (e.key === "a") {
+        e.preventDefault();
+        if (ed.focus) toggleHunk(ed.focus[0], ed.focus[1], true);
+      } else if (e.key === "r") {
+        e.preventDefault();
+        if (ed.focus) toggleHunk(ed.focus[0], ed.focus[1], false);
+      } else if (e.key === "A") {
+        e.preventDefault();
+        files.forEach((f) => f.hunks.forEach((_, hi) => toggleHunk(f.path, hi, true)));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        applySelection();
+      }
+    });
+  }
+  var edQuickIndex = [];
+  async function buildQuickIndex() {
+    const out = [];
+    const queue = ["."];
+    let visits = 0;
+    while (queue.length && visits < 40) {
+      const dir = queue.shift();
+      visits++;
+      let r;
+      try {
+        r = await edApi("GET", "/api/v1/workspace/tree?dir=" + encodeURIComponent(dir));
+      } catch {
+        continue;
+      }
+      for (const e of r.entries || []) {
+        if (e.type === "file") out.push({ path: e.path, name: e.name });
+        else if (out.length < 2e3) queue.push(e.path);
+      }
+    }
+    edQuickIndex = out;
+  }
+  function openQuick() {
+    const q = $("edQuick");
+    if (!q) return;
+    q.classList.add("open");
+    q.setAttribute("aria-hidden", "false");
+    const inp = $("edQuickInput");
+    inp.value = "";
+    renderQuickList("");
+    inp.focus();
+    if (edQuickIndex.length === 0) buildQuickIndex().then(() => renderQuickList(inp.value));
+  }
+  function closeQuick() {
+    const q = $("edQuick");
+    if (!q) return;
+    q.classList.remove("open");
+    q.setAttribute("aria-hidden", "true");
+  }
+  function renderQuickList(q) {
+    const list = $("edQuickList");
+    const term = q.trim().toLowerCase();
+    const items = edQuickIndex.filter((f) => !term || f.path.toLowerCase().includes(term)).slice(0, 40);
+    list.innerHTML = items.map((f) => `<div class="ed-quick-item" data-path="${esc(f.path)}"><span class="ed-ico">\u25E6</span><span>${safe(f.path)}</span></div>`).join("");
+  }
+  var edRunId = null;
+  var edStreamES = null;
+  var edStreamBuf = "";
+  var edTouched = [];
+  var edTouchedDiff = /* @__PURE__ */ new Set();
+  var edTouchedRe = /(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]{1,6}/g;
+  function noteTouched(text) {
+    for (const m of String(text || "").matchAll(edTouchedRe)) {
+      const p = m[0].replace(/^\.\//, "");
+      if (!edTouched.includes(p)) {
+        edTouched.push(p);
+        if (edTouched.length > 24) edTouched.shift();
+        renderTouched();
+      }
+    }
+  }
+  function renderTouched() {
+    const host = document.getElementById("edTouched");
+    if (!host) return;
+    host.innerHTML = edTouched.length ? edTouched.map((p) => `<button type="button" class="chip ghost-chip${edTouchedDiff.has(p) ? " from-diff" : ""}" data-path="${esc(p)}" title="open in editor${edTouchedDiff.has(p) ? " \u2014 changed in the latest run" : ""}">${safe(p)}</button>`).join("") : `<span class="tag">no files touched yet</span>`;
+    host.querySelectorAll("button[data-path]").forEach((b) => {
+      b.onclick = () => openFile(b.dataset.path);
+    });
+  }
+  function setRunStatus(text, cls) {
+    const el = $("edRunStatus");
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove("live", "working", "err");
+    if (cls) el.classList.add(cls);
+    const dot = $("edLiveDot");
+    if (dot) dot.hidden = cls !== "live";
+  }
+  function fillRunBot(bots) {
+    const el = $("edRunBot");
+    if (!el) return;
+    const cur = el.value;
+    el.innerHTML = (bots || []).map((b) => `<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.route)})</option>`).join("");
+    if ([...el.options].some((o) => o.value === cur)) el.value = cur;
+  }
+  async function edRun() {
+    const prompt = $("edPrompt").value.trim();
+    if (!prompt) {
+      toast("give it a mission first", "err");
+      return;
+    }
+    const bot = $("edRunBot").value;
+    try {
+      const run = await edApi("POST", "/api/v1/runs", {
+        bot_id: bot,
+        prompt,
+        intent: "code",
+        yolo: $("edYolo").checked
+      });
+      edRunId = run.id;
+      edTouched.length = 0;
+      edTouchedDiff.clear();
+      renderTouched();
+      $("edStopBtn").disabled = false;
+      setRunStatus("working\u2026", "working");
+      $("edStream").innerHTML = "";
+      renderBrief(prompt, run.id);
+      switchTab("stream");
+      edConnectStream(run.id);
+    } catch (e) {
+      toast(safe(e.message), "err");
+      setRunStatus("error", "err");
+    }
+  }
+  async function edStop() {
+    if (!edRunId) return;
+    try {
+      await edApi("POST", `/api/v1/runs/${edRunId}/stop`);
+      setRunStatus("stopping\u2026", "working");
+    } catch (e) {
+      toast(safe(e.message), "err");
+    }
+  }
+  function edConnectStream(runId) {
+    if (edStreamES) {
+      try {
+        edStreamES.close();
+      } catch {
+      }
+      edStreamES = null;
+    }
+    const ctrl = new AbortController();
+    edStreamES = ctrl;
+    fetch("/api/stream?run=" + encodeURIComponent(runId), { signal: ctrl.signal }).then((res) => {
+      if (!res.ok) throw new Error("stream " + res.status);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      const pump = () => reader.read().then(({ done, value }) => {
+        if (done) return;
+        edStreamBuf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = edStreamBuf.indexOf("\n")) >= 0) {
+          const line = edStreamBuf.slice(0, idx);
+          edStreamBuf = edStreamBuf.slice(idx + 1);
+          edHandleEvent(line);
+        }
+        return pump();
+      });
+      return pump();
+    }).catch((e) => {
+      if (e.name !== "AbortError") console.warn("stream:", e.message);
+    });
+  }
+  function renderBrief(prompt, runId) {
+    const box = $("edStream");
+    if (!box) return;
+    const card = document.createElement("div");
+    card.className = "ed-brief";
+    const t = document.createElement("div");
+    t.className = "title";
+    t.textContent = "Mission";
+    card.appendChild(t);
+    const b = document.createElement("div");
+    b.className = "body";
+    b.textContent = prompt || "(untitled)";
+    card.appendChild(b);
+    const m = document.createElement("div");
+    m.className = "meta";
+    m.textContent = (/* @__PURE__ */ new Date()).toLocaleTimeString() + (runId ? " \xB7 " + runId.slice(0, 8) : "");
+    card.appendChild(m);
+    box.appendChild(card);
+    box.scrollTop = box.scrollHeight;
+  }
+  function renderResultCard(status, diff) {
+    const box = $("edStream");
+    if (!box) return;
+    const card = document.createElement("div");
+    card.className = "ed-result " + (status === "done" ? "ok" : "err");
+    const t = document.createElement("div");
+    t.className = "title";
+    t.textContent = status === "done" ? "\u2713 Mission complete" : "\u2717 " + status;
+    card.appendChild(t);
+    const rows = [];
+    const ds = diff?.diffSummary || diff?.summary;
+    if (ds) rows.push(`${ds.files || 0} files \xB7 +${ds.additions ?? 0}/\u2212${ds.deletions ?? 0}`);
+    const files = (diff?.files || []).map((f) => f.path);
+    if (files.length) rows.push(files.slice(0, 5).join(", ") + (files.length > 5 ? ` +${files.length - 5} more` : ""));
+    const j = diff?.judgeScore;
+    if (typeof j === "number" && j > 0) rows.push("\u2605 " + Number(j).toFixed(1) + "/10 \u2014 " + (diff?.judgeRationale || ""));
+    const b = document.createElement("div");
+    b.className = "body";
+    b.textContent = rows.join("\n") || "no changes";
+    card.appendChild(b);
+    const hint = document.createElement("div");
+    hint.className = "meta";
+    hint.textContent = "review the diff \u2192";
+    card.appendChild(hint);
+    card.onclick = () => switchTab("diff");
+    box.appendChild(card);
+    box.scrollTop = box.scrollHeight;
+  }
+  function edHandleEvent(line) {
+    line = line.trim();
+    if (!line) return;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!ev || typeof ev !== "object") return;
+    const box = $("edStream");
+    if (!box) return;
+    const kind = ev.kind || "";
+    const text = String(ev.text || "");
+    if (kind === "tool" && (text.length > 240 || text.split("\n").length > 4)) {
+      const det = document.createElement("details");
+      det.className = "ev tool collapsible";
+      const sum = document.createElement("summary");
+      const k2 = document.createElement("span");
+      k2.className = "k";
+      k2.textContent = kind;
+      sum.appendChild(k2);
+      sum.appendChild(document.createTextNode(" " + sanitize(text.split("\n")[0].slice(0, 80)) + (text.length > 80 ? "\u2026" : "")));
+      det.appendChild(sum);
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = text;
+      det.appendChild(body);
+      box.appendChild(det);
+      box.scrollTop = box.scrollHeight;
+      noteTouched(text);
+      return;
+    }
+    const div = document.createElement("div");
+    div.className = "ev " + kind;
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = kind;
+    div.appendChild(k);
+    if (ev.text) div.appendChild(document.createTextNode(" " + sanitize(ev.text)));
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    if (kind === "tool" || kind === "content") noteTouched(ev.text);
+    if (kind === "done" || kind === "run_status") {
+      if (/^(done|error|stopped)$/.test(ev.text || "")) {
+        setRunStatus(ev.text, ev.text === "done" ? "live" : "err");
+        $("edStopBtn").disabled = true;
+        notifyRunDone(ev.text, edRunId);
+        loadLatestDiff().then((d) => {
+          renderResultCard(ev.text, d);
+          switchTab("diff");
+        });
+        loadCheckpoints();
+        loadRuns();
+      }
+    }
+  }
+  function notifyRunDone(status, runId) {
+    const panelActive = document.getElementById("panel-editor")?.classList.contains("active");
+    if (panelActive && !document.hidden) return;
+    if (typeof Notification === "undefined") return;
+    try {
+      if (Notification.permission === "granted") {
+        new Notification("flobot run " + status, { body: (runId || "").slice(0, 8) + " \u2014 review the diff in Code Studio" });
+      } else if (Notification.permission !== "denied") {
+        Notification.requestPermission().then((p) => {
+          if (p === "granted") new Notification("flobot run " + status, { body: (runId || "").slice(0, 8) + " \u2014 review the diff in Code Studio" });
+        });
+      }
+    } catch {
+    }
+  }
+  async function loadCheckpoints() {
+    const box = $("edCheck");
+    if (!box) return;
+    try {
+      const list = await edApi("GET", "/api/v1/checkpoints");
+      const cps = list || [];
+      box.innerHTML = cps.length ? cps.map((c) => `<div class="ed-check-item" data-id="${esc(c.id)}">
+          <span class="tag">\u21BA</span>
+          <span class="ck-note">${safe(c.note || c.id)}</span>
+          <span class="ck-time">${safe(c.ts || "")}</span>
+        </div>`).join("") : `<p class="tag">no checkpoints yet.</p>`;
+      box.querySelectorAll(".ed-check-item").forEach((item) => {
+        item.onclick = async () => {
+          try {
+            await edApi("POST", `/api/v1/checkpoints/${item.dataset.id}/restore`);
+            toast("checkpoint restored", "ok");
+            loadTree();
+          } catch (e) {
+            toast(safe(e.message), "err");
+          }
+        };
+      });
+    } catch (e) {
+      box.innerHTML = `<p class="tag">${safe(e.message)}</p>`;
+    }
+  }
+  function switchTab(name) {
+    document.querySelectorAll(".ed-tab").forEach((t) => t.classList.toggle("sel", t.dataset.tab === name));
+    document.querySelectorAll(".ed-tabpane").forEach((p) => p.classList.toggle("sel", p.dataset.pane === name));
+  }
+  function initEditor() {
+    $("edOpen").onclick = () => openFile($("edPath").value.trim());
+    $("edSave").onclick = saveFile;
+    $("edRefresh").onclick = loadTree;
+    $("edContent").addEventListener("input", () => {
+      if (!ed.openPath) return;
+      ed.dirty = true;
+      $("edDirty").textContent = "\u25CF unsaved";
+    });
+    $("edRunBtn").onclick = edRun;
+    $("edStopBtn").onclick = edStop;
+    $("edRevertBtn").onclick = revertRun;
+    $("edPrompt").addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        edRun();
+      }
+    });
+    document.querySelectorAll(".ed-tab").forEach((t) => t.onclick = () => switchTab(t.dataset.tab));
+    $("edDiff").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-act]");
+      if (!btn) return;
+      const hunkEl = btn.closest(".ed-hunk");
+      const fi = Number(hunkEl.dataset.fi);
+      const hi = Number(hunkEl.dataset.hi);
+      const fd = ed.review?.files?.[fi];
+      if (!fd) return;
+      ed.focus = [fd.path, hi];
+      toggleHunk(fd.path, hi, btn.dataset.act === "a");
+    });
+    $("edQuickInput").addEventListener("input", (ev) => renderQuickList(ev.target.value));
+    $("edQuickInput").addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeQuick();
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        const sel = $("edQuickList").querySelector(".ed-quick-item");
+        if (sel) {
+          closeQuick();
+          openFile(sel.dataset.path);
+        }
+      }
+    });
+    $("edQuickList").addEventListener("click", (ev) => {
+      const item = ev.target.closest(".ed-quick-item");
+      if (!item) return;
+      closeQuick();
+      openFile(item.dataset.path);
+    });
+    window.addEventListener("code-studio:quick-open", () => {
+      if (document.getElementById("panel-editor")?.classList.contains("active")) openQuick();
+    });
+    wireEditorKeys();
+    loadTree();
+    loadLatestDiff();
+    loadCheckpoints();
+    loadRuns();
+  }
+  window.codeStudio = {
+    openQuick: () => window.dispatchEvent(new CustomEvent("code-studio:quick-open")),
+    openFile,
+    fillRunBot,
+    refresh: async () => {
+      await loadTree();
+      await loadLatestDiff();
+      await loadCheckpoints();
+      await loadRuns();
     }
   };
-});
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initEditor);
+  } else {
+    initEditor();
+  }
 
-function gotoPanel(name) {
-  const btn = nav.querySelector(`button[data-panel="${name}"]`);
-  if (btn) btn.click();
-}
+  // src/examples.js
+  var MISSIONS = [
+    {
+      icon: "\u{1F41B}",
+      title: "Squash the flaky test",
+      intent: "code",
+      prompt: "Find the flaky test in the suite (it fails ~1 in 5 runs), figure out the root cause, and fix it. Run the suite 10 times to prove it's stable."
+    },
+    {
+      icon: "\u{1F9F9}",
+      title: "Dependency dusting",
+      intent: "code",
+      prompt: "Audit go.mod for outdated and indirect dependencies, upgrade the safe ones, run the full test suite, and summarize what changed and why."
+    },
+    {
+      icon: "\u{1F50D}",
+      title: "Explain this codebase",
+      intent: "ask",
+      prompt: "Map this repo: what it does, the main packages, where the entrypoints are, and the three riskiest files. Write it up like you're onboarding a new engineer."
+    },
+    {
+      icon: "\u{1F5FA}\uFE0F",
+      title: "Draft a migration plan",
+      intent: "plan",
+      prompt: "Plan the migration of our REST handlers to the new router library. List every touchpoint, the order of work, and the rollback story. Don't change code yet."
+    },
+    {
+      icon: "\u26A1",
+      title: "Chase the slow endpoint",
+      intent: "code",
+      prompt: "Profile the slowest HTTP handler, find the hot path, and optimize it. Show before/after timings from a benchmark."
+    },
+    {
+      icon: "\u{1F4DD}",
+      title: "Write the missing docs",
+      intent: "code",
+      prompt: "Find every exported function in the internal packages with a missing or stub doc comment and write proper Go doc comments for each."
+    },
+    {
+      icon: "\u{1F6E1}\uFE0F",
+      title: "Hunt the race",
+      intent: "code",
+      prompt: "Run the tests with -race, reproduce any data races, fix them, and prove the fix with three clean -race runs."
+    },
+    {
+      icon: "\u{1F3F7}\uFE0F",
+      title: "Cut a changelog",
+      intent: "ask",
+      prompt: "Read the git log since the last release tag and draft a changelog grouped by feature / fix / chore, written for humans."
+    }
+  ];
+  var SKILL_TEMPLATES = [
+    {
+      name: "nightly-guard",
+      body: `# nightly-guard
 
-// ---- rendering ----------------------------------------------------------
+Every night, defend the repo:
 
-let meshModels = [];
-let directModels = [];
+1. Run the full test suite.
+2. If anything fails, open a worktree, reproduce, and attempt a fix.
+3. Post a summary: what broke, why, what you did.
+4. If the tree is green, say so in one line and go back to sleep.`
+    },
+    {
+      name: "pr-triage",
+      body: `# pr-triage
 
-// animateNum tweens a stat number to its target with an ease-out cubic,
-// so live updates feel like instruments rather than teletypes.
-function animateNum(el, target) {
-  if (!el) return;
-  const from = parseInt(el.dataset.v || "0", 10) || 0;
-  if (from === target) { el.textContent = target; el.dataset.v = String(target); return; }
-  const t0 = performance.now();
-  const dur = 500;
-  const step = now => {
-    const p = Math.min((now - t0) / dur, 1);
-    const eased = 1 - Math.pow(1 - p, 3);
-    el.textContent = Math.round(from + (target - from) * eased);
-    if (p < 1) requestAnimationFrame(step);
-    else { el.textContent = target; el.dataset.v = String(target); }
+Triage open PRs:
+
+1. List open PRs with failing or stale checks.
+2. For each: summarize the change in one sentence, flag risky diffs.
+3. Label: needs-review, needs-fixes, or ship-it.
+4. Never merge anything \u2014 humans push the button.`
+    },
+    {
+      name: "dep-sweep",
+      body: `# dep-sweep
+
+Weekly dependency hygiene:
+
+1. List outdated direct deps.
+2. Upgrade patch and minor versions only; leave majors alone.
+3. Run tests after each bump; revert on any failure.
+4. Report the final diff summary.`
+    },
+    {
+      name: "release-notes",
+      body: `# release-notes
+
+When a release is cut:
+
+1. Diff since the last tag.
+2. Group changes: features, fixes, chores.
+3. Write notes for humans, not commits.
+4. Flag anything that needs a migration callout.`
+    }
+  ];
+  var ROUTINE_TRIGGERS = [
+    { label: "manual", value: "manual" },
+    { label: "every 5 minutes", value: "every 5m" },
+    { label: "every 15 minutes", value: "every 15m" },
+    { label: "every hour", value: "every 1h" },
+    { label: "every 6 hours", value: "every 6h" },
+    { label: "every day", value: "every 1d" }
+  ];
+  var DEMO_SCRIPT = [
+    { delay: 200, ev: { kind: "run_status", text: "demo run started \xB7 bot Coder \xB7 intent code" } },
+    { delay: 500, ev: { kind: "thinking", text: "The user wants the flaky test fixed. First I should find which test is flaky \u2014 let me run the suite a few times and look for non-determinism before touching anything." } },
+    { delay: 700, ev: { kind: "plan", text: "1. Run suite 5\xD7 to catch the flake\n2. Read the failing test + its fixtures\n3. Find the race or timing assumption\n4. Fix, then prove with 10 clean runs" } },
+    { delay: 600, ev: { kind: "tool_start", tool: "bash" } },
+    { delay: 900, ev: { kind: "tool_end", tool: "bash", text: "go test ./... -count=5 \u2192 1 failure in TestRosterSave (run 3 of 5)" } },
+    { delay: 500, ev: { kind: "content", text: "Caught it: TestRosterSave fails ~40% of runs. The test writes to a shared roster.json without a lock \u2014 two goroutines race on the file." } },
+    { delay: 600, ev: { kind: "tool_start", tool: "read" } },
+    { delay: 800, ev: { kind: "tool_end", tool: "read", text: "internal/roster/store.go:88 \u2014 concurrent map write, no mutex" } },
+    { delay: 500, ev: { kind: "perm", text: "edit internal/roster/store.go (add sync.Mutex around save)" } },
+    { delay: 900, ev: { kind: "tool_start", tool: "edit" } },
+    { delay: 700, ev: { kind: "tool_end", tool: "edit", text: "@@ internal/roster/store.go @@\n-func (s *Store) save() error {\n+func (s *Store) save() error {\n+	s.mu.Lock()\n+	defer s.mu.Unlock()" } },
+    { delay: 600, ev: { kind: "tool_start", tool: "bash" } },
+    { delay: 1100, ev: { kind: "tool_end", tool: "bash", text: "go test ./... -count=10 -race \u2192 10/10 green" } },
+    { delay: 500, ev: { kind: "verify", text: "suite green 10\xD7 under -race" } },
+    { delay: 600, ev: { kind: "content", text: "Fixed. The save path now holds a mutex; ten consecutive -race runs are green. Diff is two lines." } },
+    { delay: 700, ev: { kind: "done", text: "demo complete \u2014 that's flobot. now give a real mission." } }
+  ];
+  function playDemo(appendEvent2, onDone) {
+    let cancelled = false;
+    let timer = null;
+    let i = 0;
+    const step = () => {
+      if (cancelled) return;
+      if (i >= DEMO_SCRIPT.length) {
+        if (onDone) onDone();
+        return;
+      }
+      const { delay, ev } = DEMO_SCRIPT[i++];
+      timer = setTimeout(() => {
+        appendEvent2(ev);
+        step();
+      }, delay);
+    };
+    step();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }
+
+  // src/power.js
+  function fuzzy(needle, hay) {
+    needle = needle.toLowerCase();
+    hay = String(hay).toLowerCase();
+    if (!needle) return 0;
+    let score = 0, ni = 0, streak = 0;
+    for (let i = 0; i < hay.length && ni < needle.length; i++) {
+      if (hay[i] === needle[ni]) {
+        ni++;
+        streak++;
+        score += 1 + streak;
+        if (i === 0 || " /-_.:".includes(hay[i - 1])) score += 5;
+      } else streak = 0;
+    }
+    return ni === needle.length ? score : -1;
+  }
+  var Palette = class {
+    // commands: [{label, hint, icon, run}]
+    constructor(opts) {
+      this.commands = opts.commands || [];
+      this.onClose = opts.onClose || (() => {
+      });
+      this.sel = 0;
+      this.results = [];
+      this.build();
+    }
+    build() {
+      this.root = document.createElement("div");
+      this.root.className = "palette-root";
+      this.root.innerHTML = `
+      <div class="palette" role="dialog" aria-label="command palette">
+        <div class="palette-in">
+          <span class="p-ico">\u2318</span>
+          <input class="p-input" placeholder="type a command\u2026" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="p-list"></div>
+        <div class="p-foot">
+          <span><b>\u2191\u2193</b> navigate</span><span><b>\u21B5</b> run</span><span><b>esc</b> close</span>
+        </div>
+      </div>`;
+      document.body.appendChild(this.root);
+      this.input = this.root.querySelector(".p-input");
+      this.list = this.root.querySelector(".p-list");
+      this.input.addEventListener("input", () => this.search(this.input.value));
+      this.input.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          this.move(1);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          this.move(-1);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          this.exec();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          this.close();
+        }
+      });
+      this.root.addEventListener("mousedown", (e) => {
+        if (e.target === this.root) this.close();
+      });
+      this.search("");
+      this.input.focus();
+    }
+    setCommands(cmds) {
+      this.commands = cmds;
+      this.search(this.input.value);
+    }
+    search(q) {
+      const scored = this.commands.map((c) => ({ c, s: fuzzy(q, c.label + " " + (c.hint || "")) })).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).slice(0, 12);
+      this.results = scored.map((x) => x.c);
+      this.sel = 0;
+      this.render();
+    }
+    render() {
+      this.list.innerHTML = this.results.map((c, i) => `
+      <button type="button" class="p-item ${i === this.sel ? "sel" : ""}" data-i="${i}">
+        <span class="p-item-ico">${c.icon || "\u203A"}</span>
+        <span class="p-item-label">${c.label}</span>
+        ${c.hint ? `<span class="p-item-hint">${c.hint}</span>` : ""}
+      </button>`).join("") || `<div class="p-empty">nothing matches \u2014 try "run", "deploy", "demo"</div>`;
+      this.list.querySelectorAll("[data-i]").forEach((btn) => {
+        btn.onclick = () => {
+          this.sel = +btn.dataset.i;
+          this.exec();
+        };
+        btn.onmouseenter = () => {
+          this.sel = +btn.dataset.i;
+          this.render();
+        };
+      });
+      const sel = this.list.querySelector(".sel");
+      if (sel) sel.scrollIntoView({ block: "nearest" });
+    }
+    move(d) {
+      if (!this.results.length) return;
+      this.sel = (this.sel + d + this.results.length) % this.results.length;
+      this.render();
+    }
+    exec() {
+      const c = this.results[this.sel];
+      if (!c) return;
+      this.close();
+      c.run();
+    }
+    close() {
+      if (this.root) {
+        this.root.remove();
+        this.root = null;
+      }
+      this.onClose();
+    }
   };
-  requestAnimationFrame(step);
-}
+  function boot() {
+    if (localStorage.getItem("flobot-booted")) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const el = document.createElement("div");
+    el.className = "boot";
+    const lines = [
+      "flobot v1 \xB7 standalone \xB7 loopback only",
+      "loading roster \u2026",
+      "mounting skills library \u2026",
+      "arming routines \u2026",
+      "probing model routes \u2026",
+      "crew online."
+    ];
+    el.innerHTML = `<div class="boot-in"><pre class="boot-lines"></pre></div>`;
+    document.body.appendChild(el);
+    const pre = el.querySelector(".boot-lines");
+    let i = 0;
+    const step = () => {
+      if (i < lines.length) {
+        pre.textContent += lines[i++] + "\n";
+        setTimeout(step, 160);
+      } else {
+        setTimeout(() => {
+          el.classList.add("out");
+          localStorage.setItem("flobot-booted", "1");
+          setTimeout(() => el.remove(), 500);
+        }, 350);
+      }
+    };
+    step();
+  }
+  function confetti() {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const cv = document.createElement("canvas");
+    cv.className = "confetti-cv";
+    cv.width = innerWidth;
+    cv.height = innerHeight;
+    document.body.appendChild(cv);
+    const ctx = cv.getContext("2d");
+    const colors = ["#6366f1", "#22d3ee", "#4ee6a8", "#e879f9", "#fbbf24"];
+    const parts = Array.from({ length: 120 }, () => ({
+      x: Math.random() * cv.width,
+      y: -20 - Math.random() * 80,
+      vx: (Math.random() - 0.5) * 3,
+      vy: 2 + Math.random() * 3,
+      w: 6 + Math.random() * 6,
+      h: 3 + Math.random() * 4,
+      rot: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 0.3,
+      c: colors[Math.random() * colors.length | 0]
+    }));
+    const t0 = performance.now();
+    const frame = (t) => {
+      const dt = t - t0;
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      for (const p of parts) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.rot += p.vr;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.c;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }
+      if (dt < 2200) requestAnimationFrame(frame);
+      else cv.remove();
+    };
+    requestAnimationFrame(frame);
+  }
 
-// avatarColor picks a stable hue from a string.
-function avatarColor(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360} 55% 62%)`;
-}
+  // src/telemetry.js
+  var Stats = class {
+    constructor() {
+      this.t0 = Date.now();
+      this.counts = {};
+      this.recent = [];
+    }
+    bump(kind) {
+      this.counts[kind] = (this.counts[kind] || 0) + 1;
+      this.recent.push([Date.now(), kind]);
+      const cutoff = Date.now() - 6e4;
+      while (this.recent.length && this.recent[0][0] < cutoff) this.recent.shift();
+    }
+    total() {
+      return Object.values(this.counts).reduce((a, b) => a + b, 0);
+    }
+    perMin() {
+      return this.recent.length;
+    }
+    tools() {
+      return this.counts["tool_start"] || 0;
+    }
+    errs() {
+      return this.counts["err"] || 0;
+    }
+  };
+  function timeline(events) {
+    const phases = [];
+    let cur = null;
+    for (const e of events) {
+      const p = e.kind === "thinking" ? "think" : e.kind === "tool_start" || e.kind === "tool_end" ? "tool" : e.kind === "content" ? "write" : null;
+      if (!p) continue;
+      if (cur && cur.p === p) {
+        cur.n++;
+        continue;
+      }
+      cur = { p, n: 1 };
+      phases.push(cur);
+    }
+    const total = phases.reduce((a, x) => a + x.n, 0) || 1;
+    return phases.map((x) => ({ ...x, frac: x.n / total }));
+  }
+  function isDiff(text) {
+    if (!text || typeof text !== "string") return false;
+    const lines = text.split("\n");
+    if (lines.length < 2) return false;
+    let add = 0, del = 0;
+    for (const l of lines) {
+      if (l.startsWith("+") && !l.startsWith("+++")) add++;
+      else if (l.startsWith("-") && !l.startsWith("---")) del++;
+    }
+    return add + del >= 2 && add + del >= lines.length * 0.3;
+  }
+  function renderDiff2(text) {
+    const rows = [];
+    for (const l of String(text).split("\n")) {
+      if (l.startsWith("+++") || l.startsWith("---")) continue;
+      if (l.startsWith("@@")) {
+        rows.push(`<span class="dl hl">${esc2(l)}</span>`);
+        continue;
+      }
+      if (l.startsWith("+")) rows.push(`<span class="dl add">+ ${esc2(l.slice(1))}</span>`);
+      else if (l.startsWith("-")) rows.push(`<span class="dl del">- ${esc2(l.slice(1))}</span>`);
+      else rows.push(`<span class="dl">  ${esc2(l)}</span>`);
+    }
+    return `<div class="diff">${rows.join("")}</div>`;
+  }
+  function esc2(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+  var Sfx = class {
+    constructor() {
+      this.on = false;
+      this.ctx = null;
+    }
+    ensure() {
+      if (!this.ctx) {
+        try {
+          this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        } catch {
+          this.ctx = null;
+        }
+      }
+      if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+      return this.ctx;
+    }
+    tone(freq, dur, delay = 0, type = "sine", gain = 0.04) {
+      const ctx = this.ensure();
+      if (!ctx || !this.on) return;
+      const t = ctx.currentTime + delay;
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = type;
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(gain, t);
+      g.gain.exponentialRampToValueAtTime(1e-4, t + dur);
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start(t);
+      o.stop(t + dur);
+    }
+    start() {
+      this.tone(392, 0.09);
+      this.tone(523.25, 0.12, 0.07);
+    }
+    done() {
+      this.tone(523.25, 0.1);
+      this.tone(659.25, 0.14, 0.08);
+      this.tone(783.99, 0.18, 0.16);
+    }
+    fail() {
+      this.tone(196, 0.22, 0, "sawtooth", 0.05);
+    }
+    tick() {
+      this.tone(880, 0.03, 0, "square", 0.015);
+    }
+  };
+  function toMarkdown(run, events, botName) {
+    const L = [];
+    L.push(`# flobot run ${run.id.slice(0, 8)}`);
+    L.push("");
+    L.push(`- **bot:** ${botName || run.bot_id || "?"}`);
+    L.push(`- **intent:** ${run.intent || "?"}`);
+    L.push(`- **status:** ${run.status}`);
+    if (run.error) L.push(`- **error:** ${run.error}`);
+    L.push(`- **events:** ${events.length}`);
+    L.push("");
+    for (const e of events) {
+      switch (e.kind) {
+        case "content":
+          L.push(e.text, "");
+          break;
+        case "thinking":
+          L.push(`<details><summary>thinking</summary>`, "", e.text, "", `</details>`, "");
+          break;
+        case "tool_start":
+          L.push(`**\u2192 ${e.tool}**`);
+          break;
+        case "tool_end":
+          if (e.text) L.push("```", e.text, "```", "");
+          break;
+        case "perm":
+          L.push(`> perm: ${e.text}`, "");
+          break;
+        case "plan":
+          L.push("**plan**", "", e.text, "");
+          break;
+        case "err":
+          L.push(`**error:** ${e.text}`, "");
+          break;
+        case "done":
+          L.push(`\u2014 ${e.text} \u2014`, "");
+          break;
+        case "verify":
+          L.push(e.is_error ? `**verify \u2717** ${e.text}` : `**verify \u2713** ${e.text}`, "");
+          break;
+        default:
+          if (e.text) L.push(`_${e.kind}: ${e.text}_`, "");
+      }
+    }
+    return L.join("\n");
+  }
 
-function avatar(name) {
-  const init = (name || "?").trim().slice(0, 2).toUpperCase();
-  return `<span class="avatar" style="background:${avatarColor(name)}">${esc(init)}</span>`;
-}
+  // src/vibe.js
+  function vibe() {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const cv = document.createElement("canvas");
+    cv.className = "starfield";
+    document.body.prepend(cv);
+    const ctx = cv.getContext("2d");
+    let W, H, stars = [];
+    const resize = () => {
+      W = cv.width = innerWidth;
+      H = cv.height = innerHeight;
+      stars = Array.from({ length: Math.min(160, W * H / 12e3) }, () => ({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: Math.random() * 1.3 + 0.3,
+        vy: 0.06 + Math.random() * 0.25,
+        tw: Math.random() * Math.PI * 2
+      }));
+    };
+    resize();
+    addEventListener("resize", resize);
+    const glow = document.createElement("div");
+    glow.className = "cursor-glow";
+    document.body.appendChild(glow);
+    let mx = innerWidth / 2, my = innerHeight / 3;
+    addEventListener("pointermove", (e) => {
+      mx = e.clientX;
+      my = e.clientY;
+    });
+    let last = 0;
+    const frame = (t) => {
+      requestAnimationFrame(frame);
+      if (document.hidden) return;
+      if (t - last < 40) return;
+      last = t;
+      ctx.clearRect(0, 0, W, H);
+      for (const s of stars) {
+        s.y += s.vy;
+        s.tw += 0.04;
+        if (s.y > H + 2) {
+          s.y = -2;
+          s.x = Math.random() * W;
+        }
+        const a = 0.25 + 0.55 * Math.abs(Math.sin(s.tw));
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, 7);
+        ctx.fillStyle = `rgba(165,180,252,${a})`;
+        ctx.fill();
+      }
+      glow.style.transform = `translate(${mx - 260}px, ${my - 260}px)`;
+    };
+    requestAnimationFrame(frame);
+  }
 
-function empty(icon, text) {
-  return `<li class="empty"><span class="ico">${icon}</span>${esc(text)}</li>`;
-}
-
-// skeleton renders content-shaped loading placeholders (never a spinner),
-// matching the shape of the list that is about to arrive.
-function skeleton(n) {
-  return Array.from({length: n}, () =>
-    `<li class="skel"><span class="skel-av"></span><div class="skel-body"><span class="skel-line w60"></span><span class="skel-line w90"></span></div></li>`
-  ).join("");
-}
-
-// setHTML writes innerHTML only when the content actually changed. Full
-// innerHTML rewrites on every refresh were the main source of list flicker:
-// the browser tears down and relayouts identical DOM. Skipping no-op
-// writes makes periodic refreshes invisible.
-function setHTML(el, html) {
-  if (!el || el.innerHTML === html) return;
-  el.innerHTML = html;
-}
-
-function render() {
-  // nav counts + stats
-  $("navBots").textContent = roster.bots.length;
-  $("navRuns").textContent = (roster.runs||[]).length;
-  $("navRtn").textContent = roster.routines.length;
-  $("navSkills").textContent = roster.skills.length;
-
-  // stats tween so live changes read as motion
-  animateNum($("statBots"), roster.bots.length);
-  animateNum($("statRoutines"), roster.routines.length);
-  animateNum($("statRuns"), (roster.runs||[]).length);
-  animateNum($("statMesh"), meshModels.length);
-
-  // roster
-  setHTML($("bots"), roster.bots.map(b =>
-    `<li>${avatar(b.name)}
+  // src/main.js
+  var $2 = (id) => document.getElementById(id);
+  var roster = { bots: [], skills: [], routines: [], messages: [], routes: [], runs: [] };
+  var activeRun = null;
+  var pollTimer = null;
+  var elapsedTimer = null;
+  var runStart = null;
+  var streamES = null;
+  var streamBuf = "";
+  var streamOpen = false;
+  var streamRetries = 0;
+  var streamTimer = null;
+  var streamRunId = null;
+  var keyFile = "~/.accounts/meta.ai";
+  var secretPatterns = [
+    /MODEL_API_KEY\s*[=:]\s*\S+/g,
+    /sk-[A-Za-z0-9_\-]{8,}/g,
+    /Bearer\s+[A-Za-z0-9_\-\.]{8,}/g,
+    new RegExp(keyFile.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"), "g"),
+    /\/\.accounts\/meta\.ai/g
+  ];
+  function sanitize2(s) {
+    let out = String(s ?? "");
+    for (const re of secretPatterns) out = out.replace(re, "[REDACTED]");
+    return out;
+  }
+  function esc3(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+  function safe2(s) {
+    return esc3(sanitize2(s));
+  }
+  function toast2(msg, cls) {
+    const t = document.createElement("div");
+    t.className = "toast" + (cls ? " " + cls : "");
+    t.textContent = msg;
+    $2("toasts").appendChild(t);
+    setTimeout(() => {
+      t.style.opacity = "0";
+      t.style.transition = "opacity .3s";
+    }, 3200);
+    setTimeout(() => t.remove(), 3600);
+  }
+  function showErr(e) {
+    if (!e) return;
+    toast2(e, "err");
+  }
+  async function api(method, path, body) {
+    const opt = { method, headers: {} };
+    if (body !== void 0) {
+      opt.headers["Content-Type"] = "application/json";
+      opt.body = JSON.stringify(body);
+    }
+    const r = await fetch(path, opt);
+    const text = await r.text();
+    if (!r.ok) throw new Error(text.trim() || r.statusText);
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  function fillSelect(el, items, label) {
+    const cur = el.value;
+    el.innerHTML = items.map((b) => `<option value="${esc3(b.id)}">${esc3(label(b))}</option>`).join("");
+    if ([...el.options].some((o) => o.value === cur)) el.value = cur;
+  }
+  function fillRouteSelect(el, mesh) {
+    const cur = el.value;
+    const opts = ["glm", "qwen", "muse", "local"].map((id) => `<option value="${id}">${id}</option>`).join("");
+    const meshOpts = (mesh || []).map((m) => `<option value="${esc3(m.route)}">${esc3(m.route)}${m.display ? " \xB7 " + esc3(m.display) : ""}</option>`).join("");
+    el.innerHTML = opts + meshOpts;
+    if ([...el.options].some((o) => o.value === cur)) el.value = cur;
+  }
+  var nav = $2("nav");
+  nav.querySelectorAll("button[data-panel]").forEach((btn) => {
+    btn.onclick = () => {
+      nav.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.querySelectorAll(".panel").forEach((p2) => p2.classList.remove("active"));
+      const p = $2("panel-" + btn.dataset.panel);
+      if (p) p.classList.add("active");
+    };
+  });
+  function gotoPanel(name) {
+    const btn = nav.querySelector(`button[data-panel="${name}"]`);
+    if (btn) btn.click();
+  }
+  var meshModels = [];
+  function avatarGrad(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = h * 31 + s.charCodeAt(i) >>> 0;
+    const a = h % 360, b = (a + 40 + h % 60) % 360;
+    return `linear-gradient(135deg, hsl(${a} 60% 60%), hsl(${b} 65% 52%))`;
+  }
+  function avatar(name) {
+    const init = (name || "?").trim().slice(0, 2).toUpperCase();
+    return `<span class="avatar" style="background:${avatarGrad(name)}">${esc3(init)}</span>`;
+  }
+  function empty(icon, text) {
+    return `<li class="empty"><span class="ico">${icon}</span>${esc3(text)}</li>`;
+  }
+  function render() {
+    $2("navBots").textContent = roster.bots.length;
+    $2("navRuns").textContent = (roster.runs || []).length;
+    $2("navRtn").textContent = roster.routines.length;
+    $2("navSkills").textContent = roster.skills.length;
+    $2("statBots").textContent = roster.bots.length;
+    $2("statRoutines").textContent = roster.routines.length;
+    $2("statRuns").textContent = (roster.runs || []).length;
+    $2("statMesh").textContent = meshModels.length;
+    $2("bots").innerHTML = roster.bots.map(
+      (b) => `<li>${avatar(b.name)}
       <div class="body">
-        <div class="title">${esc(b.name)} <span class="chip acc">${esc(b.role)}</span></div>
-        <div class="clip">${esc(b.route)}${b.memory ? " · remembers: " + safe(b.memory) : ""}</div>
+        <div class="title">${esc3(b.name)} <span class="chip acc">${esc3(b.role)}</span></div>
+        <div class="clip">${esc3(b.route)}${b.memory ? " \xB7 remembers: " + safe2(b.memory) : ""}</div>
       </div>
-      <div class="actions"><span class="tag">${esc(b.id)}</span>
-        <button class="ghost danger" data-delbot="${esc(b.id)}" title="Delete bot">✕</button></div></li>`
-  ).join("") || empty("◍", "No teammates yet — add one above."));
-  $("bots").querySelectorAll("[data-delbot]").forEach(btn => btn.onclick = () => {
-    if (confirm("Delete this bot? Its routines go too; runs are kept.")) delBot(btn.dataset.delbot);
-  });
-
-  fillSelect($("runBot"), roster.bots, b => `${b.name} (${b.route})`);
-  fillSelect($("qBot"), roster.bots, b => `${b.name} (${b.route})`);
-  fillSelect($("qMemBot"), roster.bots, b => b.name);
-  fillSelect($("rtnBot"), roster.bots, b => b.name);
-  fillSelect($("fromBot"), roster.bots, b => b.name);
-  fillSelect($("toBot"), roster.bots, b => b.name);
-  fillSelect($("rtnSkill"), roster.skills, s => s.name);
-  fillSelect($("memBot"), roster.bots, b => b.name);
-  fillRouteSelect($("botRoute"), meshModels, directModels);
-  $("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
-  setHTML($("msgs"), (roster.messages||[]).map(m =>
-    `<li>${avatar(m.from)}
+      <div class="actions">${presenceHTML(b)}<span class="tag">${esc3(b.id)}</span></div></li>`
+    ).join("") || empty("\u25CD", "No teammates yet \u2014 deploy one above.");
+    fillSelect($2("runBot"), roster.bots, (b) => `${b.name} (${b.route})`);
+    window.codeStudio?.fillRunBot?.(roster.bots);
+    fillSelect($2("rtnBot"), roster.bots, (b) => b.name);
+    fillSelect($2("fromBot"), roster.bots, (b) => b.name);
+    fillSelect($2("toBot"), roster.bots, (b) => b.name);
+    fillSelect($2("rtnSkill"), roster.skills, (s) => s.name);
+    fillSelect($2("memBot"), roster.bots, (b) => b.name);
+    fillRouteSelect($2("botRoute"), meshModels);
+    $2("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
+    const botName = {};
+    for (const b of roster.bots) botName[b.id] = b.name;
+    $2("msgs").innerHTML = (roster.messages || []).map(
+      (m) => `<li>${avatar(m.from)}
       <div class="body">
-        <div class="title">${esc(m.from)} → ${esc(m.to)} <span class="tag">owner ${esc(m.owner_bot)}</span></div>
-        <div class="clip">${safe(m.body)}</div>
+        <div class="title">${esc3(botName[m.from] || m.from)} \u2192 ${esc3(botName[m.to] || m.to)} <span class="tag">owner ${esc3(botName[m.owner_bot] || m.owner_bot)}</span></div>
+        <div class="clip">${safe2(m.body)}</div>
       </div></li>`
-  ).join("") || empty("⇄", "No handoffs yet."));
-
-  setHTML($("skills"), roster.skills.map(s =>
-    `<li><span class="avatar" style="background:var(--acc-soft);color:var(--acc)">✦</span>
-      <div class="body"><div class="title">${esc(s.name)}</div><div class="clip">${esc(s.id)}</div></div>
-      <div class="actions"><button class="ghost danger" data-delskill="${esc(s.id)}" title="Delete skill">✕</button></div></li>`
-  ).join("") || empty("✦", "No skills yet — write one above."));
-  $("skills").querySelectorAll("[data-delskill]").forEach(btn => btn.onclick = () => {
-    if (confirm("Delete this skill? Routines using it go too.")) delSkill(btn.dataset.delskill);
-  });
-
-  setHTML($("routines"), roster.routines.map(rt => {
-    const state = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
-    return `<li><span class="avatar" style="background:var(--acc-soft);color:var(--acc)">↻</span>
+    ).join("") || empty("\u21C4", "No handoffs yet.");
+    $2("skills").innerHTML = roster.skills.map(
+      (s) => `<li><span class="avatar" style="background:var(--grad)">\u2726</span>
+      <div class="body"><div class="title">${esc3(s.name)}</div><div class="clip">${esc3(s.id)}</div></div></li>`
+    ).join("") || empty("\u2726", "The library is empty \u2014 write a playbook above.");
+    $2("routines").innerHTML = roster.routines.map((rt) => {
+      const state = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
+      return `<li><span class="avatar" style="background:var(--grad)">\u21BB</span>
       <div class="body">
-        <div class="title">${esc(rt.trigger)} ${state}</div>
-        <div class="clip">${esc(rt.id)} · ${esc(rt.last_note||"no test-run")}</div>
+        <div class="title">${esc3(rt.trigger)} ${state}</div>
+        <div class="clip">${esc3(rt.id)} \xB7 ${esc3(rt.last_note || "no test-run")}</div>
       </div>
       <div class="actions">
-        <button class="ghost" data-test="${esc(rt.id)}">test-run</button>
-        <button class="ghost" data-pause="${esc(rt.id)}">${rt.paused ? "resume" : "pause"}</button>
-        <button class="ghost danger" data-delrtn="${esc(rt.id)}" title="Delete routine">✕</button>
+        <button class="ghost" data-test="${esc3(rt.id)}">test-run</button>
+        <button class="ghost" data-en="${esc3(rt.id)}">enable</button>
       </div></li>`;
-  }).join("") || empty("↻", "No routines yet — schedule one above."));
-  $("routines").querySelectorAll("[data-test]").forEach(btn => btn.onclick = () => testRun(btn.dataset.test));
-  $("routines").querySelectorAll("[data-pause]").forEach(btn => btn.onclick = () => pauseRtn(btn.dataset.pause, !btn.textContent.includes("resume")));
-  $("routines").querySelectorAll("[data-delrtn]").forEach(btn => btn.onclick = () => {
-    if (confirm("Delete this routine?")) delRtn(btn.dataset.delrtn);
-  });
-
-  const tb = $("routes").querySelector("tbody");
-  setHTML(tb, (roster.routes||[]).map(r =>
-    `<tr><td>${esc(r.id)}</td><td>${esc(r.role)}</td><td>${esc(r.model)}</td><td class="tag">${esc(r.purpose)}</td></tr>`
-  ).join(""));
-
-  // Run history: newest first, capped at 20 rows. Clicking a run replays
-  // its events into the log (Grok Bot-style run visibility).
-  const botName = {};
-  for (const b of roster.bots) botName[b.id] = b.name;
-  // "Needs review" filter (research R95/G2): pending-review runs with a
-  // diff are the supervisory queue. Default view = all runs.
-  const allRuns = (roster.runs||[]).slice(0, 20);
-  const needsReview = allRuns.filter(r => r.diffSummary && (!r.reviewState || r.reviewState === "pending"));
-  const shown = runFilter === "review" ? needsReview : allRuns;
-  setHTML($("runHistory"), shown.map(r => {
-    const chip = r.status === "done" ? "ok" : (r.status === "running" ? "acc" : (r.status === "stopped" ? "warn" : "err"));
-    const dur = runDuration(r);
-    // AC-2f: show the run's diff and review state when a summary exists.
-    const ds = r.diffSummary;
-    const diffTag = ds && (ds.files || ds.additions || ds.deletions)
-      ? ` <span class="tag" title="${ds.files} files">+${esc(ds.additions||0)}/−${esc(ds.deletions||0)}</span>` : "";
-    const revTag = r.reviewState && r.reviewState !== "pending"
-      ? ` <span class="chip ${r.reviewState === "accepted" ? "ok" : r.reviewState === "partial" ? "acc" : "warn"}">${esc(r.reviewState)}</span>` : "";
-    // Review metrics (PRD §11): accept rate once a decision is recorded.
-    const rateTag = r.hunksTotal
-      ? ` <span class="tag" title="hunks accepted/total">${esc(r.hunksAccepted||0)}/${esc(r.hunksTotal)}</span>` : "";
-    return `<li class="runrow" data-runrow="${esc(r.id)}">
+    }).join("") || empty("\u21BB", "Nothing on the clock \u2014 arm a routine above.");
+    $2("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
+    $2("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
+    const tb = $2("routes").querySelector("tbody");
+    tb.innerHTML = (roster.routes || []).map(
+      (r) => `<tr><td>${esc3(r.id)}</td><td>${esc3(r.role)}</td><td>${esc3(r.model)}</td><td class="tag">${esc3(r.purpose)}</td></tr>`
+    ).join("");
+    const fmtTime = (ts) => {
+      if (!ts) return "";
+      const d = new Date(ts);
+      return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    };
+    $2("runHistory").innerHTML = (roster.runs || []).slice(0, 20).map((r) => {
+      const chip = r.status === "done" ? "ok" : r.status === "running" ? "acc" : "err";
+      return `<li>
       <div class="body">
-        <div class="title"><span class="runid">${esc(r.id.slice(0,8))}</span> <span class="chip ${chip}">${esc(r.status)}</span>${dur ? ` <span class="tag">${esc(dur)}</span>` : ""}${diffTag}${revTag}${rateTag}</div>
-        <div class="clip">${esc(botName[r.bot_id] || r.bot_id || "—")} · ${esc(r.intent)} · ${esc(relTime(r.created_at))} · ${esc((r.prompt||"").slice(0,80))}${r.error ? " · " + esc(r.error) : ""}</div>
+        <div class="title"><button class="linklike" data-run="${esc3(r.id)}">${esc3(r.id.slice(0, 8))}</button> <span class="chip ${chip}">${esc3(r.status)}</span>${r.created_at ? ` <span class="tag">${esc3(fmtTime(r.created_at))}</span>` : ""}</div>
+        <div class="clip">${esc3(botName[r.bot_id] || r.bot_id || "\u2014")} \xB7 ${esc3(r.intent)}${r.error ? " \xB7 " + esc3(r.error) : ""}</div>
       </div></li>`;
-  }).join("")
-    || `<li class="empty"><span class="ico">▶</span>${runFilter === "review" ? "No runs waiting for review." : "No runs yet — start one with <b>r</b> or the Run panel."}</li>`);
-  $("runHistory").querySelectorAll("[data-runrow]").forEach(li =>
-    li.onclick = () => { openDrawer(li.dataset.runrow).catch(e => showErr(e.message)); });
-
-  // Needs-review filter toggle (G2): the button shows the pending count
-  // and switches the list between all runs and the review queue.
-  const fbtn = $("runFilterBtn");
-  if (fbtn) {
-    fbtn.textContent = "needs review: " + needsReview.length;
-    fbtn.classList.toggle("acc", runFilter === "review");
-    fbtn.onclick = () => {
-      runFilter = runFilter === "review" ? "all" : "review";
-      render();
-    };
+    }).join("") || empty("\u25B6", "Nothing has run yet. Give it a mission.");
+    $2("runHistory").querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
+      clearLog();
+      stopPoll();
+      activeRun = null;
+      startStream(btn.dataset.run);
+    });
   }
-}
-
-// showSkeletons fills the primary lists with loading placeholders until the
-// first roster arrives, so first paint never flashes a blank box.
-function showSkeletons() {
-  $("bots").innerHTML = skeleton(3);
-  $("runHistory").innerHTML = skeleton(2);
-  $("msgs").innerHTML = skeleton(2);
-}
-
-async function refresh() {
-  roster = await api("GET", "/api/v1/roster");
-  render();
-}
-
-// loadMesh fetches the ready amesh mesh models and renders them as
-// selectable routes. An amesh-web that is down is a rendered state.
-async function loadMesh() {
-  try {
-    const res = await api("GET", "/api/v1/mesh/models");
-    meshModels = res.ok ? (res.models || []) : [];
-    $("meshCount").textContent = res.ok
-      ? `${meshModels.length} ready`
-      : `unavailable (${res.reason || "amesh-web unreachable"})`;
-  } catch (e) {
-    meshModels = [];
-    $("meshCount").textContent = `unavailable (${e.message})`;
-  }
-  $("meshModels").innerHTML = meshModels.map(m =>
-    `<li><span class="avatar" style="background:var(--ok-soft);color:var(--ok)">◈</span>
-      <div class="body">
-        <div class="title">${esc(m.route)}</div>
-        <div class="clip">${esc(m.display || m.model)}${m.context_tokens ? " · " + m.context_tokens + " ctx" : ""}</div>
-      </div></li>`
-  ).join("") || empty("◈", "No mesh models ready.");
-  render();
-}
-
-// loadDirect fetches the models available on the Meta model API (fetched
-// server-side; the key never reaches the browser) and renders them as
-// direct/<model> routes. This is the fallback when amesh is down and the
-// way to force a direct route.
-async function loadDirect() {
-  try {
-    const res = await api("GET", "/api/v1/direct/models");
-    directModels = res.ok ? (res.models || []) : [];
-    $("directCount").textContent = res.ok
-      ? `${directModels.length} available`
-      : `unavailable (${res.reason || "no key"})`;
-  } catch (e) {
-    directModels = [];
-    $("directCount").textContent = `unavailable (${e.message})`;
-  }
-  $("directModels").innerHTML = directModels.map(m =>
-    `<li><span class="avatar" style="background:var(--ok-soft);color:var(--ok)">◆</span>
-      <div class="body">
-        <div class="title">${esc(m.route)}</div>
-        <div class="clip">${esc(m.display || m.model)}</div>
-      </div></li>`
-  ).join("") || empty("◆", "No direct models available.");
-  render();
-}
-
-// ---- event rendering ----------------------------------------------------
-
-// openTools tracks tool_start events awaiting their tool_end so the UI can
-// pair them and mark the tool as running until it finishes.
-const openTools = new Map();
-
-// event filter state — one active kind per console; "all" shows everything.
-let evFilter = "all";
-let drawerFilter = "all";
-
-// kindOf maps an event to its filter bucket. tool_start/tool_end collapse
-// into "tool" so the chip reads naturally.
-function kindOf(e) {
-  const k = e.kind || "";
-  if (k === "tool_start" || k === "tool_end") return "tool";
-  return k;
-}
-
-// matchesFilter decides whether an event passes the active filter.
-function matchesFilter(e, filter) {
-  if (!filter || filter === "all") return true;
-  return kindOf(e) === filter;
-}
-
-// applyFilter re-renders the live log under the current filter. It replays
-// the buffered events so filtering feels instant, not append-only.
-let logEvents = [];   // buffered events for the live console (filter replay)
-function applyFilter() {
-  const log = logEl();
-  log.innerHTML = "";
-  openTools.clear();
-  for (const e of logEvents) {
-    if (matchesFilter(e, evFilter)) appendEvent(e);
-  }
-  log.scrollTop = log.scrollHeight;
-}
-
-function wireFilters(container, setter) {
-  container.querySelectorAll(".chipf").forEach(chip => {
-    chip.onclick = () => {
-      container.querySelectorAll(".chipf").forEach(c => c.classList.remove("active"));
-      chip.classList.add("active");
-      setter(chip.dataset.kind);
-    };
-  });
-}
-wireFilters($("evFilters"), k => { evFilter = k; applyFilter(); });
-wireFilters($("drawerFilters"), k => { drawerFilter = k; renderDrawerLog(); });
-
-function logEl() { return $("log"); }
-
-// nearBottom reports whether the log is scrolled to (or near) the bottom,
-// i.e. the user is following the stream. Autoscroll only then — never yank
-// the view while someone is scrolled up reading history.
-function nearBottom(el) {
-  return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-}
-
-function appendEvent(e) {
-  const log = logEl();
-  const stick = nearBottom(log);
-  log.appendChild(buildEventNode(e));
-  // A run is terminal on "done" or on a run_status of done/error/stopped;
-  // all three must refresh the roster so RECENT RUNS never goes stale.
-  if (e.kind === "done" || (e.kind === "run_status" && /^(done|error|stopped)$/.test(e.text || ""))) {
-    onRunEnd(e.kind === "run_status" ? e.text : "done");
-  }
-  if (stick) log.scrollTop = log.scrollHeight;
-  // Code Studio: breathe the review surface while a run is in flight,
-  // settle it when the run ends, and load the diff when it's ready.
-  const review = document.getElementById("edReview");
-  if (review) {
-    if (e.kind === "run_status" && /^(running|queued)$/.test(e.text || "")) {
-      review.classList.add("live");
-    } else if (e.kind === "run_status" && /^(done|error|stopped)$/.test(e.text || "")) {
-      review.classList.remove("live");
-    } else if (e.kind === "diff_ready") {
-      if (window.codeStudio) {
-        window.codeStudio.openRunDiff(e.text);
-      } else {
-        // Editor panel not yet opened: stash the pending run so
-        // codeStudioInit can consume it when the user opens the tab.
-        window.codeStudioPendingRun = e.text;
-      }
-    } else if (e.kind === "review_done") {
-      // A review finished (possibly in another tab/window): refresh
-      // the tree and checkpoints so the editor does not show stale
-      // workspace state.
-      if (window.codeStudio) window.codeStudio.refresh();
-    }
-  }
-}
-
-// buildEventNode renders one event through the rich renderers (paired tools,
-// collapsed thinking, perm ack, verify badge). The live console and the
-// run-detail drawer share this path so both transcripts look identical.
-function buildEventNode(e, tools) {
-  const kind = e.kind || "";
-  switch (kind) {
-    case "content":
-      return evDiv("content", "content", e.text);
-    case "thinking":
-      return thinkingEl(e.text);
-    case "tool_start":
-      return toolEl(e, false, tools);
-    case "tool_end":
-      return toolEl(e, true, tools);
-    case "perm":
-      return permEl(e);
-    case "plan":
-      return evDiv("plan", "plan", e.text);
-    case "err":
-      return evDiv("err", "err", e.text);
-    case "done":
-      return evDiv("done", "done", e.text);
-    case "verify":
-      return verifyEl(e);
-    case "run_status":
-      return evDiv("run_status", "run_status", e.text);
-    case "result_contract":
-      return resultContractEl(e.text);
-    case "diff_ready":
-      return evDiv("done", "diff", "diff ready — review in Editor");
-    case "routine_fire":
-      return evDiv("routine_fire", "routine_fire", "routine " + e.text + " fired");
-    default:
-      return evDiv("unknown", kind, e.text);
-  }
-}
-
-function evDiv(cls, label, text) {
-  const d = document.createElement("div");
-  d.className = "ev " + cls;
-  const k = document.createElement("span");
-  k.className = "k";
-  k.textContent = label;
-  d.appendChild(k);
-  if (text) d.appendChild(document.createTextNode(" " + sanitize(text)));
-  return d;
-}
-
-// thinkingEl renders a thinking event as a collapsed <details> block.
-function thinkingEl(text) {
-  const d = document.createElement("details");
-  d.className = "ev thinking";
-  const s = document.createElement("summary");
-  s.className = "k";
-  s.textContent = "thinking";
-  d.appendChild(s);
-  const body = document.createElement("div");
-  body.className = "body";
-  body.textContent = sanitize(text || "");
-  d.appendChild(body);
-  return d;
-}
-
-// toolEl renders tool_start/tool_end. A tool_start opens a row that stays
-// "running" until its matching tool_end (same tool name, FIFO) arrives.
-// tools is an optional pairing map; it defaults to the live-console map so
-// the drawer can keep its own state without disturbing streaming runs.
-function toolEl(e, isEnd, tools) {
-  tools = tools || openTools;
-  const tool = e.tool || "tool";
-  const d = document.createElement("div");
-  d.className = "ev tool " + (isEnd ? "tool_end" : "tool_start");
-  const k = document.createElement("span");
-  k.className = "k";
-  k.textContent = (isEnd ? "tool_end" : "tool_start") + " " + tool;
-  d.appendChild(k);
-
-  if (!isEnd) {
-    const st = document.createElement("span");
-    st.className = "tool-status";
-    st.textContent = " running";
-    d.appendChild(st);
-    tools.set(tool, d);
-  } else {
-    // Pair with the most recent open start for this tool.
-    const open = tools.get(tool);
-    if (open) {
-      const st = open.querySelector(".tool-status");
-      if (st) st.textContent = e.is_error ? " failed" : " done";
-      open.classList.add("closed");
-      if (e.is_error) open.classList.add("err");
-      tools.delete(tool);
-    }
-    if (e.is_error) d.classList.add("err");
-    if (e.text) {
-      // Collapsible long output (G4, Zed #58333 pattern): short results
-      // stay inline; long ones collapse behind a summary line.
-      const t = sanitize(e.text);
-      if (t.length > 240 || t.split("\n").length > 4) {
-        const det = document.createElement("details");
-        det.className = "tool-out";
-        const sum = document.createElement("summary");
-        sum.textContent = " " + t.split("\n")[0].slice(0, 60) + "… (" + t.split("\n").length + " lines)";
-        det.appendChild(sum);
-        const pre = document.createElement("pre");
-        pre.textContent = t;
-        det.appendChild(pre);
-        d.appendChild(det);
-      } else {
-        d.appendChild(document.createTextNode(" " + t));
-      }
-    }
-  }
-  return d;
-}
-
-// permEl renders a permission request with a mock acknowledgment button.
-// The ack is local-only: it marks the event acknowledged in the UI.
-function permEl(e) {
-  const d = document.createElement("div");
-  d.className = "ev perm";
-  const k = document.createElement("span");
-  k.className = "k";
-  k.textContent = "perm";
-  d.appendChild(k);
-  if (e.text) d.appendChild(document.createTextNode(" " + sanitize(e.text)));
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "ack";
-  btn.textContent = "ack";
-  btn.onclick = () => {
-    btn.textContent = "acknowledged";
-    btn.disabled = true;
-    d.classList.add("acked");
-  };
-  d.appendChild(btn);
-  return d;
-}
-
-// verifyEl renders the verify event as a success/failure badge.
-function verifyEl(e) {
-  const d = document.createElement("div");
-  const ok = !e.is_error;
-  d.className = "ev verify " + (ok ? "ok" : "fail");
-  const badge = document.createElement("span");
-  badge.className = "badge";
-  badge.textContent = ok ? "verify ✓" : "verify ✗";
-  d.appendChild(badge);
-  if (e.text) d.appendChild(document.createTextNode(" " + sanitize(e.text)));
-  return d;
-}
-
-// onRunEnd fires when a terminal event (done) is seen: stop the
-// onRunEnd stops the elapsed timer and refreshes the roster so run history
-// updates. It also hides the stop button — the run is over.
-// status is the terminal status ("done" | "error" | "stopped"); it is
-// forwarded to the Electron shell for the completion notification.
-function onRunEnd(status) {
-  stopElapsed();
-  const sb = $("stopBtn");
-  if (sb) {
-    sb.hidden = true;
-    // Reset in case a missed terminal event left it disabled at "stopping…".
-    sb.disabled = false;
-    sb.textContent = "Stop";
-  }
-  // Code Studio AC-2e: ask the Electron shell for a completion
-  // notification. The main process drops it when the window is focused,
-  // so this is a no-op while the user is watching the run.
-  try {
-    if (window.flobotDesktop && window.flobotDesktop.notifyRunEnd) {
-      window.flobotDesktop.notifyRunEnd({ status: status || "done" });
-    }
-  } catch {}
-  refresh().catch(() => {});
-}
-
-function clearLog() {
-  logEl().innerHTML = "";
-  openTools.clear();
-  logEvents = [];
-}
-
-// ---- elapsed timer -------------------------------------------------------
-
-function startElapsed() {
-  runStart = Date.now();
-  stopElapsed();
-  const tick = () => {
-    if (!runStart) return;
-    const s = Math.floor((Date.now() - runStart) / 1000);
-    const el = $("elapsed");
-    if (el) el.textContent = s < 60 ? s + "s" : Math.floor(s/60) + "m " + (s%60) + "s";
-  };
-  tick();
-  elapsedTimer = setInterval(tick, 1000);
-}
-function stopElapsed() {
-  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
-}
-
-// ---- /api/stream client -------------------------------------------------
-
-// handleEvent parses one NDJSON line and renders it.
-function handleEvent(line) {
-  line = line.trim();
-  if (!line) return;
-  let ev;
-  try { ev = JSON.parse(line); } catch { return; }
-  if (!ev || typeof ev !== "object") return;
-  logEvents.push(ev);
-  if (matchesFilter(ev, evFilter)) appendEvent(ev);
-}
-
-// feedStreamLine appends a chunk to the buffer and emits complete lines.
-function feedStreamLine(chunk) {
-  streamBuf += chunk;
-  let idx;
-  while ((idx = streamBuf.indexOf("\n")) >= 0) {
-    const line = streamBuf.slice(0, idx);
-    streamBuf = streamBuf.slice(idx + 1);
-    handleEvent(line);
-  }
-}
-
-// connectStream opens the NDJSON stream. It reconnects with backoff and,
-// when a run is active, resumes from the last event it rendered (?since=)
-// so a reconnect appends only the gap instead of replaying duplicates.
-function connectStream() {
-  if (streamES) { try { streamES.close(); } catch {} streamES = null; }
-  let url = "/api/stream";
-  if (streamRunId) {
-    url += "?run=" + encodeURIComponent(streamRunId);
-    if (logEvents.length) url += "&since=" + logEvents.length;
-  }
-  const es = new EventSource(url);
-  streamES = es;
-  es.onopen = () => { streamOpen = true; streamRetries = 0; setStreamState("live"); };
-  es.onmessage = m => feedStreamLine(m.data);
-  es.onerror = () => {
-    streamOpen = false;
-    setStreamState("reconnecting");
-    try { es.close(); } catch {}
-    streamES = null;
-    streamRetries++;
-    const delay = Math.min(1000 * 2 ** streamRetries, 15000);
-    streamTimer = setTimeout(connectStream, delay);
-  };
-}
-
-function setStreamState(state) {
-  const el = $("streamState");
-  const pill = $("streamPill");
-  if (el) el.textContent = state;
-  if (pill) {
-    pill.classList.remove("live", "reconnecting");
-    if (state === "live" || state === "reconnecting") pill.classList.add(state);
-  }
-}
-
-// stopRun cancels the active run's executor context server-side. The
-// stream then delivers the run_status stopped event and onRunEnd cleans up.
-async function stopRun() {
-  const id = streamRunId || activeRun;
-  if (!id) return;
-  const btn = $("stopBtn");
-  if (btn) { btn.disabled = true; btn.textContent = "stopping…"; }
-  try {
-    await api("POST", "/api/v1/runs/" + id + "/stop");
-    toast("run stopped", "ok");
-  } catch (e) {
-    showErr(e.message);
-    if (btn) { btn.disabled = false; btn.textContent = "\u25a0 stop"; }
-  }
-}
-
-// startStream begins streaming for a run (or the global feed if id is null).
-function startStream(runId) {
-  streamRunId = runId || null;
-  const sb = $("stopBtn");
-  if (sb) { sb.hidden = !runId; sb.disabled = false; sb.textContent = "\u25a0 stop"; }
-  if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
-  streamBuf = "";
-  connectStream();
-  if (runId) startElapsed(); else { runStart = null; stopElapsed(); }
-}
-
-// stopStream tears down the stream client.
-function stopStream() {
-  if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
-  if (streamES) { try { streamES.close(); } catch {} streamES = null; }
-  streamOpen = false;
-  streamRunId = null;
-  const sb = $("stopBtn");
-  if (sb) sb.hidden = true;
-  setStreamState("idle");
-}
-
-// ---- polling fallback ---------------------------------------------------
-
-function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
-
-async function pollOnce() {
-  if (!activeRun) return;
-  const ev = await api("GET", "/api/v1/runs/"+activeRun+"/events");
-  // Append only the events we have not rendered yet instead of rebuilding
-  // the whole log every 500ms — the rebuild was the log's flicker source.
-  const all = ev.events || [];
-  if (all.length < logEvents.length) {
-    // Fewer events than rendered (run restarted / replay reset): full redraw.
-    clearLog();
-  }
-  for (const e of all.slice(logEvents.length)) {
-    logEvents.push(e);
-    if (matchesFilter(e, evFilter)) appendEvent(e);
-  }
-  if (ev.status && ev.status !== "running") {
-    stopPoll();
-    activeRun = null;
-    await refresh();
-  }
-}
-
-function startPoll(id) {
-  activeRun = id;
-  stopPoll();
-  pollOnce().catch(e => showErr(e.message));
-  pollTimer = setInterval(() => pollOnce().catch(e => showErr(e.message)), 500);
-}
-
-// ---- run detail drawer ---------------------------------------------------
-
-let drawerRunId = null;
-
-// detHash is a small deterministic integer hash so sparkline bars keep a
-// stable organic shape across re-renders instead of reshuffling randomly.
-function detHash(i) {
-  let x = ((i * 2654435761) >>> 0) ^ ((i << 13) >>> 0);
-  x ^= x >>> 13;
-  x = (x * 1274126177) >>> 0;
-  return x % 18;
-}
-
-// sparkline renders one bar per event bucket, height derived deterministically
-// from position + kind so filtering or reopening never changes the shape.
-function sparkline(events) {
-  const el = $("drawerSpark");
-  if (!events || !events.length) { el.innerHTML = ""; return; }
-  const kinds = events.map(kindOf);
-  const buckets = [];
-  const n = Math.min(events.length, 90);
-  const step = Math.max(1, Math.floor(events.length / n));
-  for (let i = 0; i < events.length; i += step) {
-    buckets.push(kinds.slice(i, i + step));
-  }
-  el.innerHTML = buckets.map((bucket, bi) => {
-    const k = bucket[0];
-    const cls = k === "tool" ? "k-tool" : k === "err" ? "k-err" : k === "done" ? "k-done"
-      : k === "verify" ? "k-verify" : k === "thinking" ? "k-thinking" : "";
-    const h = 22 + detHash(bi * 7 + k.length); // stable per position+kind
-    return `<i class="${cls}" style="height:${h}px"></i>`;
-  }).join("");
-}
-
-function renderDrawerLog() {
-  const log = $("drawerLog");
-  log.innerHTML = "";
-  // Local pairing map: the drawer renders its own transcript through the same
-  // rich renderers as the live console without touching its open-tools state.
-  const localTools = new Map();
-  const evs = (drawerEvents || []);
-  for (const e of evs) {
-    if (!matchesFilter(e, drawerFilter)) continue;
-    log.appendChild(buildEventNode(e, localTools));
-  }
-  log.scrollTop = log.scrollHeight;
-}
-
-let drawerEvents = [];
-
-async function openDrawer(runId) {
-  drawerRunId = runId;
-  const run = await api("GET", "/api/v1/runs/" + runId);
-  const evs = (await api("GET", "/api/v1/runs/" + runId + "/events")).events || [];
-  drawerEvents = evs;
-  const botName = {};
-  for (const b of roster.bots) botName[b.id] = b.name;
-  $("drawerBot").textContent = botName[run.bot_id] || run.bot_id || "—";
-  $("drawerTitle").textContent = run.id.slice(0, 8) + " · " + (run.status || "");
-  const meta = [
-    ["status", run.status],
-    ["intent", run.intent],
-    ["bot", botName[run.bot_id] || run.bot_id || "—"],
-    ["route", run.route || run.pin || "—"],
-    ["yolo", run.yolo ? "on" : "off"],
-    ["verify", run.verify ? "on" : "off"],
-    ["events", String(evs.length)],
-    ["created", (run.created_at || "").replace("T", " ").slice(0, 19)]
-  ];
-  $("drawerMeta").innerHTML = meta.map(([k, v]) =>
-    `<div class="meta"><div class="mk">${esc(k)}</div><div class="mv">${esc(v)}</div></div>`).join("");
-  $("drawerPrompt").textContent = run.prompt || "";
-  sparkline(evs);
-  renderDrawerLog();
-  // Review-diff button: opens the Editor panel with this run's diff.
-  const rb = $("drawerReview");
-  if (rb) {
-    rb.hidden = false;
-    rb.onclick = () => {
-      closeDrawer();
-      gotoPanel("editor");
-      if (window.codeStudio) window.codeStudio.openRunDiff(runId);
-    };
-  }
-  $("drawer").classList.add("open");
-  $("drawer").setAttribute("aria-hidden", "false");
-}
-
-function closeDrawer() {
-  $("drawer").classList.remove("open");
-  $("drawer").setAttribute("aria-hidden", "true");
-}
-
-$("drawerClose").onclick = closeDrawer;
-$("drawerScrim").onclick = closeDrawer;
-$("drawerStream").onclick = () => {
-  closeDrawer();
-  clearLog(); stopPoll(); activeRun = null;
-  gotoPanel("run");
-  startStream(drawerRunId);
-};
-$("drawerCopy").onclick = async () => {
-  const text = drawerEvents.map(e => {
-    const t = e.text ? " " + sanitize(e.text) : "";
-    return `[${e.kind}]${t}`;
-  }).join("\n");
-  try {
-    await navigator.clipboard.writeText(text);
-    toast("transcript copied", "ok");
-  } catch { toast("copy failed", "err"); }
-};
-
-// ---- command palette -----------------------------------------------------
-
-const paletteItems = () => [
-  {ico:"◎", txt:"Overview", kbd:"1", go:() => gotoPanel("overview")},
-  {ico:"◍", txt:"Teammates", kbd:"2", go:() => gotoPanel("bots")},
-  {ico:"▶", txt:"New run", kbd:"r", go:() => gotoPanel("run")},
-  {ico:"◉", txt:"Needs review queue", kbd:"n", go:() => { gotoPanel("overview"); runFilter = "review"; render(); }},
-  {ico:"❯", txt:"Editor", kbd:"e", go:() => gotoPanel("editor")},
-  {ico:"↻", txt:"Routines", kbd:"4", go:() => gotoPanel("routines")},
-  {ico:"✦", txt:"Skills", kbd:"5", go:() => gotoPanel("skills")},
-  {ico:"⇄", txt:"Routes", kbd:"6", go:() => gotoPanel("routes")},
-  {ico:"♥", txt:"Model health", kbd:"7", go:() => gotoPanel("health")},
-  {ico:"⟳", txt:"Probe routes", kbd:"", go:() => { gotoPanel("health"); probeRoutes(); }},
-  {ico:"⌘", txt:"Refresh mesh models", kbd:"", go:() => { loadMesh().then(refresh); }},
-  {ico:"◆", txt:"Refresh direct models", kbd:"", go:() => { loadDirect().then(refresh); }},
-  {ico:"◍", txt:"New teammate", kbd:"", go:() => { gotoPanel("bots"); $("botName").focus(); }},
-  {ico:"✦", txt:"New skill", kbd:"", go:() => { gotoPanel("skills"); $("skillName").focus(); }},
-];
-
-let paletteSel = 0;
-function openPalette() {
-  paletteSel = 0;
-  $("paletteInput").value = "";
-  renderPalette("");
-  $("palette").classList.add("open");
-  $("palette").setAttribute("aria-hidden", "false");
-  $("paletteInput").focus();
-}
-function closePalette() {
-  $("palette").classList.remove("open");
-  $("palette").setAttribute("aria-hidden", "true");
-}
-function renderPalette(q) {
-  const list = $("paletteList");
-  const items = paletteItems().filter(it =>
-    !q || it.txt.toLowerCase().includes(q.toLowerCase()));
-  list.innerHTML = items.map((it, i) =>
-    `<div class="palette-item${i === paletteSel ? " sel" : ""}" data-i="${i}">
-      <span class="ico">${it.ico}</span><span class="txt">${it.txt}</span><span class="kbd">${it.kbd}</span>
-    </div>`).join("");
-  list.querySelectorAll(".palette-item").forEach(el => el.onclick = () => {
-    const it = items[+el.dataset.i];
-    closePalette();
-    it.go();
-  });
-}
-$("paletteInput").oninput = e => { paletteSel = 0; renderPalette(e.target.value); };
-$("paletteInput").onkeydown = e => {
-  const items = paletteItems().filter(it =>
-    !e.target.value || it.txt.toLowerCase().includes(e.target.value.toLowerCase()));
-  if (e.key === "ArrowDown") { e.preventDefault(); paletteSel = (paletteSel + 1) % Math.max(items.length,1); renderPalette(e.target.value); }
-  else if (e.key === "ArrowUp") { e.preventDefault(); paletteSel = (paletteSel - 1 + Math.max(items.length,1)) % Math.max(items.length,1); renderPalette(e.target.value); }
-  else if (e.key === "Enter") { e.preventDefault(); const it = items[paletteSel]; if (it) { closePalette(); it.go(); } }
-};
-$("paletteScrim").onclick = closePalette;
-
-// ---- keyboard shortcuts --------------------------------------------------
-
-document.addEventListener("keydown", e => {
-  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
-  // §7.3 global keyboard map. Cmd-P / Cmd-. / Cmd-Shift-R / Cmd-Shift-Z
-  // work even while typing (they are not text keys), so handle them before
-  // the typing guard.
-  const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key.toLowerCase() === "p") {
-    // File quick-open (Code Studio). Opens the editor panel and its
-    // palette; Cmd-P again closes it.
-    e.preventDefault();
-    if (window.codeStudioInit) window.codeStudioInit();
-    gotoPanel("editor");
-    if (window.codeStudio && window.codeStudio.openQuick) window.codeStudio.openQuick();
-    return;
-  }
-  if (mod && e.key === ".") {
-    // Stop the active run.
-    e.preventDefault();
-    stopRun().catch(e => showErr(e.message));
-    return;
-  }
-  if (mod && e.shiftKey && e.key.toLowerCase() === "r") {
-    // Open the review for the latest run that has a diff.
-    e.preventDefault();
-    openLatestReview();
-    return;
-  }
-  if (mod && e.shiftKey && e.key.toLowerCase() === "z") {
-    // Restore the latest checkpoint (one-keystroke undo of a run).
-    e.preventDefault();
-    restoreLatestCheckpoint();
-    return;
-  }
-  if (mod && e.key.toLowerCase() === "k") {
-    e.preventDefault();
-    $("palette").classList.contains("open") ? closePalette() : openPalette();
-    return;
-  }
-  if (e.key === "Escape") {
-    if ($("palette").classList.contains("open")) closePalette();
-    else if ($("drawer").classList.contains("open")) closeDrawer();
-    return;
-  }
-  if (typing) return;
-  if (e.key === "r" || e.key === "R") { gotoPanel("run"); return; }
-  // "n" toggles the needs-review filter from anywhere (research R95/G2:
-  // the pending-review queue is the supervisory loop — make it one
-  // keystroke, not a mouse trip to the Overview panel).
-  if (e.key === "n" || e.key === "N") {
-    gotoPanel("overview");
-    runFilter = runFilter === "review" ? "all" : "review";
+  async function refresh() {
+    roster = await api("GET", "/api/v1/roster");
     render();
-    return;
+    renderSpark();
+    renderHero();
   }
-  // 1–8 panel shortcuts. Keep in sync with the nav order in index.html
-  // (overview, teammates, run, editor, routines, skills, routes, health).
-  const n = parseInt(e.key, 10);
-  if (n >= 1 && n <= 8) {
-    const names = ["overview","bots","run","editor","routines","skills","routes","health"];
-    gotoPanel(names[n-1]);
+  async function loadMesh() {
+    try {
+      const res = await api("GET", "/api/v1/mesh/models");
+      meshModels = res.ok ? res.models || [] : [];
+      $2("meshCount").textContent = res.ok ? `${meshModels.length} ready` : `unavailable (${res.reason || "amesh-web unreachable"})`;
+    } catch (e) {
+      meshModels = [];
+      $2("meshCount").textContent = `unavailable (${e.message})`;
+    }
+    $2("meshModels").innerHTML = meshModels.map(
+      (m) => `<li><span class="avatar" style="background:var(--grad)">\u25C8</span>
+      <div class="body">
+        <div class="title">${esc3(m.route)}</div>
+        <div class="clip">${esc3(m.display || m.model)}${m.context_tokens ? " \xB7 " + m.context_tokens + " ctx" : ""}</div>
+      </div></li>`
+    ).join("") || empty("\u25C8", "No mesh models ready \u2014 the rack is dark.");
+    render();
   }
-});
-
-// openLatestReview jumps to the Editor panel with the diff of the most
-// recent run that has one. The roster runs are newest-first; the first
-// with a diffSummary is the one to review. Falls back to the newest run
-// regardless so Cmd-Shift-R always does something visible.
-function openLatestReview() {
-  const runs = roster.runs || [];
-  let target = runs.find(r => r.diffSummary) || runs[0];
-  if (!target) { toast("no runs yet", "err"); return; }
-  if (window.codeStudioInit) window.codeStudioInit();
-  gotoPanel("editor");
-  if (window.codeStudio) window.codeStudio.openRunDiff(target.id);
-}
-
-// restoreLatestCheckpoint restores the newest checkpoint, with a confirm
-// (it rewrites the workspace). Mirrors the per-checkpoint restore button
-// in the Editor panel; AC-2d's "one keystroke from anywhere".
-async function restoreLatestCheckpoint() {
-  let cps;
-  try {
-    const r = await api("GET", "/api/v1/checkpoints?limit=1");
-    cps = r.checkpoints || [];
-  } catch (e) { showErr(e.message); return; }
-  if (!cps.length) { toast("no checkpoints yet", "err"); return; }
-  const cp = cps[0];
-  if (!confirm("restore checkpoint " + cp.id + "? current state is saved as a safety checkpoint")) return;
-  try {
-    const r2 = await api("POST", "/api/v1/checkpoints/" + encodeURIComponent(cp.id) + "/restore", {});
-    toast("restored (safety: " + r2.safetyCheckpoint + ")");
-    if (window.codeStudio) window.codeStudio.refresh();
-  } catch (e) { showErr(e.message); }
-}
-
-// ---- auto model-health ---------------------------------------------------
-
-async function probeRoutes() {
-  try {
-    const h = await api("GET", "/api/v1/health/models");
-    const probes = h.probes || [];
-    const okN = probes.filter(p => p.ok).length;
-    const el = $("routeHealth");
-    if (!el) return;
-    if (!probes.length) { el.innerHTML = `<span class="led warn"></span>routes — no probes`; return; }
-    const allOk = okN === probes.length;
-    el.innerHTML = `<span class="led ${allOk ? "ok" : "err"}"></span>routes ${okN}/${probes.length} up`;
-    // also fill the health table if it exists
-    const tb = $("health")?.querySelector("tbody");
-    if (tb) tb.innerHTML = probes.map(p => {
-      const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
-      return `<tr><td>${esc(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc((p.ids||[]).join(", "))}</td><td class="tag">${esc(p.error||"")}${mm}</td></tr>`;
-    }).join("");
-  } catch (e) {
-    const el = $("routeHealth");
-    if (el) el.innerHTML = `<span class="led err"></span>routes — ${esc(e.message || "probe failed")}`;
+  var openTools = /* @__PURE__ */ new Map();
+  function logEl() {
+    return $2("log");
   }
-}
-
-// ---- actions ------------------------------------------------------------
-
-// withBusy disables a button while its async action is in flight, so a
-// slow request can't be double-submitted and the UI shows progress.
-function withBusy(btn, fn) {
-  return async () => {
-    if (btn.disabled) return;
-    btn.disabled = true;
-    try { await fn(); }
-    finally { btn.disabled = false; }
-  };
-}
-$("createBot").onclick = withBusy($("createBot"), async () => {
-  try {
-    await api("POST", "/api/v1/bots", {name:$("botName").value, role:$("botRole").value, route:$("botRoute").value});
-    toast("teammate added", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-});
-$("memBtn").onclick = withBusy($("memBtn"), async () => {
-  try {
-    await api("POST", "/api/v1/bots/"+$("memBot").value+"/remember", {note:$("memNote").value});
-    $("memNote").value = "";
-    toast("remembered", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-});
-$("createSkill").onclick = withBusy($("createSkill"), async () => {
-  try {
-    await api("POST", "/api/v1/skills", {name:$("skillName").value, body:$("skillBody").value});
-    toast("skill added", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-});
-$("createRtn").onclick = withBusy($("createRtn"), async () => {
-  try {
-    await api("POST", "/api/v1/routines", {bot_id:$("rtnBot").value, skill_id:$("rtnSkill").value, trigger:$("rtnTrigger").value});
-    toast("routine scheduled", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-});
-$("sendHandoff").onclick = withBusy($("sendHandoff"), async () => {
-  try {
-    const out = await api("POST", "/api/v1/handoff", {from:$("fromBot").value, to:$("toBot").value, body:$("handoffBody").value, run:$("handoffRun").checked});
-    toast("handoff sent", "ok");
-    await refresh();
-    if (out.run && out.run.id) { clearLog(); stopPoll(); activeRun = null; gotoPanel("run"); startStream(out.run.id); }
-  } catch (e) { showErr(e.message); }
-});
-$("runBtn").onclick = withBusy($("runBtn"), async () => {
-  try {
-    const run = await api("POST", "/api/v1/runs", {
-      bot_id: $("runBot").value,
-      prompt: $("prompt").value,
-      intent: $("intent").value,
-      yolo: $("yolo").checked,
-      verify: $("verify").checked,
-      worktree: $("worktree").value
-    });
-    clearLog();
-    stopPoll();
-    activeRun = null;
-    gotoPanel("run");
-    startStream(run.id);
-  } catch (e) { showErr(e.message); }
-});
-// \u2318\u21a9 sends the run prompt without leaving the keyboard.
-$("prompt").onkeydown = e => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-    e.preventDefault();
-    $("runBtn").click();
+  function appendEvent(e) {
+    const log = logEl();
+    const kind = e.kind || "";
+    stats.bump(kind);
+    let node;
+    switch (kind) {
+      case "content":
+        node = evDiv("content", "content", e.text);
+        break;
+      case "thinking":
+        node = thinkingEl(e.text);
+        break;
+      case "tool_start":
+        node = toolEl(e, false);
+        permPendingBot = null;
+        break;
+      case "tool_end":
+        node = toolEl(e, true);
+        if (isDiff(e.text)) node.appendChild(htmlNode(renderDiff2(e.text)));
+        checkStep();
+        break;
+      case "perm":
+        node = permEl(e);
+        permPendingBot = botOfActiveRun();
+        break;
+      case "plan":
+        node = planEl(e.text);
+        break;
+      case "err":
+        node = evDiv("err", "err", e.text);
+        sfx.fail();
+        break;
+      case "done":
+        node = evDiv("done", "done", e.text);
+        sfx.done();
+        renderTimeline();
+        checkAllSteps();
+        permPendingBot = null;
+        onRunEnd();
+        break;
+      case "verify":
+        node = verifyEl(e);
+        if (!e.is_error) confetti();
+        else sfx.fail();
+        break;
+      case "run_status":
+        node = evDiv("run_status", "run_status", e.text);
+        break;
+      case "routine_fire":
+        node = evDiv("routine_fire", "routine_fire", "routine " + e.text + " fired");
+        break;
+      default:
+        node = evDiv("unknown", kind, e.text);
+    }
+    log.appendChild(node);
+    stampEvent(node, kind);
+    if (autoScroll) log.scrollTop = log.scrollHeight;
   }
-};
-// Overview quick run: one prompt + one click. Defaults mirror the Run
-// panel (intent=code, no yolo/verify) so the easiest use case is trivial.
-$("qRun").onclick = withBusy($("qRun"), async () => {
-  const prompt = $("qPrompt").value.trim();
-  if (!prompt) { $("qPrompt").focus(); return; }
-  try {
-    const run = await api("POST", "/api/v1/runs", {
-      bot_id: $("qBot").value,
-      prompt,
-      intent: "code"
-    });
-    $("qPrompt").value = "";
-    clearLog();
-    stopPoll();
-    activeRun = null;
-    gotoPanel("run");
-    startStream(run.id);
-  } catch (e) { showErr(e.message); }
-});
-$("qPrompt").onkeydown = e => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-    e.preventDefault();
-    $("qRun").click();
+  function evDiv(cls, label, text) {
+    const d = document.createElement("div");
+    d.className = "ev " + cls;
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = label;
+    d.appendChild(k);
+    if (text) d.appendChild(document.createTextNode(" " + sanitize2(text)));
+    return d;
   }
-};
-// Overview quick remember: teach a teammate without leaving home.
-$("qMemBtn").onclick = withBusy($("qMemBtn"), async () => {
-  const note = $("qMemNote").value.trim();
-  if (!note) { $("qMemNote").focus(); return; }
-  try {
-    await api("POST", "/api/v1/bots/"+$("qMemBot").value+"/remember", {note});
-    $("qMemNote").value = "";
-    toast("remembered", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-});
-$("qMemNote").onkeydown = e => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-    e.preventDefault();
-    $("qMemBtn").click();
-  }
-};
-$("stopBtn").onclick = () => { stopRun().catch(e => showErr(e.message)); };
-async function testRun(id) {
-  try {
-    const rt = await api("POST", "/api/v1/routines/"+id+"/test-run");
-    await refresh();
-    if (rt.run_id) { clearLog(); stopPoll(); activeRun = null; gotoPanel("run"); startStream(rt.run_id); }
-  } catch (e) { showErr(e.message); }
-}
-async function enableRtn(id) {
-  try {
-    await api("POST", "/api/v1/routines/"+id+"/enable");
-    toast("routine enabled", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-}
-async function pauseRtn(id, paused) {
-  try {
-    await api("POST", "/api/v1/routines/"+id+"/pause", { paused });
-    toast(paused ? "routine paused" : "routine resumed", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-}
-async function delRtn(id) {
-  try {
-    await api("DELETE", "/api/v1/routines/"+id);
-    toast("routine deleted", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-}
-async function delBot(id) {
-  try {
-    await api("DELETE", "/api/v1/bots/"+id);
-    toast("bot deleted", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-}
-async function delSkill(id) {
-  try {
-    await api("DELETE", "/api/v1/skills/"+id);
-    toast("skill deleted", "ok");
-    await refresh();
-  } catch (e) { showErr(e.message); }
-}
-// relTime renders a short relative timestamp ("2m ago"); blank on parse
-// failure so the row degrades gracefully instead of showing "Invalid Date".
-function relTime(iso) {
-  if (!iso) return "";
-  const t = Date.parse(iso);
-  if (isNaN(t)) return "";
-  const s = Math.max(0, (Date.now() - t) / 1000);
-  if (s < 60) return Math.floor(s) + "s ago";
-  if (s < 3600) return Math.floor(s / 60) + "m ago";
-  if (s < 86400) return Math.floor(s / 3600) + "h ago";
-  return Math.floor(s / 86400) + "d ago";
-}
-// runDuration renders a run's wall time ("12s", "4m03s"); empty while
-// running or when timestamps are missing/unparseable.
-function runDuration(r) {
-  if (!r || !r.created_at) return "";
-  const start = Date.parse(r.created_at);
-  if (isNaN(start)) return "";
-  const end = r.ended_at ? Date.parse(r.ended_at) : Date.now();
-  if (isNaN(end)) return "";
-  const s = Math.max(0, Math.floor((end - start) / 1000));
-  if (s < 60) return s + "s";
-  const m = Math.floor(s / 60);
-  return m + "m" + String(s % 60).padStart(2, "0") + "s";
-}
-$("probeBtn").onclick = async () => {
-  try {
-    const h = await api("GET", "/api/v1/health/models");
-    const tb = $("health").querySelector("tbody");
-    tb.innerHTML = (h.probes||[]).map(p => {
-      const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
-      return `<tr><td>${esc(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc((p.ids||[]).join(", "))}</td><td class="tag">${esc(p.error||"")}${mm}</td></tr>`;
-    }).join("");
-  } catch (e) { showErr(e.message); }
-};
-
-// ---- init ---------------------------------------------------------------
-
-showSkeletons();
-refresh().catch(e => showErr(e.message));
-loadMesh().catch(e => showErr(e.message));
-loadDirect().catch(e => showErr(e.message));
-probeRoutes();
-startStream(null);
-const meshRefreshBtn = $("meshRefresh");
-if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch(e => showErr(e.message));
-const directRefreshBtn = $("directRefresh");
-if (directRefreshBtn) directRefreshBtn.onclick = () => loadDirect().catch(e => showErr(e.message));
-
-// ---- Code Studio exports (editor.js) --------------------------------------
-// editor.js is a separate script; expose the shared helpers it needs.
-window.api = api;
-window.toast = toast;
-window.showErr = showErr;
-window.esc = esc;
-
-// resultContractEl renders the taskclient result contract as chips:
-// confidence, tests, and a requires_human_review banner when set.
-function resultContractEl(payload) {
-  let c = {};
-  try { c = JSON.parse(payload || "{}"); } catch {}
-  const d = document.createElement("div");
-  d.className = "ev result-contract";
-  const chips = document.createElement("span");
-  chips.className = "rc-chips";
-  const conf = document.createElement("span");
-  conf.className = "rc-chip";
-  const pct = Math.round((c.confidence || 0) * 100);
-  conf.textContent = "confidence " + pct + "%";
-  conf.classList.add(pct >= 70 ? "ok" : pct >= 40 ? "mid" : "low");
-  chips.appendChild(conf);
-  if (c.tests_total) {
-    const t = document.createElement("span");
-    t.className = "rc-chip " + (c.tests_passed === c.tests_total ? "ok" : "low");
-    t.textContent = "tests " + c.tests_passed + "/" + c.tests_total;
-    chips.appendChild(t);
-  }
-  d.appendChild(chips);
-  if (c.summary) {
-    const s = document.createElement("div");
-    s.className = "rc-summary";
-    s.textContent = c.summary;
+  function thinkingEl(text) {
+    const d = document.createElement("details");
+    d.className = "ev thinking";
+    const s = document.createElement("summary");
+    s.className = "k";
+    s.textContent = "thinking";
     d.appendChild(s);
+    const body = document.createElement("div");
+    body.className = "body";
+    body.textContent = sanitize2(text || "");
+    d.appendChild(body);
+    return d;
   }
-  if (c.patch_sha256) {
-    const p = document.createElement("span");
-    p.className = "rc-chip";
-    p.title = "patch sha256 " + c.patch_sha256;
-    p.textContent = "patch " + String(c.patch_sha256).slice(0, 8) +
-      (c.patch_changed_files ? " · " + c.patch_changed_files + " files" : "");
-    d.appendChild(p);
+  var planSteps = null;
+  function planEl(text) {
+    const d = document.createElement("div");
+    d.className = "ev plan";
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = "plan";
+    d.appendChild(k);
+    const ol = document.createElement("ol");
+    ol.className = "plan-steps";
+    for (const raw of String(text || "").split("\n")) {
+      const step = raw.replace(/^\s*(?:\d+\.|[-*•])\s*/, "").trim();
+      if (!step) continue;
+      const li = document.createElement("li");
+      li.className = "pstep";
+      li.textContent = step;
+      ol.appendChild(li);
+    }
+    if (ol.children.length) {
+      d.appendChild(ol);
+      planSteps = ol;
+    } else if (text) d.appendChild(document.createTextNode(" " + sanitize2(text)));
+    return d;
   }
-  if (c.requires_human_review) {
-    const b = document.createElement("span");
-    b.className = "rc-banner";
-    b.textContent = "requires human review";
-    d.appendChild(b);
+  function checkStep() {
+    if (!planSteps) return;
+    const next = [...planSteps.children].find((li) => !li.classList.contains("done"));
+    if (next) next.classList.add("done");
   }
-  return d;
-}
+  function checkAllSteps() {
+    if (!planSteps) return;
+    [...planSteps.children].forEach((li) => li.classList.add("done"));
+  }
+  var permPendingBot = null;
+  function botOfActiveRun() {
+    return ((roster.runs || []).find((r) => r.id === streamRunId) || {}).bot_id || null;
+  }
+  function presenceHTML(b) {
+    if (permPendingBot === b.id)
+      return `<span class="presence warn"><span class="pdot"></span>waiting on you</span>`;
+    const working = (roster.runs || []).some((r) => r.bot_id === b.id && r.status === "running");
+    return working ? `<span class="presence acc"><span class="pdot"></span>working</span>` : `<span class="presence"><span class="pdot"></span>idle</span>`;
+  }
+  function toolEl(e, isEnd) {
+    const tool = e.tool || "tool";
+    const d = document.createElement("div");
+    d.className = "ev tool " + (isEnd ? "tool_end" : "tool_start");
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = (isEnd ? "tool_end" : "tool_start") + " " + tool;
+    d.appendChild(k);
+    if (!isEnd) {
+      const st = document.createElement("span");
+      st.className = "tool-status";
+      st.textContent = " running";
+      d.appendChild(st);
+      openTools.set(tool, d);
+    } else {
+      const open = openTools.get(tool);
+      if (open) {
+        const st = open.querySelector(".tool-status");
+        if (st) st.textContent = e.is_error ? " failed" : " done";
+        open.classList.add("closed");
+        if (e.is_error) open.classList.add("err");
+        openTools.delete(tool);
+      }
+      if (e.is_error) d.classList.add("err");
+      if (e.text) d.appendChild(document.createTextNode(" " + sanitize2(e.text)));
+    }
+    return d;
+  }
+  function permEl(e) {
+    const d = document.createElement("div");
+    d.className = "ev perm";
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = "perm";
+    d.appendChild(k);
+    if (e.text) d.appendChild(document.createTextNode(" " + sanitize2(e.text)));
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ack";
+    btn.textContent = "ack";
+    btn.onclick = () => {
+      btn.textContent = "acknowledged";
+      btn.disabled = true;
+      d.classList.add("acked");
+    };
+    d.appendChild(btn);
+    return d;
+  }
+  function verifyEl(e) {
+    const d = document.createElement("div");
+    const ok = !e.is_error;
+    d.className = "ev verify " + (ok ? "ok" : "fail");
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = ok ? "verify \u2713" : "verify \u2717";
+    d.appendChild(badge);
+    if (e.text) d.appendChild(document.createTextNode(" " + sanitize2(e.text)));
+    return d;
+  }
+  function onRunEnd() {
+    stopElapsed();
+    refresh().catch(() => {
+    });
+  }
+  function clearLog() {
+    logEl().innerHTML = "";
+    openTools.clear();
+    evCount = 0;
+    updateStats();
+    planSteps = null;
+    $2("timeline").hidden = true;
+  }
+  function startElapsed() {
+    runStart = Date.now();
+    stopElapsed();
+    const tick = () => {
+      if (!runStart) return;
+      const s = Math.floor((Date.now() - runStart) / 1e3);
+      const el = $2("elapsed");
+      if (el) el.textContent = s < 60 ? s + "s" : Math.floor(s / 60) + "m " + s % 60 + "s";
+    };
+    tick();
+    elapsedTimer = setInterval(tick, 1e3);
+  }
+  function stopElapsed() {
+    if (elapsedTimer) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+  function handleEvent(line) {
+    line = line.trim();
+    if (!line) return;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!ev || typeof ev !== "object") return;
+    appendEvent(ev);
+  }
+  function feedStreamLine(chunk) {
+    streamBuf += chunk;
+    let idx;
+    while ((idx = streamBuf.indexOf("\n")) >= 0) {
+      const line = streamBuf.slice(0, idx);
+      streamBuf = streamBuf.slice(idx + 1);
+      handleEvent(line);
+    }
+  }
+  function connectStream() {
+    if (streamES) {
+      try {
+        streamES.abort();
+      } catch {
+      }
+      streamES = null;
+    }
+    if (streamTimer) {
+      clearTimeout(streamTimer);
+      streamTimer = null;
+    }
+    const url = streamRunId ? "/api/stream?run=" + encodeURIComponent(streamRunId) : "/api/stream";
+    const ctrl = new AbortController();
+    streamES = ctrl;
+    fetch(url, { signal: ctrl.signal }).then((res) => {
+      if (!res.ok) throw new Error("stream " + res.status);
+      streamOpen = true;
+      streamRetries = 0;
+      setStreamState("live");
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      const pump = () => reader.read().then(({ done, value }) => {
+        if (done) throw new Error("eof");
+        streamBuf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = streamBuf.indexOf("\n")) >= 0) {
+          const line = streamBuf.slice(0, idx);
+          streamBuf = streamBuf.slice(idx + 1);
+          feedStreamLine(line);
+        }
+        return pump();
+      });
+      return pump();
+    }).catch((e) => {
+      if (e.name === "AbortError") return;
+      streamOpen = false;
+      setStreamState("reconnecting");
+      streamES = null;
+      streamRetries++;
+      const delay = Math.min(1e3 * 2 ** streamRetries, 15e3);
+      streamTimer = setTimeout(connectStream, delay);
+    });
+  }
+  function setStreamState(state) {
+    const el = $2("streamState");
+    const pill = $2("streamPill");
+    if (el) el.textContent = state;
+    if (pill) {
+      pill.classList.remove("live", "reconnecting");
+      if (state === "live" || state === "reconnecting") pill.classList.add(state);
+    }
+  }
+  function startStream(runId) {
+    streamRunId = runId || null;
+    if (streamTimer) {
+      clearTimeout(streamTimer);
+      streamTimer = null;
+    }
+    streamBuf = "";
+    connectStream();
+    if (runId) startElapsed();
+    else {
+      runStart = null;
+      stopElapsed();
+    }
+  }
+  function stopStream() {
+    if (streamTimer) {
+      clearTimeout(streamTimer);
+      streamTimer = null;
+    }
+    if (streamES) {
+      try {
+        streamES.abort();
+      } catch {
+      }
+      streamES = null;
+    }
+    streamOpen = false;
+    streamRunId = null;
+    setStreamState("idle");
+  }
+  function stopPoll() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+  function renderMissions() {
+    $2("missionGrid").innerHTML = MISSIONS.map((m, i) => `<button type="button" class="mission" data-mission="${i}">
+       <span class="m-ico">${m.icon}</span>
+       <span class="m-title">${esc3(m.title)}</span>
+       <span class="m-desc">${esc3(m.prompt)}</span>
+     </button>`).join("");
+    $2("missionGrid").querySelectorAll("[data-mission]").forEach((btn) => {
+      btn.onclick = () => {
+        const m = MISSIONS[+btn.dataset.mission];
+        $2("prompt").value = m.prompt;
+        $2("intent").value = m.intent;
+        $2("prompt").focus();
+        toast2(`mission loaded: ${m.title}`, "ok");
+      };
+    });
+  }
+  function renderSkillTemplates() {
+    $2("skillTemplates").innerHTML = SKILL_TEMPLATES.map((t, i) => `<button type="button" class="mission" data-tpl="${i}">
+       <span class="m-ico">\u2726</span>
+       <span class="m-title">${esc3(t.name)}</span>
+       <span class="m-desc">${esc3(t.body.split("\n").slice(1).join(" ").trim().slice(0, 120))}\u2026</span>
+     </button>`).join("");
+    $2("skillTemplates").querySelectorAll("[data-tpl]").forEach((btn) => {
+      btn.onclick = () => {
+        const t = SKILL_TEMPLATES[+btn.dataset.tpl];
+        $2("skillName").value = t.name;
+        $2("skillBody").value = t.body;
+        toast2(`template loaded: ${t.name}`, "ok");
+      };
+    });
+  }
+  function renderRtnTriggers() {
+    $2("rtnTriggers").innerHTML = ROUTINE_TRIGGERS.map((t) => `<button type="button" class="chip ghost-chip" data-trig="${esc3(t.value)}">${esc3(t.label)}</button>`).join("");
+    $2("rtnTriggers").querySelectorAll("[data-trig]").forEach((btn) => {
+      btn.onclick = () => {
+        $2("rtnTrigger").value = btn.dataset.trig;
+      };
+    });
+  }
+  var stats = new Stats();
+  var sfx = new Sfx();
+  function htmlNode(html) {
+    const t = document.createElement("template");
+    t.innerHTML = html;
+    return t.content.firstElementChild;
+  }
+  setInterval(() => {
+    $2("tsEpm").textContent = stats.perMin();
+    $2("tsTools").textContent = stats.tools();
+    $2("tsErrs").textContent = stats.errs();
+    $2("tsTotal").textContent = stats.total();
+  }, 1e3);
+  function renderTimeline() {
+    const events = [...logEl().querySelectorAll(".ev")].map((r) => ({ kind: r.dataset.kind }));
+    const segs = timeline(events);
+    const tl = $2("timeline");
+    if (!segs.length) {
+      tl.hidden = true;
+      return;
+    }
+    tl.hidden = false;
+    tl.innerHTML = segs.map((s) => `<div class="tl-seg tl-${s.p}" style="flex:${Math.max(s.frac * 100, 4)}" title="${Math.round(s.frac * 100)}% ${s.p}"></div>`).join("");
+  }
+  $2("sfxToggle").onclick = () => {
+    sfx.on = !sfx.on;
+    $2("sfxToggle").textContent = sfx.on ? "\u266A on" : "\u266A off";
+    $2("sfxToggle").classList.toggle("sel", sfx.on);
+    if (sfx.on) sfx.tick();
+  };
+  $2("shareRun").onclick = async () => {
+    const events = [...logEl().querySelectorAll(".ev")].map((r) => {
+      const ev = { kind: r.dataset.kind };
+      const k = r.querySelector(".k");
+      if (k) ev.tool = k.textContent.replace(/^tool_(start|end)\s*/, "");
+      const body = r.querySelector(".body") || r.querySelector(".diff");
+      ev.text = body ? body.textContent : r.textContent.replace(/^[a-z_]+\s*/, "");
+      return ev;
+    });
+    const run = (roster.runs || []).find((r) => r.id === streamRunId) || { id: streamRunId || "live", bot_id: "", intent: "", status: "live" };
+    const botName = (roster.bots.find((b) => b.id === run.bot_id) || {}).name;
+    try {
+      await navigator.clipboard.writeText(toMarkdown(run, events, botName));
+      toast2("transcript copied as markdown", "ok");
+    } catch {
+      toast2("clipboard blocked", "err");
+    }
+  };
+  var logFilter = "all";
+  var showTs = false;
+  var autoScroll = true;
+  var evCount = 0;
+  function tsFor() {
+    const d = /* @__PURE__ */ new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+  function applyFilter() {
+    const log = logEl();
+    log.classList.toggle("show-ts", showTs);
+    log.querySelectorAll(".ev").forEach((row) => {
+      const k = row.dataset.kind || "";
+      const show = logFilter === "all" || (logFilter === "tool" ? k === "tool_start" || k === "tool_end" : k === logFilter);
+      row.style.display = show ? "" : "none";
+    });
+    updateStats();
+  }
+  function updateStats() {
+    const log = logEl();
+    const visible = [...log.querySelectorAll(".ev")].filter((r) => r.style.display !== "none").length;
+    $2("logStats").textContent = `${visible} events`;
+  }
+  $2("logFilters").querySelectorAll("[data-f]").forEach((btn) => {
+    btn.onclick = () => {
+      $2("logFilters").querySelectorAll("[data-f]").forEach((b) => b.classList.remove("sel"));
+      btn.classList.add("sel");
+      logFilter = btn.dataset.f;
+      applyFilter();
+    };
+  });
+  $2("tsToggle").onclick = () => {
+    showTs = !showTs;
+    $2("tsToggle").classList.toggle("sel", showTs);
+    applyFilter();
+  };
+  $2("autoScroll").onclick = () => {
+    autoScroll = !autoScroll;
+    $2("autoScroll").classList.toggle("sel", autoScroll);
+    if (autoScroll) logEl().scrollTop = logEl().scrollHeight;
+  };
+  $2("copyLog").onclick = async () => {
+    const lines = [...logEl().querySelectorAll(".ev")].map((r) => r.textContent.trim()).join("\n");
+    try {
+      await navigator.clipboard.writeText(lines);
+      toast2("console copied", "ok");
+    } catch {
+      toast2("clipboard blocked", "err");
+    }
+  };
+  function stampEvent(node, kind) {
+    node.dataset.kind = kind;
+    const ts = document.createElement("span");
+    ts.className = "ts";
+    ts.textContent = tsFor();
+    node.insertBefore(ts, node.firstChild);
+    evCount++;
+    updateStats();
+  }
+  function renderSpark() {
+    const runs = roster.runs || [];
+    $2("sparkCard").hidden = runs.length === 0;
+    if (!runs.length) return;
+    const now = Date.now();
+    const buckets = new Array(24).fill(0);
+    for (const r of runs) {
+      const t = Date.parse(r.created_at);
+      if (isNaN(t)) continue;
+      const h = Math.floor((now - t) / 36e5);
+      if (h >= 0 && h < 24) buckets[23 - h]++;
+    }
+    const max = Math.max(...buckets, 1);
+    $2("spark").innerHTML = buckets.map((n, i) => `<div class="spark-col" title="${n} run${n === 1 ? "" : "s"}">
+       <div class="spark-bar" style="height:${Math.max(4, n / max * 100)}%"></div>
+       <div class="spark-lbl">${i === 23 ? "now" : i === 0 ? "-24h" : ""}</div>
+     </div>`).join("");
+  }
+  function renderHero() {
+    const empty2 = roster.bots.length === 0;
+    $2("heroCard").hidden = !empty2;
+    if (!empty2) return;
+    $2("heroDeploy").onclick = () => gotoPanel("bots");
+    $2("heroDemo").onclick = playDemoRun;
+  }
+  var palette = null;
+  function paletteCommands() {
+    const cmds = [
+      { label: "Go to Overview", icon: "\u25CE", hint: "panel", run: () => gotoPanel("overview") },
+      { label: "Go to Teammates", icon: "\u25CD", hint: "panel", run: () => gotoPanel("bots") },
+      { label: "Go to Run", icon: "\u25B6", hint: "panel", run: () => gotoPanel("run") },
+      { label: "Go to Code", icon: "\u276F", hint: "panel", run: () => gotoPanel("editor") },
+      { label: "Open file\u2026", icon: "\u276F", hint: "editor", run: () => {
+        gotoPanel("editor");
+        window.codeStudio?.openQuick();
+      } },
+      { label: "Go to Routines", icon: "\u21BB", hint: "panel", run: () => gotoPanel("routines") },
+      { label: "Go to Skills", icon: "\u2726", hint: "panel", run: () => gotoPanel("skills") },
+      { label: "Go to Routes", icon: "\u21C4", hint: "panel", run: () => gotoPanel("routes") },
+      { label: "Go to Model health", icon: "\u2665", hint: "panel", run: () => gotoPanel("health") },
+      { label: "Watch a demo run", icon: "\u25B6", hint: "demo", run: playDemoRun },
+      { label: "Run the pulse check", icon: "\u2665", hint: "health", run: () => {
+        gotoPanel("health");
+        $2("probeBtn").click();
+      } },
+      { label: "Copy the console", icon: "\u29C9", hint: "log", run: () => $2("copyLog").click() }
+    ];
+    for (const m of MISSIONS) {
+      cmds.push({ label: `Mission: ${m.title}`, icon: m.icon, hint: m.intent, run: () => {
+        gotoPanel("run");
+        $2("prompt").value = m.prompt;
+        $2("intent").value = m.intent;
+        $2("prompt").focus();
+        toast2(`mission loaded: ${m.title}`, "ok");
+      } });
+    }
+    for (const b of roster.bots) {
+      cmds.push({ label: `Run with ${b.name}`, icon: "\u25B6", hint: b.role, run: () => {
+        gotoPanel("run");
+        fillSelect($2("runBot"), roster.bots, (x) => `${x.name} (${x.route})`);
+        $2("runBot").value = b.id;
+        $2("prompt").focus();
+      } });
+    }
+    for (const s of roster.skills) {
+      cmds.push({ label: `Skill: ${s.name}`, icon: "\u2726", hint: "library", run: () => gotoPanel("skills") });
+    }
+    return cmds;
+  }
+  function openPalette() {
+    if (palette) {
+      palette.close();
+      return;
+    }
+    palette = new Palette({ commands: paletteCommands(), onClose: () => {
+      palette = null;
+    } });
+  }
+  var gPending = false;
+  var gTimer = null;
+  document.addEventListener("keydown", (e) => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      openPalette();
+      return;
+    }
+    if (typing) return;
+    if (e.key === "g" && !gPending) {
+      gPending = true;
+      clearTimeout(gTimer);
+      gTimer = setTimeout(() => {
+        gPending = false;
+      }, 800);
+      return;
+    }
+    if (gPending) {
+      const map = { o: "overview", b: "bots", r: "run", e: "editor", t: "routines", s: "skills", h: "health", m: "routes" };
+      const panel = map[e.key];
+      gPending = false;
+      clearTimeout(gTimer);
+      if (panel) {
+        e.preventDefault();
+        gotoPanel(panel);
+      }
+    }
+  });
+  var demoCancel = null;
+  function playDemoRun() {
+    if (demoCancel) {
+      demoCancel();
+      demoCancel = null;
+    }
+    stopStream();
+    clearLog();
+    gotoPanel("run");
+    $2("runWho").textContent = "demo \xB7 scripted replay";
+    startElapsed();
+    demoCancel = playDemo(appendEvent, () => {
+      demoCancel = null;
+      stopElapsed();
+      toast2("demo finished \u2014 now run a real one", "ok");
+      startStream(null);
+    });
+  }
+  $2("demoBtn").onclick = playDemoRun;
+  $2("createBot").onclick = async () => {
+    try {
+      await api("POST", "/api/v1/bots", { name: $2("botName").value, role: $2("botRole").value, route: $2("botRoute").value });
+      toast2("teammate deployed", "ok");
+      await refresh();
+    } catch (e) {
+      showErr(e.message);
+    }
+  };
+  $2("memBtn").onclick = async () => {
+    try {
+      await api("POST", "/api/v1/bots/" + $2("memBot").value + "/remember", { note: $2("memNote").value });
+      $2("memNote").value = "";
+      toast2("burned into memory", "ok");
+      await refresh();
+    } catch (e) {
+      showErr(e.message);
+    }
+  };
+  $2("createSkill").onclick = async () => {
+    try {
+      await api("POST", "/api/v1/skills", { name: $2("skillName").value, body: $2("skillBody").value });
+      toast2("playbook added to the library", "ok");
+      await refresh();
+    } catch (e) {
+      showErr(e.message);
+    }
+  };
+  $2("createRtn").onclick = async () => {
+    try {
+      await api("POST", "/api/v1/routines", { bot_id: $2("rtnBot").value, skill_id: $2("rtnSkill").value, trigger: $2("rtnTrigger").value });
+      toast2("routine armed", "ok");
+      await refresh();
+    } catch (e) {
+      showErr(e.message);
+    }
+  };
+  $2("sendHandoff").onclick = async () => {
+    try {
+      const out = await api("POST", "/api/v1/handoff", { from: $2("fromBot").value, to: $2("toBot").value, body: $2("handoffBody").value, run: $2("handoffRun").checked });
+      toast2("handoff away", "ok");
+      await refresh();
+      if (out.run && out.run.id) {
+        clearLog();
+        stopPoll();
+        activeRun = null;
+        gotoPanel("run");
+        startStream(out.run.id);
+      }
+    } catch (e) {
+      showErr(e.message);
+    }
+  };
+  $2("runBtn").onclick = async () => {
+    try {
+      const run = await api("POST", "/api/v1/runs", {
+        bot_id: $2("runBot").value,
+        prompt: $2("prompt").value,
+        intent: $2("intent").value,
+        yolo: $2("yolo").checked,
+        verify: $2("verify").checked,
+        worktree: $2("worktree").value
+      });
+      clearLog();
+      stopPoll();
+      activeRun = null;
+      gotoPanel("run");
+      sfx.start();
+      startStream(run.id);
+    } catch (e) {
+      showErr(e.message);
+    }
+  };
+  $2("prompt").addEventListener("keydown", (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+      ev.preventDefault();
+      $2("runBtn").click();
+    }
+  });
+  async function testRun(id) {
+    try {
+      const rt = await api("POST", "/api/v1/routines/" + id + "/test-run");
+      await refresh();
+      if (rt.run_id) {
+        clearLog();
+        stopPoll();
+        activeRun = null;
+        gotoPanel("run");
+        startStream(rt.run_id);
+      }
+    } catch (e) {
+      showErr(e.message);
+    }
+  }
+  async function enableRtn(id) {
+    try {
+      await api("POST", "/api/v1/routines/" + id + "/enable");
+      toast2("routine enabled \u2014 it's live", "ok");
+      await refresh();
+    } catch (e) {
+      showErr(e.message);
+    }
+  }
+  $2("probeBtn").onclick = async () => {
+    try {
+      const h = await api("GET", "/api/v1/health/models");
+      const tb = $2("health").querySelector("tbody");
+      tb.innerHTML = (h.probes || []).map((p) => {
+        const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
+        return `<tr><td>${esc3(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc3((p.ids || []).join(", "))}</td><td class="tag">${esc3(p.error || "")}${mm}</td></tr>`;
+      }).join("") || `<tr><td colspan="4" class="tag">no probes returned</td></tr>`;
+    } catch (e) {
+      showErr(e.message);
+    }
+  };
+  refresh().catch((e) => showErr(e.message));
+  loadMesh().catch((e) => showErr(e.message));
+  renderMissions();
+  renderSkillTemplates();
+  renderRtnTriggers();
+  boot();
+  vibe();
+  startStream(null);
+  var meshRefreshBtn = $2("meshRefresh");
+  if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch((e) => showErr(e.message));
+  (function() {
+    "use strict";
+    if (window.__researchV2Loaded) return;
+    window.__researchV2Loaded = true;
+    const hud = document.createElement("div");
+    hud.className = "hud";
+    document.body.appendChild(hud);
+    let hudTimer = null;
+    window.hud = function(msg) {
+      hud.textContent = msg;
+      hud.classList.add("show");
+      clearTimeout(hudTimer);
+      hudTimer = setTimeout(() => hud.classList.remove("show"), 1600);
+      return msg;
+    };
+    document.querySelectorAll('[data-num="1"]').forEach((el) => {
+      el.classList.add("num");
+    });
+    document.querySelectorAll("[data-shortcut]").forEach((el) => {
+      if (el.querySelector(".kbd")) return;
+      const k = document.createElement("kbd");
+      k.className = "kbd";
+      k.textContent = el.getAttribute("data-shortcut").trim();
+      k.setAttribute("aria-hidden", "true");
+      el.appendChild(k);
+    });
+  })();
+})();

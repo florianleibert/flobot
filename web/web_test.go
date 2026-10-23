@@ -17,11 +17,21 @@ var allKinds = []string{
 }
 
 func TestIndexReferencesAppAndStyles(t *testing.T) {
-	if !strings.Contains(IndexHTML, `src="app.js"`) {
-		t.Errorf("index.html does not load app.js")
+	if !strings.Contains(IndexHTML, `src="/app.js"`) {
+		t.Errorf("index.html does not load /app.js")
 	}
-	if !strings.Contains(IndexHTML, `href="styles.css"`) {
-		t.Errorf("index.html does not load styles.css")
+	if !strings.Contains(IndexHTML, `href="/styles.css"`) {
+		t.Errorf("index.html does not load /styles.css")
+	}
+}
+
+func TestLocalDevIndexSwapsBundleForModule(t *testing.T) {
+	dev := IndexHTMLForLocalDev()
+	if strings.Contains(dev, BundleTag) {
+		t.Errorf("dev index still carries the production bundle tag")
+	}
+	if !strings.Contains(dev, `<script type="module" src="/src/main.js"></script>`) {
+		t.Errorf("dev index does not load the vite module entry")
 	}
 }
 
