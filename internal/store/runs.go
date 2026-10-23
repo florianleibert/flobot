@@ -35,7 +35,12 @@ type RunSummary struct {
 	Confidence         float64 `json:"confidence,omitempty"`
 	RequiresHumanReview bool   `json:"requiresHumanReview,omitempty"`
 	TestsPassed        int     `json:"testsPassed,omitempty"`
-	TestsTotal        int     `json:"testsTotal,omitempty"`
+	TestsTotal         int     `json:"testsTotal,omitempty"`
+	// Judge loop (G-Eval-style rubric): score 0–10 of the run's final
+	// output against its prompt, plus a one-line rationale. Zero values
+	// mean "not judged" (judge disabled, run errored, or parse failure).
+	JudgeScore     float64 `json:"judgeScore,omitempty"`
+	JudgeRationale string  `json:"judgeRationale,omitempty"`
 }
 
 // DiffStat is the +N/-M summary of a run's diff.

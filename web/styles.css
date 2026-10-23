@@ -933,3 +933,50 @@ details.tool-out pre { margin:2px 0 0 0; padding:4px 6px; white-space:pre-wrap; 
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ---- Code Studio: gutter, find, lang chip ------------------------------ */
+
+.ed-wrap { display:flex; min-height:0; flex:1; }
+.ed-gutter {
+  flex:0 0 44px; padding:14px 8px 14px 0; text-align:right;
+  color:var(--muted, #8b93a7); font-family:var(--font-mono, ui-monospace, monospace);
+  font-size:11.5px; line-height:19px; overflow:hidden; user-select:none;
+  border-right:1px solid var(--border); white-space:pre;
+}
+.ed-text { flex:1; min-width:0; }
+.ed-lang {
+  font-size:10.5px; color:var(--muted, #8b93a7); text-transform:uppercase;
+  letter-spacing:.08em; margin-left:8px;
+}
+.ed-find {
+  font:inherit; font-size:12px; padding:4px 8px; width:180px;
+  border:1px solid var(--border); border-radius:var(--r-sm, 8px);
+  background:var(--bg, #0f1117); color:inherit; outline:none;
+}
+.ed-find:focus { border-color:var(--acc, #7c9bff); }
+
+/* quick-open fuzzy highlight */
+#edQuickList .palette-item b { color:var(--acc, #7c9bff); font-weight:600; }
+
+/* ---- drawer event-kind histogram --------------------------------------- */
+
+.drawer-kinds { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
+.drawer-kinds .tag.k-tool { color:var(--acc); }
+.drawer-kinds .tag.k-err { color:var(--err); }
+.drawer-kinds .tag.k-done { color:var(--ok); }
+.drawer-kinds .tag.k-thinking { color:var(--muted, #8b93a7); }
+
+/* ---- keyboard help overlay ---------------------------------------------- */
+
+.help-box { max-width:520px; }
+.help-title { font-weight:700; font-size:14px; margin-bottom:10px; }
+.help-grid {
+  display:grid; grid-template-columns:auto 1fr; gap:6px 16px;
+  align-items:center;
+}
+.help-k {
+  font-family:var(--font-mono, ui-monospace, monospace); font-size:11.5px;
+  background:var(--bg, #0f1117); border:1px solid var(--border);
+  border-radius:6px; padding:2px 8px; text-align:center; white-space:nowrap;
+}
+.help-v { font-size:12.5px; color:var(--muted, #8b93a7); }

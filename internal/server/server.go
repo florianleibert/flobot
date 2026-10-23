@@ -421,6 +421,8 @@ func (s *Server) runsWithSummaries() []store.Run {
 		runs[i].ReviewedAt = sum.ReviewedAt
 		runs[i].HunksAccepted = sum.HunksAccepted
 		runs[i].HunksTotal = sum.HunksTotal
+		runs[i].JudgeScore = sum.JudgeScore
+		runs[i].JudgeRationale = sum.JudgeRationale
 	}
 	return runs
 }
@@ -1003,6 +1005,9 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 		_ = s.store.FinishRun(run.ID, Actor, status, errText)
 		// Post-run snapshot + diff + run summary (fail-closed).
 		s.capturePostRun(run.ID, run.BotID, status)
+		// Judge loop: score the finished run against its prompt
+		// (advisory, fail-open, never blocks the run's completion).
+		s.judgeRun(run, req)
 		s.hub.publish(store.Event{Kind: "run_status", Text: status})
 	}()
 }

@@ -2,6 +2,14 @@
 
 Recorded during the "make it insane" push (research → implementation). Add new entries at the top.
 
+## Judge loop (this cycle)
+
+10. **Advisory, fail-open judging.** The judge (internal/server/judge.go) runs after `capturePostRun` in the spawn goroutine, never blocks run completion, and treats every failure (no assistant text, model error, unparseable reply) as "not judged" — zero values in RunSummary mean unjudged, never score 0. A judge that could fail a run would be worse than no judge.
+11. **Deterministic output contract beats JSON mode.** The rubric demands exactly `SCORE: n` / `WHY: ...`; a single regex parses it. No JSON mode dependency, robust to chatty models (regex is line-anchored, WHY clipped to one line).
+12. **Persisted fields are additive.** RunSummary gains `judgeScore`/`judgeRationale` with `omitempty` — old runs.json files load unchanged; no migration. The merge point is `runsWithSummaries` (server.go), the single place in-memory Runs reconcile with persisted summaries.
+13. **Same-route self-judging is a known bias, accepted.** MT-Bench names self-enhancement bias; the judge reuses the run's own pin/route for zero config. The score is advisory (never gates apply/reject), and the research checklist (pairwise, multi-sample, ensemble) is the documented upgrade path.
+14. **Multi-worktree footgun.** Fleet sessions run in a temp checkout; edit tools with relative paths silently wrote there while `go build` ran against the real repo. Symptom: build errors referencing fields that "were just added". Fix: always pass absolute paths to edit tools when the session cwd differs from the target repo.
+
 ## Product/research learnings
 
 1. **Research-first roadmap beats feature-roulette.** The 100-round GUI-editor survey (docs/research-gui-editor-features.md) converged on a ranked gap list; the top items (per-hunk accept/reject, session resume, notifications, context/cost meter, collapsible tool blocks, plan review) each mapped to a concrete, shippable change. Rank by evidence of demand, then build in order.

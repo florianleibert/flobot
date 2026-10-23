@@ -114,6 +114,9 @@ type Run struct {
 	ReviewedAt    string `json:"reviewedAt,omitempty"`
 	HunksAccepted int    `json:"hunksAccepted,omitempty"`
 	HunksTotal    int    `json:"hunksTotal,omitempty"`
+	// Judge loop, merged from RunStore like the above.
+	JudgeScore     float64 `json:"judgeScore,omitempty"`
+	JudgeRationale string  `json:"judgeRationale,omitempty"`
 }
 
 // Store is the in-memory authority. Nothing persists across restart.
