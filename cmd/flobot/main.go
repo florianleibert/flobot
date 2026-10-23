@@ -62,6 +62,13 @@ func cmdServe(args []string) error {
 		return err
 	}
 	opts := []server.Option{}
+	if *wsDir == "" {
+		// The desktop app spawns `flobot serve` without args and cannot
+		// pass flags, but env vars reach the child. Without this the
+		// workspace would default to the spawn cwd (literally "/" for a
+		// GUI launch), which makes the Code panel unusable.
+		*wsDir = strings.TrimSpace(os.Getenv("FLOBOT_WORKSPACE"))
+	}
 	if *wsDir != "" {
 		opts = append(opts, server.WithWorkDir(*wsDir))
 	}

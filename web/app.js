@@ -1,4 +1,4 @@
-/* Code Studio redesign — esbuild bundle of src/*.js, embedded via web/embed.go. Edit flobot-ui-redesign/src and rebuild web/app.js. */
+/* Code Studio redesign — esbuild bundle of src/*.js, embedded via web/embed.go. Edit flobot-ui-redesign/src and run sync-to-flobot.mjs. */
 (() => {
   // src/editor.js
   var $ = (id) => document.getElementById(id);
@@ -113,6 +113,11 @@
     }
   }
   async function openFile(path) {
+    path = String(path || "").trim();
+    if (!path) {
+      toast("type a path first", "err");
+      return;
+    }
     try {
       const f = await edApi("GET", "/api/v1/workspace/file?path=" + encodeURIComponent(path));
       ed.openPath = f.path;
@@ -123,11 +128,51 @@
       $("edDirty").textContent = "";
       markOpen(f.path);
     } catch (e) {
+      if (/not found/.test(e.message)) {
+        if (confirm(path + " does not exist yet \u2014 create it?")) {
+          try {
+            const f = await edApi("POST", "/api/v1/workspace/file?path=" + encodeURIComponent(path), { content: "" });
+            ed.openPath = f.path;
+            ed.openSha = f.sha256;
+            ed.dirty = false;
+            $("edPath").value = f.path;
+            $("edContent").value = "";
+            $("edDirty").textContent = "";
+            await loadTree();
+            toast("created " + f.path, "ok");
+          } catch (e2) {
+            toast(safe(e2.message), "err");
+          }
+        }
+        return;
+      }
       toast(safe(e.message), "err");
     }
   }
   async function saveFile() {
-    if (!ed.openPath) return;
+    if (!ed.openPath) {
+      if (!$("edContent").value) {
+        toast("nothing to save", "err");
+        return;
+      }
+      const path = $("edPath").value.trim();
+      if (!path) {
+        toast("type a path to save to", "err");
+        return;
+      }
+      try {
+        const f = await edApi("POST", "/api/v1/workspace/file?path=" + encodeURIComponent(path), { content: $("edContent").value });
+        ed.openPath = f.path;
+        ed.openSha = f.sha256;
+        ed.dirty = false;
+        $("edDirty").textContent = "";
+        await loadTree();
+        toast("created " + f.path, "ok");
+      } catch (e) {
+        toast(safe(e.message), "err");
+      }
+      return;
+    }
     try {
       const f = await edApi("PUT", "/api/v1/workspace/file?path=" + encodeURIComponent(ed.openPath), {
         content: $("edContent").value,
@@ -507,6 +552,10 @@
       return;
     }
     const bot = $("edRunBot").value;
+    if (!bot) {
+      toast("deploy a teammate first", "err");
+      return;
+    }
     try {
       const run = await edApi("POST", "/api/v1/runs", {
         bot_id: bot,
@@ -2148,37 +2197,59 @@ When a release is cut:
     });
   }
   $2("demoBtn").onclick = playDemoRun;
+  function require2(id, msg) {
+    const el = $2(id);
+    const v = String(el ? el.value : "").trim();
+    if (!v) throw new Error(msg);
+    return v;
+  }
+  function markField(id) {
+    const el = $2(id);
+    if (!el) return;
+    el.classList.add("invalid");
+    setTimeout(() => el.classList.remove("invalid"), 1200);
+  }
   $2("createBot").onclick = async () => {
     try {
-      await api("POST", "/api/v1/bots", { name: $2("botName").value, role: $2("botRole").value, route: $2("botRoute").value });
+      const name = require2("botName", "give the teammate a name");
+      await api("POST", "/api/v1/bots", { name, role: $2("botRole").value.trim() || "coder", route: $2("botRoute").value });
       toast2("teammate deployed", "ok");
       await refresh();
     } catch (e) {
       showErr(e.message);
+      markField("botName");
     }
   };
   $2("memBtn").onclick = async () => {
     try {
-      await api("POST", "/api/v1/bots/" + $2("memBot").value + "/remember", { note: $2("memNote").value });
+      const bot = require2("memBot", "deploy a teammate first");
+      const note = require2("memNote", "what should it remember?");
+      await api("POST", "/api/v1/bots/" + bot + "/remember", { note });
       $2("memNote").value = "";
       toast2("burned into memory", "ok");
       await refresh();
     } catch (e) {
       showErr(e.message);
+      markField("memNote");
     }
   };
   $2("createSkill").onclick = async () => {
     try {
-      await api("POST", "/api/v1/skills", { name: $2("skillName").value, body: $2("skillBody").value });
+      const name = require2("skillName", "give the playbook a name");
+      const body = require2("skillBody", "write the playbook body");
+      await api("POST", "/api/v1/skills", { name, body });
       toast2("playbook added to the library", "ok");
       await refresh();
     } catch (e) {
       showErr(e.message);
+      markField("skillName");
     }
   };
   $2("createRtn").onclick = async () => {
     try {
-      await api("POST", "/api/v1/routines", { bot_id: $2("rtnBot").value, skill_id: $2("rtnSkill").value, trigger: $2("rtnTrigger").value });
+      const bot = require2("rtnBot", "deploy a teammate first");
+      const skill = require2("rtnSkill", "add a playbook first");
+      await api("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $2("rtnTrigger").value.trim() || "manual" });
       toast2("routine armed", "ok");
       await refresh();
     } catch (e) {
@@ -2187,7 +2258,11 @@ When a release is cut:
   };
   $2("sendHandoff").onclick = async () => {
     try {
-      const out = await api("POST", "/api/v1/handoff", { from: $2("fromBot").value, to: $2("toBot").value, body: $2("handoffBody").value, run: $2("handoffRun").checked });
+      const from = require2("fromBot", "deploy a teammate first");
+      const to = require2("toBot", "deploy a recipient teammate first");
+      if (from === to) throw new Error("pick two different teammates");
+      const body = require2("handoffBody", "what is the work item?");
+      const out = await api("POST", "/api/v1/handoff", { from, to, body, run: $2("handoffRun").checked });
       toast2("handoff away", "ok");
       await refresh();
       if (out.run && out.run.id) {
@@ -2199,13 +2274,16 @@ When a release is cut:
       }
     } catch (e) {
       showErr(e.message);
+      markField("handoffBody");
     }
   };
   $2("runBtn").onclick = async () => {
     try {
+      const bot = require2("runBot", "deploy a teammate first");
+      const prompt = require2("prompt", "type a prompt for the run");
       const run = await api("POST", "/api/v1/runs", {
-        bot_id: $2("runBot").value,
-        prompt: $2("prompt").value,
+        bot_id: bot,
+        prompt,
         intent: $2("intent").value,
         yolo: $2("yolo").checked,
         verify: $2("verify").checked,
@@ -2219,6 +2297,7 @@ When a release is cut:
       startStream(run.id);
     } catch (e) {
       showErr(e.message);
+      markField("prompt");
     }
   };
   $2("prompt").addEventListener("keydown", (ev) => {
