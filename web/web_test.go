@@ -17,11 +17,21 @@ var allKinds = []string{
 }
 
 func TestIndexReferencesAppAndStyles(t *testing.T) {
-	if !strings.Contains(IndexHTML, `src="app.js"`) {
-		t.Errorf("index.html does not load app.js")
+	if !strings.Contains(IndexHTML, `src="/app.js"`) {
+		t.Errorf("index.html does not load /app.js")
 	}
-	if !strings.Contains(IndexHTML, `href="styles.css"`) {
-		t.Errorf("index.html does not load styles.css")
+	if !strings.Contains(IndexHTML, `href="/styles.css"`) {
+		t.Errorf("index.html does not load /styles.css")
+	}
+}
+
+func TestLocalDevIndexSwapsBundleForModule(t *testing.T) {
+	dev := IndexHTMLForLocalDev()
+	if strings.Contains(dev, BundleTag) {
+		t.Errorf("dev index still carries the production bundle tag")
+	}
+	if !strings.Contains(dev, `<script type="module" src="/src/main.js"></script>`) {
+		t.Errorf("dev index does not load the vite module entry")
 	}
 }
 
@@ -62,6 +72,34 @@ func TestStylesStyleAllKinds(t *testing.T) {
 	for _, k := range allKinds {
 		if !strings.Contains(StylesCSS, k) {
 			t.Errorf("styles.css has no rule for kind %q", k)
+		}
+	}
+}
+
+func TestIndexHasHubsPanel(t *testing.T) {
+	if !strings.Contains(IndexHTML, `data-panel="hubs"`) {
+		t.Errorf("index.html has no Hubs nav button")
+	}
+	if !strings.Contains(IndexHTML, `id="panel-hubs"`) {
+		t.Errorf("index.html has no Hubs panel section")
+	}
+	if !strings.Contains(IndexHTML, `id="hubList"`) || !strings.Contains(IndexHTML, `id="hubModels"`) {
+		t.Errorf("index.html Hubs panel is missing hub/model list hosts")
+	}
+}
+
+func TestAppWiresHubDiscovery(t *testing.T) {
+	for _, needle := range []string{"/api/v1/hubs", "/api/v1/models/", "loadHubs", "startModel", "data-start"} {
+		if !strings.Contains(AppJS, needle) {
+			t.Errorf("app.js does not reference %q", needle)
+		}
+	}
+}
+
+func TestStylesStyleHubPanel(t *testing.T) {
+	for _, sel := range []string{".hub-card", ".hub-model", ".hub-list", ".hub-models"} {
+		if !strings.Contains(StylesCSS, sel) {
+			t.Errorf("styles.css has no rule for %q", sel)
 		}
 	}
 }

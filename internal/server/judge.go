@@ -85,7 +85,7 @@ func (s *Server) judgeRun(run store.Run, req executor.Request) {
 		Intent:         "ask",
 		Route:          req.Route,
 		Timeout:        judgeBudget,
-		Dir:            s.workDir,
+		Dir:            s.workDirNow(),
 		ConfigOverride: req.ConfigOverride,
 	}, nil)
 	if res.Err != nil {
