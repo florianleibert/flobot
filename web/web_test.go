@@ -75,3 +75,31 @@ func TestStylesStyleAllKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestIndexHasHubsPanel(t *testing.T) {
+	if !strings.Contains(IndexHTML, `data-panel="hubs"`) {
+		t.Errorf("index.html has no Hubs nav button")
+	}
+	if !strings.Contains(IndexHTML, `id="panel-hubs"`) {
+		t.Errorf("index.html has no Hubs panel section")
+	}
+	if !strings.Contains(IndexHTML, `id="hubList"`) || !strings.Contains(IndexHTML, `id="hubModels"`) {
+		t.Errorf("index.html Hubs panel is missing hub/model list hosts")
+	}
+}
+
+func TestAppWiresHubDiscovery(t *testing.T) {
+	for _, needle := range []string{"/api/v1/hubs", "/api/v1/models/", "loadHubs", "startModel", "data-start"} {
+		if !strings.Contains(AppJS, needle) {
+			t.Errorf("app.js does not reference %q", needle)
+		}
+	}
+}
+
+func TestStylesStyleHubPanel(t *testing.T) {
+	for _, sel := range []string{".hub-card", ".hub-model", ".hub-list", ".hub-models"} {
+		if !strings.Contains(StylesCSS, sel) {
+			t.Errorf("styles.css has no rule for %q", sel)
+		}
+	}
+}

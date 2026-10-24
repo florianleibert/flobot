@@ -25,18 +25,23 @@ const HubExecBudget = 8 * time.Second
 // render + a start do not each re-exec the amesh binary.
 const HubCacheTTL = 15 * time.Second
 
-// hubCache is the process-wide cache for the CLI-backed discovery lists.
+// hubCache is the process-wide cache for the CLI-backed discovery lists,
+// keyed by the resolved amesh binary so a changed AMESH_BIN never serves
+// stale rows.
 var hubCache struct {
 	sync.Mutex
+	bin     string
 	hubs    []Hub
 	fetched time.Time
 }
 
-// svcCache is the process-wide cache for `amesh models list --json`. It is
-// separate from hubCache so refreshing hubs never invalidates the model list
-// (and vice versa) — the two lists share no data.
+// svcCache is the process-wide cache for `amesh models list --json`,
+// keyed by the resolved amesh binary. It is separate from hubCache so
+// refreshing hubs never invalidates the model list (and vice versa) — the
+// two lists share no data.
 var svcCache struct {
 	sync.Mutex
+	bin     string
 	models  []Service
 	fetched time.Time
 }
@@ -105,11 +110,15 @@ func runJSON(ctx context.Context, out any, args ...string) error {
 }
 
 // Hubs returns the joined hubs from `amesh hubs list --json`, cached for
-// HubCacheTTL. An amesh binary that is missing or a hub that is unreachable
-// is an error; an empty list is a valid state.
+// HubCacheTTL per resolved binary. An amesh binary that is missing or a hub
+// that is unreachable is an error; an empty list is a valid state.
 func Hubs(ctx context.Context) ([]Hub, error) {
+	bin, err := ameshBin()
+	if err != nil {
+		return nil, err
+	}
 	hubCache.Lock()
-	if time.Since(hubCache.fetched) < HubCacheTTL {
+	if hubCache.bin == bin && time.Since(hubCache.fetched) < HubCacheTTL {
 		hubs := hubCache.hubs
 		hubCache.Unlock()
 		return hubs, nil
@@ -120,6 +129,7 @@ func Hubs(ctx context.Context) ([]Hub, error) {
 		return nil, err
 	}
 	hubCache.Lock()
+	hubCache.bin = bin
 	hubCache.hubs = hubs
 	hubCache.fetched = time.Now()
 	hubCache.Unlock()
@@ -127,11 +137,16 @@ func Hubs(ctx context.Context) ([]Hub, error) {
 }
 
 // Services returns the model services from `amesh models list --json`,
-// cached for HubCacheTTL. This is the discovery surface the dock app uses to
-// show every local + enrolled-hub model and its ready/stopped state.
+// cached for HubCacheTTL per resolved binary. This is the discovery surface
+// the dock app uses to show every local + enrolled-hub model and its
+// ready/stopped state.
 func Services(ctx context.Context) ([]Service, error) {
+	bin, err := ameshBin()
+	if err != nil {
+		return nil, err
+	}
 	svcCache.Lock()
-	if time.Since(svcCache.fetched) < HubCacheTTL {
+	if svcCache.bin == bin && time.Since(svcCache.fetched) < HubCacheTTL {
 		models := svcCache.models
 		svcCache.Unlock()
 		return models, nil
@@ -147,6 +162,7 @@ func Services(ctx context.Context) ([]Service, error) {
 		return []Service{}, nil
 	}
 	svcCache.Lock()
+	svcCache.bin = bin
 	svcCache.models = body.Models
 	svcCache.fetched = time.Now()
 	svcCache.Unlock()
@@ -162,4 +178,20 @@ func ReadyServices(services []Service) []Service {
 		}
 	}
 	return out
+}
+
+// resetCaches clears the process-wide discovery caches. Test-only: the caches
+// are package-global so a warm cache from one test would otherwise mask a
+// second test's binary swap.
+func resetCaches() {
+	hubCache.Lock()
+	hubCache.bin = ""
+	hubCache.hubs = nil
+	hubCache.fetched = time.Time{}
+	hubCache.Unlock()
+	svcCache.Lock()
+	svcCache.bin = ""
+	svcCache.models = nil
+	svcCache.fetched = time.Time{}
+	svcCache.Unlock()
 }
