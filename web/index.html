@@ -27,6 +27,7 @@
   <button data-panel="skills"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.6 6.3 6.8.5-5.2 4.4 1.6 6.6L12 16.4l-5.8 3.4 1.6-6.6L2.6 8.8l6.8-.5z"/></svg></span>Skills<span class="count" id="navSkills">0</span></button>
   <div class="label">System</div>
   <button data-panel="routes"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="currentColor"/><circle cx="15" cy="17" r="2" fill="currentColor"/></svg></span>Routes</button>
+  <button data-panel="hubs"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span>Hubs<span class="count" id="navHubs">0</span></button>
   <button data-panel="health"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20s-7-4.3-9.3-8.5C.9 8 2.6 4.5 6 4.5c2.2 0 3.6 1.2 6 3.7 2.4-2.5 3.8-3.7 6-3.7 3.4 0 5.1 3.5 3.3 7C20 15.7 12 20 12 20z"/></svg></span>Model health</button>
 </nav>
 
@@ -301,6 +302,21 @@
 <section class="panel" id="panel-routes">
   <div class="panel-head"><h2>Routes</h2><span class="desc">every brain on the rack, ready to route</span></div>
   <div class="card"><table id="routes"><tbody></tbody></table></div>
+</section>
+
+<!-- Hubs -->
+<section class="panel" id="panel-hubs">
+  <div class="panel-head"><h2>Hubs</h2><span class="desc">the mesh you're joined to — and every model it can serve</span></div>
+  <div class="card">
+    <div class="row">
+      <span class="tag" id="hubsStatus">scanning…</span>
+      <span class="spacer"></span>
+      <button type="button" id="hubsRefresh" class="ghost" title="rescan hubs + models">↻</button>
+    </div>
+    <div class="hub-list" id="hubList"></div>
+    <div class="row"><h3>Models</h3><span class="spacer"></span><span class="tag" id="modelCount">0</span></div>
+    <div class="hub-models" id="hubModels"></div>
+  </div>
 </section>
 
 <!-- Health -->

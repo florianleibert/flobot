@@ -1713,6 +1713,66 @@ When a release is cut:
     ).join("") || empty("\u25C8", "No mesh models ready \u2014 the rack is dark.");
     render();
   }
+  var hubData = { hubs: [], models: [] };
+  async function loadHubs() {
+    const statusEl = $2("hubsStatus");
+    const listEl = $2("hubList");
+    const modelsEl = $2("hubModels");
+    const countEl = $2("modelCount");
+    const navEl = $2("navHubs");
+    try {
+      const res = await api("GET", "/api/v1/hubs");
+      hubData.hubs = res.hubs || [];
+      hubData.models = res.models || [];
+      if (statusEl) statusEl.textContent = res.ok ? `${hubData.hubs.length} hub${hubData.hubs.length === 1 ? "" : "s"} joined` : `unavailable (${res.hub_error || res.model_error || "amesh unreachable"})`;
+      if (navEl) navEl.textContent = String(hubData.hubs.length);
+      if (countEl) countEl.textContent = String(hubData.models.length);
+    } catch (e) {
+      hubData.hubs = [];
+      hubData.models = [];
+      if (statusEl) statusEl.textContent = `unavailable (${e.message})`;
+      if (navEl) navEl.textContent = "0";
+      if (countEl) countEl.textContent = "0";
+    }
+    if (listEl) {
+      listEl.innerHTML = hubData.hubs.map((h) => {
+        const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
+        const def = h.default ? `<span class="chip acc">default</span>` : "";
+        return `<div class="hub-card">
+        <div class="hub-title"><span class="avatar" style="background:var(--grad)">\u25C8</span><span class="hub-name">${esc3(h.name)}</span>${def}${wg}</div>
+        <div class="hub-url">${esc3(h.url)}</div>
+        <div class="hub-meta">${h.controller_url ? `controller ${esc3(h.controller_url)}` : ""}${h.wg_status && h.wg_status.ip ? ` \xB7 wg ${esc3(h.wg_status.ip)}` : ""}</div>
+      </div>`;
+      }).join("") || empty("\u25C8", "No hubs joined \u2014 run 'amesh join <hub-url>' to enrol.");
+    }
+    if (modelsEl) {
+      modelsEl.innerHTML = hubData.models.map((m) => {
+        const st = m.state === "ready" ? `<span class="chip ok">ready</span>` : `<span class="chip">stopped</span>`;
+        const loc = m.location === "local" ? `<span class="tag">local</span>` : `<span class="tag">${esc3(m.location)}</span>`;
+        const startBtn = m.location === "local" && m.state !== "ready"
+          ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="start ${esc3(m.display)}">\u25B6 start</button>` : "";
+        return `<div class="hub-model">
+        <div class="hub-model-name">${esc3(m.display || m.id)}</div>
+        <div class="hub-model-meta">${loc}${st}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>
+        <div class="spacer"></div>${startBtn}
+      </div>`;
+      }).join("") || empty("\u25C8", "No model services found.");
+      modelsEl.querySelectorAll("[data-start]").forEach((btn) => {
+        btn.onclick = () => startModel(btn.dataset.start, btn);
+      });
+    }
+  }
+  async function startModel(id, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "starting…"; }
+    try {
+      await api("POST", "/api/v1/models/" + encodeURIComponent(id) + "/start");
+      toast2("start accepted \u2014 model warming up", "ok");
+      setTimeout(() => loadHubs(), 4000);
+    } catch (e) {
+      toast2(safe(e.message), "err");
+      if (btn) { btn.disabled = false; btn.textContent = "\u25B6 start"; }
+    }
+  }
   var openTools = /* @__PURE__ */ new Map();
   function logEl() {
     return $2("log");
@@ -2461,6 +2521,7 @@ When a release is cut:
   };
   refresh().catch((e) => showErr(e.message));
   loadMesh().catch((e) => showErr(e.message));
+  loadHubs().catch((e) => showErr(e.message));
   renderMissions();
   renderSkillTemplates();
   renderRtnTriggers();
@@ -2469,6 +2530,8 @@ When a release is cut:
   startStream(null);
   var meshRefreshBtn = $2("meshRefresh");
   if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch((e) => showErr(e.message));
+  var hubsRefreshBtn = $2("hubsRefresh");
+  if (hubsRefreshBtn) hubsRefreshBtn.onclick = () => loadHubs().catch((e) => showErr(e.message));
   (function() {
     "use strict";
     if (window.__researchV2Loaded) return;

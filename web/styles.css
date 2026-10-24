@@ -1079,3 +1079,25 @@ button.mini { padding: 1px 7px; font-size: 10.5px; border-radius: var(--r-sm); }
   border-top: 1px solid var(--line);
   margin-top: 4px;
 }
+
+/* Hubs panel — joined hubs + model services */
+.hub-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 16px; }
+.hub-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  background: var(--card);
+}
+.hub-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.hub-name { flex: 1; }
+.hub-url { font-size: 11.5px; color: var(--muted); margin-top: 3px; word-break: break-all; }
+.hub-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.hub-models { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.hub-model {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+.hub-model-name { font-weight: 500; }
+.hub-model-meta { font-size: 11px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
