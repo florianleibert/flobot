@@ -84,7 +84,7 @@ func (s *Server) checkpointStore() (*checkpoint.Store, error) {
 		}
 		dir = home
 	}
-	root := s.workDir
+	root := s.workDirNow()
 	if root == "" {
 		root, _ = os.Getwd()
 	}
@@ -386,7 +386,7 @@ func (s *Server) restoreMode(cp *checkpoint.Store, ctx context.Context, tree, pa
 	if err != nil || mode == 0 {
 		return
 	}
-	root := s.workDir
+	root := s.workDirNow()
 	if root == "" {
 		root, _ = os.Getwd()
 	}

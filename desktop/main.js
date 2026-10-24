@@ -1,8 +1,9 @@
 'use strict';
 
-const { app, BrowserWindow, shell, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, Notification, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const fs = require('fs');
 const net = require('net');
@@ -97,12 +98,43 @@ async function choosePort() {
 
 // --- server lifecycle -------------------------------------------------------
 
+function workspaceDir() {
+  // The Code panel edits this directory. An explicit FLOBOT_WORKSPACE wins;
+  // otherwise default to ~/flobot-workspace so a GUI launch does not fall
+  // back to the spawn cwd (literally "/" for a double-clicked app).
+  const env = (process.env.FLOBOT_WORKSPACE || '').trim();
+  const dir = env || path.join(os.homedir(), 'flobot-workspace');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+
+// guiPath returns the login shell's PATH plus the usual user install dirs.
+// A GUI launch inherits a PATH without ~/.local/bin, so flocode would not
+// be found by the server's PATH lookup.
+function guiPath() {
+  const extra = [
+    path.join(os.homedir(), '.local', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ];
+  let shellPath = '';
+  try {
+    shellPath = require('child_process')
+      .execFileSync(process.env.SHELL || '/bin/zsh', ['-lc', 'echo $PATH'], { encoding: 'utf8', timeout: 5000 })
+      .trim();
+  } catch {}
+  const parts = [...new Set([...shellPath.split(':'), ...extra, ...(process.env.PATH || '').split(':')].filter(Boolean))];
+  return parts.join(':');
+}
+
 function startServer(port) {
   return new Promise((resolve, reject) => {
     const bin = flobotBinary();
-    log('spawning', bin, 'serve', `127.0.0.1:${port}`);
-    serverProc = spawn(bin, ['serve', '--addr', `127.0.0.1:${port}`], {
+    const ws = workspaceDir();
+    log('spawning', bin, 'serve', `127.0.0.1:${port}`, 'workspace', ws);
+    serverProc = spawn(bin, ['serve', '--addr', `127.0.0.1:${port}`, '--workspace', ws], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, FLOBOT_WORKSPACE: ws, PATH: guiPath() },
     });
     serverProc.on('error', (err) => {
       log('spawn error', String(err));
@@ -205,6 +237,22 @@ function createWindow() {
   win.loadURL(baseUrl);
   win.on('closed', () => (win = null));
 }
+
+// --- workspace folder picker (Code Studio) ----------------------------------
+
+// The Code panel asks for an absolute path; we show the native folder
+// chooser and hand the result back. The renderer then POSTs it to
+// /api/v1/workspace/select, which also persists it as the default for the
+// next launch — so nothing here needs to touch the server.
+ipcMain.handle('flobot:pick-folder', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Choose workspace folder',
+    buttonLabel: 'Open here',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (res.canceled || !res.filePaths.length) return null;
+  return res.filePaths[0];
+});
 
 // --- run-completion notifications (Code Studio AC-2e) ----------------------
 

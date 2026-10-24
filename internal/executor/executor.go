@@ -209,6 +209,9 @@ func (e *Exec) run(ctx context.Context, req Request, reqEnv []string, emit func(
 	go func() {
 		select {
 		case <-ctx.Done():
+			// killGroup SIGTERMs the whole process group (flocode spawns
+			// tool children); the child exits within ms and cmd.Wait()
+			// in the reader loop returns, so no goroutine leaks.
 			killGroup(cmd.Process)
 		case <-done:
 		}

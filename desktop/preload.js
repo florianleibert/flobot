@@ -10,6 +10,15 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('flobotDesktop', {
   desktop: true,
   version: process.env.npm_package_version || '0.1.0',
+  // pickFolder opens the native macOS folder chooser (Code Studio workspace
+  // picker). Resolves to the chosen absolute path, or null on cancel.
+  pickFolder: async () => {
+    try {
+      return await ipcRenderer.invoke('flobot:pick-folder');
+    } catch {
+      return null;
+    }
+  },
   // notifyRunEnd asks the main process to show an OS notification when
   // the window is not focused. Payload is {status, files} — status is
   // one of done|error|stopped, files is an integer diffstat (or 0).

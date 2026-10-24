@@ -62,6 +62,18 @@ func cmdServe(args []string) error {
 		return err
 	}
 	opts := []server.Option{}
+	if *wsDir == "" {
+		// Precedence: flag > FLOBOT_WORKSPACE > last folder chosen in the
+		// Code panel (persisted by /api/v1/workspace/select) > cwd.
+		// Without a default the workspace falls back to the spawn cwd
+		// (literally "/" for a GUI launch), which makes the Code panel
+		// unusable.
+		if env := strings.TrimSpace(os.Getenv("FLOBOT_WORKSPACE")); env != "" {
+			*wsDir = env
+		} else if recent := server.LatestWorkspace(); recent != "" {
+			*wsDir = recent
+		}
+	}
 	if *wsDir != "" {
 		opts = append(opts, server.WithWorkDir(*wsDir))
 	}

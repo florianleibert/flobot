@@ -29,6 +29,35 @@ func ParseEvery(trigger string) (time.Duration, bool) {
 	return d, true
 }
 
+// ParseCronTrigger parses a trigger of the form "cron <expr>", where <expr>
+// is a 5-field cron expression or an @daily-style alias. It returns the
+// compiled spec. Any other trigger returns ok=false (not scheduled).
+func ParseCronTrigger(trigger string) (*CronSpec, bool) {
+	t := strings.TrimSpace(trigger)
+	if len(t) < 5 || !strings.EqualFold(t[:5], "cron ") {
+		return nil, false
+	}
+	spec, err := ParseCron(t[5:])
+	if err != nil {
+		return nil, false
+	}
+	return spec, true
+}
+
+// ParseTrigger reports whether a trigger schedules anything, returning the
+// interval form (ok=false for cron or manual) and the cron form separately.
+// It is the validator used before arming a routine: a trigger that is neither
+// "every …" nor "cron …" is manual/event and never fires from the ticker.
+func ParseTrigger(trigger string) (time.Duration, *CronSpec, bool) {
+	if d, ok := ParseEvery(trigger); ok {
+		return d, nil, true
+	}
+	if c, ok := ParseCronTrigger(trigger); ok {
+		return 0, c, true
+	}
+	return 0, nil, false
+}
+
 // Fireable is what the scheduler needs to fire a routine.
 type Fireable struct {
 	RoutineID string
@@ -58,6 +87,7 @@ type Scheduler struct {
 
 	mu     sync.Mutex
 	last   map[string]time.Time
+	spec   map[string]*CronSpec
 	fails  map[string]int
 	stop   chan struct{}
 	stopMu sync.Mutex
@@ -69,30 +99,51 @@ func New() *Scheduler {
 		Tick:  30 * time.Second,
 		Now:   time.Now,
 		last:  make(map[string]time.Time),
+		spec:  make(map[string]*CronSpec),
 		fails: make(map[string]int),
 	}
 }
 
-// Due returns the fireable routines that are due now.
+// Due returns the fireable routines that are due now. Two trigger shapes
+// schedule work: an interval ("every 5m") and a cron expression
+// ("cron 0 9 * * 1-5"); anything else is manual/event and never due here.
 func (s *Scheduler) Due(items []Fireable) []Fired {
 	now := s.now()
 	var out []Fired
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, it := range items {
-		d, ok := ParseEvery(it.Trigger)
-		if !ok {
-			continue
-		}
 		last, seen := s.last[it.RoutineID]
 		if !seen {
 			// First observation: fire on the next interval, not immediately,
-			// so enabling a routine never triggers an instant burst.
+			// so enabling a routine never triggers an instant burst. A cron
+			// trigger waits for its first matching minute instead.
+			if c, ok := ParseCronTrigger(it.Trigger); ok {
+				s.spec[it.RoutineID] = c
+				s.last[it.RoutineID] = now
+				continue
+			}
+			d, ok := ParseEvery(it.Trigger)
+			if !ok {
+				continue
+			}
 			s.last[it.RoutineID] = now
+			_ = d
 			continue
 		}
 		if it.LastFire.After(last) {
 			last = it.LastFire
+		}
+		if c, ok := s.spec[it.RoutineID]; ok {
+			// Cron: due when the scheduled minute has arrived since last fire.
+			if nxt, ok := c.Next(last); ok && !now.Before(nxt) {
+				out = append(out, Fired{RoutineID: it.RoutineID, BotID: it.BotID, SkillID: it.SkillID})
+			}
+			continue
+		}
+		d, ok := ParseEvery(it.Trigger)
+		if !ok {
+			continue
 		}
 		if now.Sub(last) >= d {
 			out = append(out, Fired{RoutineID: it.RoutineID, BotID: it.BotID, SkillID: it.SkillID})
@@ -104,7 +155,14 @@ func (s *Scheduler) Due(items []Fireable) []Fired {
 // MarkFired records a successful fire and clears any backoff state.
 func (s *Scheduler) MarkFired(routineID string) {
 	s.mu.Lock()
-	s.last[routineID] = s.now()
+	// For a cron routine, remember the fire at minute resolution so the next
+	// tick's Next(last) finds the following occurrence: firing at 09:00:20
+	// must not immediately consider 09:00:50 a new due minute.
+	if _, ok := s.spec[routineID]; ok {
+		s.last[routineID] = s.now().Truncate(time.Minute)
+	} else {
+		s.last[routineID] = s.now()
+	}
 	delete(s.fails, routineID)
 	s.mu.Unlock()
 }
