@@ -88,6 +88,12 @@ func ameshBin() (string, error) {
 	return exec.LookPath("amesh")
 }
 
+// Bin returns the resolved amesh binary path (AMESH_BIN env, then PATH).
+// It is the same resolution runJSON uses, exposed so callers that need to
+// exec the amesh CLI themselves (e.g. the model-start warm-up) stay on one
+// resolution path.
+func Bin() (string, error) { return ameshBin() }
+
 // runJSON runs `amesh <args...> --json` with a bounded budget and decodes the
 // first JSON document on stdout. The amesh CLI emits no secrets in these list
 // outputs (hub fingerprints and model service rows only).

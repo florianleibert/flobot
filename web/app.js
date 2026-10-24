@@ -1752,8 +1752,8 @@ When a release is cut:
       modelsEl.innerHTML = hubData.models.map((m) => {
         const st = m.state === "ready" ? `<span class="chip ok">ready</span>` : `<span class="chip">stopped</span>`;
         const loc = m.location === "local" ? `<span class="tag">local</span>` : `<span class="tag">${esc3(m.location)}</span>`;
-        const startBtn = m.location === "local" && m.state !== "ready"
-          ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="start ${esc3(m.display)}">\u25B6 start</button>` : "";
+        const startBtn = m.state !== "ready"
+          ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="warm ${esc3(m.display)}">\u25B6 start</button>` : "";
         return `<div class="hub-model" data-state="${esc3(m.state)}">
         <div class="hub-model-name">${esc3(m.display || m.id)}</div>
         <div class="hub-model-meta">${loc}${st}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>

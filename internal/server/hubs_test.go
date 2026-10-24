@@ -12,10 +12,10 @@ import (
 	"github.com/florianleibert/flobot/internal/store"
 )
 
-// writeFakeAmesh writes a shell script that answers `hubs list` and
-// `models list` with the given JSON, and points AMESH_BIN at it. The amesh
-// discovery cache is keyed by binary path, so each test's distinct temp
-// binary never collides with another.
+// writeFakeAmesh writes a shell script that answers `hubs list`, `models
+// list`, and `models chat <id>` with the given JSON / output, and points
+// AMESH_BIN at it. The amesh discovery cache is keyed by binary path, so each
+// test's distinct temp binary never collides with another.
 func writeFakeAmesh(t *testing.T, hubsJSON, modelsJSON string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -29,6 +29,7 @@ func writeFakeAmesh(t *testing.T, hubsJSON, modelsJSON string) {
 	script += `case "$1 $2" in
   "hubs list") echo '` + hubsJSON + `';;
   "models list") echo '` + modelsJSON + `';;
+  "models chat") echo "pong";;
   *) echo '{}';;
 esac
 `
@@ -36,20 +37,6 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("AMESH_BIN", bin)
-}
-
-// writeFakeFlocode writes a flocode stand-in that succeeds for
-// `localmodel start` (used by POST /api/v1/models/{id}/start) and points
-// FLOCODE_BIN at it.
-func writeFakeFlocode(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "flocode")
-	script := "#!/bin/sh\nexit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("FLOCODE_BIN", bin)
 }
 
 func TestHubModelsEndpoint(t *testing.T) {
@@ -131,37 +118,38 @@ func TestModelStartEndpoint(t *testing.T) {
 			{"id":"service-2","display":"Hub M","location":"hub-a","state":"stopped"}
 		]}`,
 	)
-	writeFakeFlocode(t)
 	srv := New(store.New())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	// Local stopped model -> accepted start.
+	// Stopped local model -> warm-up accepted.
 	resp, err := http.Post(ts.URL+"/api/v1/models/service-1/start", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var body struct {
-		OK      bool   `json:"ok"`
-		State   string `json:"state"`
-		Profile string `json:"profile"`
+		OK    bool   `json:"ok"`
+		State string `json:"state"`
 	}
 	if err := jsonDecode(resp, &body); err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if !body.OK || body.State != "starting" || body.Profile != "m1" {
+	if !body.OK || body.State != "starting" {
 		t.Fatalf("start = %+v", body)
 	}
 
-	// Hub model -> rejected (not startable from here).
+	// Stopped hub model -> also warmable (amesh chat verifies the route).
 	resp, err = http.Post(ts.URL+"/api/v1/models/service-2/start", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := jsonDecode(resp, &body); err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("hub model start must be 400, got %d", resp.StatusCode)
+	if !body.OK || body.State != "starting" {
+		t.Fatalf("hub start = %+v", body)
 	}
 
 	// Unknown model -> 404.

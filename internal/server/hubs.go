@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/florianleibert/flobot/internal/amesh"
-	"github.com/florianleibert/flobot/internal/executor"
 )
 
 // hubModels lists the joined hubs and every model service (local + enrolled
@@ -29,12 +28,12 @@ func (s *Server) hubModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// modelStart starts a local model service via `flocode localmodel start
-// --profile <profile>`. The profile is the amesh service profile (e.g.
-// "qwen3-coder-30b-a3b-xl"); it is not a secret. The start is async: the
-// supervisor spawns the backend and polls its health endpoint, so this
-// returns immediately with the spawn outcome and the caller polls
-// /api/v1/models to watch state flip to "ready".
+// modelStart warms a model service via `amesh models chat <id> --prompt
+// "ping"`. The amesh helper resolves the service id, verifies the current hub
+// route/transport, and auto-starts a stopped local model on demand (the local
+// lifecycle is browser-paired; a stopped local model may require the owner to
+// approve the pairing request). This is the real "start" surface — there is no
+// standalone `amesh models start`; models come up on first use.
 func (s *Server) modelStart(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
@@ -57,38 +56,28 @@ func (s *Server) modelStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"unknown model"}`, http.StatusNotFound)
 		return
 	}
-	if !strings.EqualFold(svc.Location, "local") {
-		http.Error(w, `{"error":"only local models can be started from here; hub models are started on their node"}`, http.StatusBadRequest)
-		return
-	}
 	if strings.EqualFold(svc.State, "ready") {
 		writeJSON(w, map[string]any{"ok": true, "id": id, "state": "ready", "already": true})
 		return
 	}
-	profile := strings.TrimSpace(svc.Profile)
-	if profile == "" {
-		http.Error(w, `{"error":"model has no start profile"}`, http.StatusBadRequest)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), modelStartBudget)
 	defer cancel()
-	if err := startLocalModel(ctx, profile); err != nil {
+	if err := warmModel(ctx, id); err != nil {
 		http.Error(w, `{"error":"start failed: `+strings.ReplaceAll(err.Error(), `"`, `'`)+`"}`, http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "id": id, "state": "starting", "profile": profile})
+	writeJSON(w, map[string]any{"ok": true, "id": id, "state": "starting"})
 }
 
-// startLocalModel runs `flocode localmodel start --profile <profile>` with a
-// bounded budget. The supervisor spawns the backend in its own process group,
-// persists pid+start-time, and polls the health endpoint until ready, so this
-// returns once the spawn is accepted (the model may still be warming up).
-func startLocalModel(ctx context.Context, profile string) error {
-	bin, err := executor.FindBinary()
+// warmModel runs `amesh models chat <id> --prompt ping` with a bounded
+// budget. A stopped local model comes up on demand; a ready hub model answers
+// immediately. The prompt is a fixed non-secret ping.
+func warmModel(ctx context.Context, id string) error {
+	bin, err := amesh.Bin()
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, bin, "localmodel", "start", "--profile", profile)
+	cmd := exec.CommandContext(ctx, bin, "models", "chat", id, "--prompt", "ping")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
