@@ -600,8 +600,11 @@
     const el = $("edRunBot");
     if (!el) return;
     const cur = el.value;
-    el.innerHTML = (bots || []).map((b) => `<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.route)})</option>`).join("");
+    const opts = (bots || []).map((b) => `<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.route)})</option>`).join("");
+    el.innerHTML = opts ? opts : `<option value="">no teammate deployed</option>`;
     if ([...el.options].some((o) => o.value === cur)) el.value = cur;
+    const runBtn = $("edRunBtn");
+    if (runBtn) runBtn.disabled = !(bots || []).length;
   }
   async function edRun() {
     const prompt = $("edPrompt").value.trim();
@@ -1741,22 +1744,29 @@ When a release is cut:
       listEl.innerHTML = hubData.hubs.map((h) => {
         const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
         const def = h.default ? `<span class="chip acc">default</span>` : "";
-        return `<div class="hub-card">
-        <div class="hub-title"><span class="avatar" style="background:var(--grad)">\u25C8</span><span class="hub-name">${esc3(h.name)}</span>${def}${wg}</div>
+        const ver = h.hub_version ? `<span class="tag">${esc3(h.hub_version)}</span>` : "";
+        return `<div class="hub-card" data-name="${esc3(h.name)}" title="inspect ${esc3(h.name)}">
+        <div class="hub-title"><span class="avatar" style="background:var(--grad)">\u25C8</span><span class="hub-name">${esc3(h.name)}</span>${def}${wg}${ver}</div>
         <div class="hub-url">${esc3(h.url)}</div>
-        <div class="hub-meta">${h.controller_url ? `controller ${esc3(h.controller_url)}` : ""}${h.wg_status && h.wg_status.ip ? ` \xB7 wg ${esc3(h.wg_status.ip)}` : ""}</div>
+        <div class="hub-meta">${h.controller_url ? `controller ${esc3(h.controller_url)}` : ""}${h.wg_status && h.wg_status.ip ? ` \xB7 wg ${esc3(h.wg_status.ip)}` : ""}<span class="hub-drill tag">inspect \u203A</span></div>
       </div>`;
       }).join("") || empty("\u25C8", "No hubs joined \u2014 run 'amesh join <hub-url>' to enrol.");
+      listEl.querySelectorAll(".hub-card").forEach((card) => {
+        card.onclick = () => openHubDetail(card.dataset.name);
+      });
     }
     if (modelsEl) {
       modelsEl.innerHTML = hubData.models.map((m) => {
         const st = m.state === "ready" ? `<span class="chip ok">ready</span>` : `<span class="chip">stopped</span>`;
         const loc = m.location === "local" ? `<span class="tag">local</span>` : `<span class="tag">${esc3(m.location)}</span>`;
+        const backend = m.backend ? `<span class="tag">${esc3(m.backend)}</span>` : "";
+        const shared = m.shared ? `<span class="chip acc" title="shared on the mesh">\u25C8 shared</span>` : "";
+        const routes = m.route_count > 0 ? `<span class="tag">${m.route_count} route${m.route_count === 1 ? "" : "s"}</span>` : "";
         const startBtn = m.state !== "ready"
           ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="warm ${esc3(m.display)}">\u25B6 start</button>` : "";
         return `<div class="hub-model" data-state="${esc3(m.state)}">
         <div class="hub-model-name">${esc3(m.display || m.id)}</div>
-        <div class="hub-model-meta">${loc}${st}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>
+        <div class="hub-model-meta">${loc}${st}${backend}${shared}${routes}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>
         <div class="spacer"></div>${startBtn}
       </div>`;
       }).join("") || empty("\u25C8", "No model services found.");
@@ -1777,6 +1787,56 @@ When a release is cut:
       toast2(safe(e.message), "err");
       if (btn) { btn.disabled = false; btn.textContent = "\u25B6 start"; }
       if (row) row.dataset.state = "stopped";
+    }
+  }
+  async function runDoctor() {
+    const bar = $2("hubDoctor");
+    if (!bar) return;
+    bar.hidden = false;
+    bar.innerHTML = `<span class="tag">running amesh doctor\u2026</span>`;
+    try {
+      const d = await api("GET", "/api/v1/hubs/doctor");
+      const checks = d.checks || [];
+      const byStatus = (s) => checks.filter((c) => c.status === s).length;
+      const ok = byStatus("ok"), warn = byStatus("warning") + byStatus("advisory"), err = byStatus("error");
+      const chipCls = err ? "err" : warn ? "warn" : "ok";
+      bar.innerHTML = `<div class="hub-doctor-summary">
+        <span class="chip ${chipCls}">mesh ${d.ok ? "healthy" : "attention"}</span>
+        <span class="tag">${ok} ok</span>
+        <span class="tag">${warn} warn</span>
+        <span class="tag">${err} err</span>
+        <span class="tag">default hub ${esc3(d.default_hub || "\u2014")}</span>
+      </div>
+      <div class="hub-doctor-checks">${checks.map((c) =>
+        `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`
+      ).join("") || `<span class="tag">no checks</span>`}</div>`;
+    } catch (e) {
+      bar.innerHTML = `<span class="tag err">doctor failed: ${safe(e.message)}</span>`;
+    }
+  }
+  async function openHubDetail(name) {
+    const el = $2("hubDetail");
+    if (!el) return;
+    el.hidden = false;
+    $2("hubDetailName").textContent = name;
+    $2("hubDetailBody").innerHTML = `<span class="tag">inspecting ${esc3(name)}\u2026</span>`;
+    try {
+      const d = await api("GET", "/api/v1/hubs/" + encodeURIComponent(name));
+      const h = d.hub || {};
+      const checks = d.checks || [];
+      const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
+      const def = h.default ? `<span class="chip acc">default</span>` : "";
+      $2("hubDetailBody").innerHTML = `
+        <div class="hub-detail-row"><span class="tag">url</span><code>${esc3(h.url || "")}</code></div>
+        ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc3(h.controller_url)}</code></div>` : ""}
+        ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc3(h.fingerprint)}</code></div>` : ""}
+        ${h.wg_status && h.wg_status.ip ? `<div class="hub-detail-row"><span class="tag">wg ip</span><code>${esc3(h.wg_status.ip)}</code></div>` : ""}
+        <div class="hub-detail-row"><span class="tag">status</span>${wg}${def}</div>
+        <h4>Health checks</h4>
+        ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
+      `;
+    } catch (e) {
+      $2("hubDetailBody").innerHTML = `<span class="tag err">${safe(e.message)}</span>`;
     }
   }
   var openTools = /* @__PURE__ */ new Map();
@@ -2538,6 +2598,10 @@ When a release is cut:
   if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch((e) => showErr(e.message));
   var hubsRefreshBtn = $2("hubsRefresh");
   if (hubsRefreshBtn) hubsRefreshBtn.onclick = () => loadHubs().catch((e) => showErr(e.message));
+  var hubsDoctorBtn = $2("hubsDoctor");
+  if (hubsDoctorBtn) hubsDoctorBtn.onclick = () => runDoctor().catch((e) => showErr(e.message));
+  var hubDetailCloseBtn = $2("hubDetailClose");
+  if (hubDetailCloseBtn) hubDetailCloseBtn.onclick = () => { const el = $2("hubDetail"); if (el) el.hidden = true; };
   (function() {
     "use strict";
     if (window.__researchV2Loaded) return;

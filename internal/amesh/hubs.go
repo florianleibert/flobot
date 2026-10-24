@@ -78,6 +78,10 @@ type Service struct {
 	Profile       string `json:"profile,omitempty"`
 	ContextTokens int    `json:"context_tokens,omitempty"`
 	Backend       string `json:"backend,omitempty"`
+	Shared        bool   `json:"shared,omitempty"`
+	ShareRequested bool  `json:"share_requested,omitempty"`
+	RouteCount    int    `json:"route_count,omitempty"`
+	Provenance    string `json:"provenance,omitempty"`
 }
 
 // ameshBin returns the amesh binary path: AMESH_BIN env, then PATH amesh.
@@ -184,6 +188,51 @@ func ReadyServices(services []Service) []Service {
 		}
 	}
 	return out
+}
+
+// DoctorCheck is one row from `amesh doctor --json`.
+type DoctorCheck struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"` // ok | warning | advisory | skipped | error
+	Severity string `json:"severity,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// Doctor is the full `amesh doctor --json` document.
+type Doctor struct {
+	OK         bool          `json:"ok"`
+	Root       string        `json:"root,omitempty"`
+	DefaultHub string        `json:"default_hub,omitempty"`
+	Checks     []DoctorCheck `json:"checks"`
+}
+
+// RefreshHubs runs `amesh hubs refresh` and returns the human summary line
+// (e.g. "refreshed 2/2 hubs (0 failed)"). It is not cached — a refresh is an
+// explicit user action that must re-contact every hub.
+func RefreshHubs(ctx context.Context) (string, error) {
+	bin, err := ameshBin()
+	if err != nil {
+		return "", err
+	}
+	cctx, cancel := context.WithTimeout(ctx, HubExecBudget)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, bin, "hubs", "refresh")
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("amesh hubs refresh: %s: %w", strings.TrimSpace(string(raw)), err)
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+// Doctor runs `amesh doctor --json` for a full mesh-health report. It is not
+// cached — a doctor run is an explicit user action.
+func DoctorReport(ctx context.Context) (Doctor, error) {
+	var d Doctor
+	if err := runJSON(ctx, &d, "doctor"); err != nil {
+		return Doctor{}, err
+	}
+	return d, nil
 }
 
 // resetCaches clears the process-wide discovery caches. Test-only: the caches

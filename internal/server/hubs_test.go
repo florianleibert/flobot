@@ -13,9 +13,10 @@ import (
 )
 
 // writeFakeAmesh writes a shell script that answers `hubs list`, `models
-// list`, and `models chat <id>` with the given JSON / output, and points
-// AMESH_BIN at it. The amesh discovery cache is keyed by binary path, so each
-// test's distinct temp binary never collides with another.
+// list`, `models chat <id>`, `hubs refresh`, and `doctor` with the given
+// JSON / output, and points AMESH_BIN at it. The amesh discovery cache is
+// keyed by binary path, so each test's distinct temp binary never collides
+// with another.
 func writeFakeAmesh(t *testing.T, hubsJSON, modelsJSON string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -30,6 +31,8 @@ func writeFakeAmesh(t *testing.T, hubsJSON, modelsJSON string) {
   "hubs list") echo '` + hubsJSON + `';;
   "models list") echo '` + modelsJSON + `';;
   "models chat") echo "pong";;
+  "hubs refresh") echo "refreshed 2/2 hubs (0 failed)";;
+  "doctor --json") echo '{"ok":true,"root":"/tmp/.amesh","default_hub":"hub-a","checks":[{"id":"wireguard","status":"ok","message":"wg up"},{"id":"hub_config","status":"ok","message":"Hub \"hub-a\" has local URL"}]}';;
   *) echo '{}';;
 esac
 `
@@ -166,4 +169,115 @@ func TestModelStartEndpoint(t *testing.T) {
 func jsonDecode(resp *http.Response, out any) error {
 	defer resp.Body.Close()
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func TestHubRefreshEndpoint(t *testing.T) {
+	writeFakeAmesh(t,
+		`[{"name":"hub-a","url":"https://hub-a:8440","default":true,"wg_up":true}]`,
+		`{"schema":"amesh.accessible_models.v1","models":[{"id":"service-1","display":"M","location":"local","state":"ready"}]}`,
+	)
+	srv := New(store.New())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Post(ts.URL+"/api/v1/hubs/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		OK      bool   `json:"ok"`
+		Summary string `json:"summary"`
+		Hubs    []struct {
+			Name string `json:"name"`
+		} `json:"hubs"`
+	}
+	if err := jsonDecode(resp, &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.OK {
+		t.Fatal("refresh ok=false")
+	}
+	if body.Summary != "refreshed 2/2 hubs (0 failed)" {
+		t.Fatalf("summary = %q", body.Summary)
+	}
+	if len(body.Hubs) != 1 || body.Hubs[0].Name != "hub-a" {
+		t.Fatalf("hubs = %+v", body.Hubs)
+	}
+}
+
+func TestHubDoctorEndpoint(t *testing.T) {
+	writeFakeAmesh(t, `[]`, `{"schema":"amesh.accessible_models.v1","models":[]}`)
+	srv := New(store.New())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/api/v1/hubs/doctor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		OK         bool   `json:"ok"`
+		DefaultHub string `json:"default_hub"`
+		Checks     []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if err := jsonDecode(resp, &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.OK {
+		t.Fatal("doctor ok=false")
+	}
+	if body.DefaultHub != "hub-a" {
+		t.Fatalf("default_hub = %q", body.DefaultHub)
+	}
+	if len(body.Checks) != 2 || body.Checks[0].ID != "wireguard" || body.Checks[0].Status != "ok" {
+		t.Fatalf("checks = %+v", body.Checks)
+	}
+}
+
+func TestHubDetailEndpoint(t *testing.T) {
+	writeFakeAmesh(t,
+		`[{"name":"hub-a","url":"https://hub-a:8440","default":true,"wg_up":true}]`,
+		`{"schema":"amesh.accessible_models.v1","models":[]}`,
+	)
+	srv := New(store.New())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/api/v1/hubs/hub-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Hub struct {
+			Name  string `json:"name"`
+			WGUp  bool   `json:"wg_up"`
+			Default bool `json:"default"`
+		} `json:"hub"`
+		Checks []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if err := jsonDecode(resp, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Hub.Name != "hub-a" || !body.Hub.WGUp || !body.Hub.Default {
+		t.Fatalf("hub = %+v", body.Hub)
+	}
+	if len(body.Checks) == 0 {
+		t.Fatal("expected doctor checks mentioning hub-a")
+	}
+
+	// Unknown hub -> 404.
+	resp, err = http.Get(ts.URL + "/api/v1/hubs/nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown hub must be 404, got %d", resp.StatusCode)
+	}
 }

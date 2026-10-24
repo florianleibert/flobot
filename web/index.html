@@ -311,11 +311,21 @@
     <div class="row">
       <span class="tag" id="hubsStatus">scanning…</span>
       <span class="spacer"></span>
+      <button type="button" id="hubsDoctor" class="ghost" title="run amesh doctor — full mesh-health report">🩺 doctor</button>
       <button type="button" id="hubsRefresh" class="ghost" title="rescan hubs + models">↻</button>
     </div>
+    <div class="hub-doctor" id="hubDoctor" hidden></div>
     <div class="hub-list" id="hubList"></div>
     <div class="row"><h3>Models</h3><span class="spacer"></span><span class="tag" id="modelCount">0</span></div>
     <div class="hub-models" id="hubModels"></div>
+  </div>
+  <div class="hub-detail" id="hubDetail" hidden>
+    <div class="hub-detail-head">
+      <span class="tag" id="hubDetailName"></span>
+      <span class="spacer"></span>
+      <button type="button" class="ghost" id="hubDetailClose">✕</button>
+    </div>
+    <div class="hub-detail-body" id="hubDetailBody"></div>
   </div>
 </section>
 
