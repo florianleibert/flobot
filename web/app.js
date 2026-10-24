@@ -391,8 +391,10 @@
       renderTouched();
       renderDiff();
       renderReviewState();
+      return d;
     } catch (e) {
       $("edDiff").innerHTML = `<p class="tag">${safe(e.message)}</p>`;
+      return null;
     }
   }
   function runDuration(r) {
@@ -703,12 +705,13 @@
     t.textContent = status === "done" ? "\u2713 Mission complete" : "\u2717 " + status;
     card.appendChild(t);
     const rows = [];
-    const ds = diff?.diffSummary || diff?.summary;
+    const d = diff || ed.review || null;
+    const ds = d?.diffSummary || d?.summary;
     if (ds) rows.push(`${ds.files || 0} files \xB7 +${ds.additions ?? 0}/\u2212${ds.deletions ?? 0}`);
-    const files = (diff?.files || []).map((f) => f.path);
+    const files = (d?.files || []).map((f) => f.path);
     if (files.length) rows.push(files.slice(0, 5).join(", ") + (files.length > 5 ? ` +${files.length - 5} more` : ""));
-    const j = diff?.judgeScore;
-    if (typeof j === "number" && j > 0) rows.push("\u2605 " + Number(j).toFixed(1) + "/10 \u2014 " + (diff?.judgeRationale || ""));
+    const j = d?.judgeScore;
+    if (typeof j === "number" && j > 0) rows.push("\u2605 " + Number(j).toFixed(1) + "/10 \u2014 " + (d?.judgeRationale || ""));
     const b = document.createElement("div");
     b.className = "body";
     b.textContent = rows.join("\n") || "no changes";
