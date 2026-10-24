@@ -21,6 +21,12 @@ import (
 // HubExecBudget bounds one `amesh hubs list` / `amesh models list` call.
 const HubExecBudget = 8 * time.Second
 
+// DoctorBudget bounds one `amesh doctor` / `amesh hubs refresh` call — an
+// explicit user action that can legitimately take longer than a list (a full
+// doctor run walks every hub and was measured at ~6.5s). The server wraps
+// these endpoints with its own 60s budget; this is the inner cap.
+const DoctorBudget = 30 * time.Second
+
 // HubCacheTTL bounds how long a fetched hub/model list is reused so a roster
 // render + a start do not each re-exec the amesh binary.
 const HubCacheTTL = 15 * time.Second
@@ -102,11 +108,17 @@ func Bin() (string, error) { return ameshBin() }
 // first JSON document on stdout. The amesh CLI emits no secrets in these list
 // outputs (hub fingerprints and model service rows only).
 func runJSON(ctx context.Context, out any, args ...string) error {
+	return runJSONBudget(ctx, HubExecBudget, out, args...)
+}
+
+// runJSONBudget is runJSON with an explicit budget, for calls that are known
+// to take longer than a list (e.g. `amesh doctor`, ~6.5s on a live mesh).
+func runJSONBudget(ctx context.Context, budget time.Duration, out any, args ...string) error {
 	bin, err := ameshBin()
 	if err != nil {
 		return fmt.Errorf("amesh binary not found (set AMESH_BIN): %w", err)
 	}
-	cctx, cancel := context.WithTimeout(ctx, HubExecBudget)
+	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, append(args, "--json")...)
 	raw, err := cmd.Output()
@@ -215,7 +227,7 @@ func RefreshHubs(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cctx, cancel := context.WithTimeout(ctx, HubExecBudget)
+	cctx, cancel := context.WithTimeout(ctx, DoctorBudget)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, "hubs", "refresh")
 	raw, err := cmd.CombinedOutput()
@@ -229,7 +241,7 @@ func RefreshHubs(ctx context.Context) (string, error) {
 // cached — a doctor run is an explicit user action.
 func DoctorReport(ctx context.Context) (Doctor, error) {
 	var d Doctor
-	if err := runJSON(ctx, &d, "doctor"); err != nil {
+	if err := runJSONBudget(ctx, DoctorBudget, &d, "doctor"); err != nil {
 		return Doctor{}, err
 	}
 	return d, nil

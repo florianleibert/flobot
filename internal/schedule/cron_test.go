@@ -104,3 +104,33 @@ func TestDueFiresCronOnScheduledMinute(t *testing.T) {
 		t.Fatalf("cron not due next day: %v", fired)
 	}
 }
+
+// TestDueCronSlowFireNoRefire pins the fix where a cron fire that outlives
+// one scheduler tick must not re-fire in the same minute before MarkFired
+// runs. Due() advances last to the scheduled minute at fire time, so a
+// second Due() call at 09:00:30 (no MarkFired in between) is a no-op.
+func TestDueCronSlowFireNoRefire(t *testing.T) {
+	s := New()
+	now := time.Date(2026, 10, 14, 8, 59, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	items := []Fireable{{RoutineID: "slow", Trigger: "cron 0 9 * * *"}}
+	if fired := s.Due(items); len(fired) != 0 {
+		t.Fatalf("fired on first observation: %v", fired)
+	}
+	now = time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	if fired := s.Due(items); len(fired) != 1 {
+		t.Fatalf("not due at 09:00: %v", fired)
+	}
+	// The fire is still running (MarkFired not called); the next tick lands
+	// in the same minute. Without the fix this re-fires "slow".
+	now = time.Date(2026, 10, 14, 9, 0, 30, 0, time.UTC)
+	if fired := s.Due(items); len(fired) != 0 {
+		t.Fatalf("slow fire re-fired in same minute: %v", fired)
+	}
+	// After the fire completes and MarkFired runs, the next day fires once.
+	s.MarkFired("slow")
+	now = time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	if fired := s.Due(items); len(fired) != 1 {
+		t.Fatalf("not due next day after MarkFired: %v", fired)
+	}
+}

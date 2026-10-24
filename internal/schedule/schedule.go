@@ -138,6 +138,11 @@ func (s *Scheduler) Due(items []Fireable) []Fired {
 			// Cron: due when the scheduled minute has arrived since last fire.
 			if nxt, ok := c.Next(last); ok && !now.Before(nxt) {
 				out = append(out, Fired{RoutineID: it.RoutineID, BotID: it.BotID, SkillID: it.SkillID})
+				// Advance last to the scheduled minute now so a fire that
+				// outlives one tick cannot re-fire in the same minute before
+				// MarkFired runs (MarkFired lands on the same truncated
+				// minute, so this never skips an occurrence).
+				s.last[it.RoutineID] = nxt
 			}
 			continue
 		}

@@ -18,12 +18,16 @@ import (
 // workDir (or cwd when unset). A missing root is not fatal: handlers
 // report the error; runs keep working (fail-closed review).
 func (s *Server) workspaceWS() (*workspace.Workspace, error) {
+	// Read workDir before taking wsMu: workspaceSelect takes workMu then
+	// wsMu while swapping folders at runtime, so taking wsMu here and then
+	// blocking on workDirNow() would be an AB-BA inversion with a concurrent
+	// folder-picker switch.
+	dir := s.workDirNow()
 	s.wsMu.Lock()
 	defer s.wsMu.Unlock()
 	if s.ws != nil {
 		return s.ws, nil
 	}
-	dir := s.workDirNow()
 	return s.openWorkspaceLocked(dir)
 }
 
@@ -372,6 +376,17 @@ func (s *Server) workspaceSelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A run spawns flocode with cwd = this folder. flocode refuses to start
+	// in a non-git folder (it prompts, then dies on the non-interactive
+	// child stdin), and Code Studio checkpoints are git-based, so a selected
+	// workspace must be a repo. Initialise one when the folder is plain —
+	// best-effort: a folder without git still browses/edits, only runs and
+	// review are degraded. Done before the swap (and outside revMu: git can
+	// take seconds, and revMu serializes diff-review apply/reject).
+	if !isGitRepo(abs) {
+		_ = ensureGitRepo(abs)
+	}
+
 	// Swap under both locks: validate the view first so a rejected path
 	// leaves the server exactly as it was. revMu is the same lock apply
 	// and reject take, so a workspace switch cannot land mid-review.
@@ -387,15 +402,6 @@ func (s *Server) workspaceSelect(w http.ResponseWriter, r *http.Request) {
 		s.workMu.Unlock()
 		http.Error(w, `{"error":`+quoteJSON(err.Error())+"}", http.StatusBadRequest)
 		return
-	}
-	// A run spawns flocode with cwd = this folder. flocode refuses to start
-	// in a non-git folder (it prompts, then dies on the non-interactive
-	// child stdin), and Code Studio checkpoints are git-based, so a selected
-	// workspace must be a repo. Initialise one when the folder is plain —
-	// best-effort: a folder without git still browses/edits, only runs and
-	// review are degraded. Done before the swap so the switch reflects it.
-	if !isGitRepo(abs) {
-		_ = ensureGitRepo(abs)
 	}
 	s.workDir = abs
 	s.wsMu.Unlock()
