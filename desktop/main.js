@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, shell, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, Notification, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -237,6 +237,22 @@ function createWindow() {
   win.loadURL(baseUrl);
   win.on('closed', () => (win = null));
 }
+
+// --- workspace folder picker (Code Studio) ----------------------------------
+
+// The Code panel asks for an absolute path; we show the native folder
+// chooser and hand the result back. The renderer then POSTs it to
+// /api/v1/workspace/select, which also persists it as the default for the
+// next launch — so nothing here needs to touch the server.
+ipcMain.handle('flobot:pick-folder', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Choose workspace folder',
+    buttonLabel: 'Open here',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (res.canceled || !res.filePaths.length) return null;
+  return res.filePaths[0];
+});
 
 // --- run-completion notifications (Code Studio AC-2e) ----------------------
 

@@ -54,6 +54,44 @@
     });
   }
   var edExpanded = /* @__PURE__ */ new Set();
+  var ED_NOISE_DIRS = /* @__PURE__ */ new Set([
+    "node_modules",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    "webextensions",
+    ".next",
+    ".nuxt",
+    ".vite",
+    ".cache",
+    ".turbo",
+    ".parcel-cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    "venv",
+    ".venv",
+    "__pycache__",
+    "target",
+    "vendor",
+    "bower_components",
+    ".terraform"
+  ]);
+  var edShowAll = (() => {
+    try {
+      return localStorage.getItem("edShowAll") === "1";
+    } catch {
+      return false;
+    }
+  })();
+  function edNoise(e) {
+    if (e.type !== "dir") return false;
+    const first = String(e.name).split("/")[0];
+    return ED_NOISE_DIRS.has(first) || ED_NOISE_DIRS.has(String(e.name));
+  }
+  var edTreeCount = { files: 0, hidden: 0 };
   async function loadTree() {
     try {
       const root = await edApi("GET", "/api/v1/workspace/root");
@@ -66,9 +104,16 @@
   async function renderTree() {
     const host = $("edTree");
     if (!host) return;
+    edTreeCount = { files: 0, hidden: 0 };
     const frag = document.createDocumentFragment();
     await renderLevel(frag, ".", 0);
+    const note = document.createElement("div");
+    note.className = "ed-tree-note";
+    note.textContent = edTreeCount.hidden ? edTreeCount.files + " files \xB7 " + edTreeCount.hidden + " build dirs hidden" : edTreeCount.files + " files";
+    frag.appendChild(note);
     host.replaceChildren(frag);
+    const t = $("edShowFiles");
+    if (t) t.classList.toggle("on", edShowAll);
   }
   async function renderLevel(host, dir, depth) {
     let entries;
@@ -83,13 +128,18 @@
       return;
     }
     for (const e of entries) {
+      if (e.type === "file") edTreeCount.files++;
+      if (!edShowAll && edNoise(e)) {
+        edTreeCount.hidden++;
+        continue;
+      }
       const node = document.createElement("div");
-      node.className = "ed-node" + (e.type === "dir" ? " dir" : "");
+      node.className = "ed-node" + (e.type === "dir" ? " dir" : " file");
       node.style.paddingLeft = 8 + depth * 14 + "px";
       const ico = document.createElement("span");
       ico.className = "ed-ico";
       ico.textContent = e.type === "dir" ? edExpanded.has(e.path) ? "\u25BE" : "\u25B8" : "\u25E6";
-      const label = document.createElement("span");
+      const label = document.createElement("div");
       label.className = "ed-label";
       label.textContent = e.name;
       if (e.type === "dir") label.textContent += "/";
@@ -462,6 +512,7 @@
     });
   }
   var edQuickIndex = [];
+  var edQuickRoot = null;
   async function buildQuickIndex() {
     const out = [];
     const queue = ["."];
@@ -477,10 +528,14 @@
       }
       for (const e of r.entries || []) {
         if (e.type === "file") out.push({ path: e.path, name: e.name });
-        else if (out.length < 2e3) queue.push(e.path);
+        else if (!edNoise(e) && out.length < 2e3) queue.push(e.path);
       }
     }
     edQuickIndex = out;
+    edQuickRoot = $("edRoot") ? $("edRoot").textContent : null;
+  }
+  function invalidateQuickIndex() {
+    edQuickIndex = [];
   }
   function openQuick() {
     const q = $("edQuick");
@@ -491,7 +546,8 @@
     inp.value = "";
     renderQuickList("");
     inp.focus();
-    if (edQuickIndex.length === 0) buildQuickIndex().then(() => renderQuickList(inp.value));
+    const root = $("edRoot") ? $("edRoot").textContent : null;
+    if (edQuickIndex.length === 0 || edQuickRoot !== root) buildQuickIndex().then(() => renderQuickList(inp.value));
   }
   function closeQuick() {
     const q = $("edQuick");
@@ -767,10 +823,66 @@
     document.querySelectorAll(".ed-tab").forEach((t) => t.classList.toggle("sel", t.dataset.tab === name));
     document.querySelectorAll(".ed-tabpane").forEach((p) => p.classList.toggle("sel", p.dataset.pane === name));
   }
+  async function pickFolder() {
+    if (window.flobotDesktop?.pickFolder) return window.flobotDesktop.pickFolder();
+    const bar = $("edFolderBar");
+    if (bar.hidden) {
+      bar.hidden = false;
+      $("edFolderPath").focus();
+      return void 0;
+    }
+    bar.hidden = true;
+    return void 0;
+  }
+  async function selectWorkspace(path) {
+    path = String(path || "").trim();
+    if (!path) {
+      toast("type a folder path first", "err");
+      return;
+    }
+    try {
+      const r = await edApi("POST", "/api/v1/workspace/select", { path });
+      toast("workspace: " + (r.name || r.root));
+      ed.openPath = null;
+      ed.openSha = null;
+      ed.dirty = false;
+      $("edPath").value = "";
+      $("edContent").value = "";
+      $("edDirty").textContent = "";
+      edExpanded.clear();
+      invalidateQuickIndex();
+      $("edFolderBar").hidden = true;
+      await loadTree();
+    } catch (e) {
+      toast("open folder failed: " + e.message, "err");
+    }
+  }
   function initEditor() {
     $("edOpen").onclick = () => openFile($("edPath").value.trim());
     $("edSave").onclick = saveFile;
     $("edRefresh").onclick = loadTree;
+    $("edShowFiles").onclick = async () => {
+      edShowAll = !edShowAll;
+      try {
+        localStorage.setItem("edShowAll", edShowAll ? "1" : "0");
+      } catch {
+      }
+      await renderTree();
+    };
+    $("edFolder").onclick = async () => {
+      const p = await pickFolder();
+      if (p) await selectWorkspace(p);
+    };
+    $("edFolderGo").onclick = () => selectWorkspace($("edFolderPath").value);
+    $("edFolderPath").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        selectWorkspace($("edFolderPath").value);
+      }
+      if (ev.key === "Escape") {
+        $("edFolderBar").hidden = true;
+      }
+    });
     $("edContent").addEventListener("input", () => {
       if (!ed.openPath) return;
       ed.dirty = true;
@@ -946,7 +1058,12 @@ When a release is cut:
     { label: "every 15 minutes", value: "every 15m" },
     { label: "every hour", value: "every 1h" },
     { label: "every 6 hours", value: "every 6h" },
-    { label: "every day", value: "every 1d" }
+    { label: "every day", value: "every 1d" },
+    { label: "every minute", value: "cron * * * * *" },
+    { label: "every 15 min", value: "cron */15 * * * *" },
+    { label: "hourly", value: "cron @hourly" },
+    { label: "daily 9am", value: "cron 0 9 * * *" },
+    { label: "weekdays 9am", value: "cron 0 9 * * 1-5" }
   ];
   var DEMO_SCRIPT = [
     { delay: 200, ev: { kind: "run_status", text: "demo run started \xB7 bot Coder \xB7 intent code" } },

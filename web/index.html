@@ -192,9 +192,15 @@
   <div class="ed-layout">
     <div class="card ed-tree-card">
       <div class="row">
-        <span class="tag" id="edRoot">…</span>
+        <span class="tag" id="edRoot" title="workspace folder">…</span>
         <span class="spacer"></span>
+        <button type="button" class="ghost" id="edShowFiles" title="show build/artifact dirs (node_modules, dist, …)">👁</button>
+        <button type="button" class="ghost" id="edFolder" title="open a different folder">📂</button>
         <button type="button" class="ghost" id="edRefresh" title="reload tree">↻</button>
+      </div>
+      <div class="row" id="edFolderBar" hidden>
+        <input id="edFolderPath" placeholder="/absolute/path/to/project" spellcheck="false">
+        <button type="button" id="edFolderGo">Switch</button>
       </div>
       <div class="ed-tree" id="edTree"></div>
     </div>
@@ -262,7 +268,7 @@
     <div class="row">
       <select id="rtnBot"></select>
       <select id="rtnSkill"></select>
-      <input id="rtnTrigger" placeholder="trigger (manual or every 5m)" value="manual">
+      <input id="rtnTrigger" placeholder="manual · every 5m · cron 0 9 * * 1-5" value="manual">
       <button type="button" id="createRtn">Arm</button>
     </div>
     <p class="tag">quick triggers:</p>

@@ -48,6 +48,9 @@ type Server struct {
 	client  *http.Client
 	home    string
 	workDir string
+	// workMu guards workDir/ws: the workspace can be switched at runtime
+	// via POST /api/v1/workspace/select (Code Studio folder picker).
+	workMu sync.RWMutex
 	// ameshAddr overrides the amesh-web loopback address for mesh routes.
 	ameshAddr string
 	// sched fires enabled "every <duration>" routines. Nil until StartScheduler.
@@ -106,6 +109,14 @@ func WithHTTPClient(c *http.Client) Option {
 func WithHome(home string) Option { return func(s *Server) { s.home = home } }
 func WithWorkDir(dir string) Option {
 	return func(s *Server) { s.workDir = dir }
+}
+
+// workDirNow returns the current workspace directory (guarded by workMu so
+// a runtime workspace switch cannot race a run spawn).
+func (s *Server) workDirNow() string {
+	s.workMu.RLock()
+	defer s.workMu.RUnlock()
+	return s.workDir
 }
 
 func New(st *store.Store, opts ...Option) *Server {
@@ -204,6 +215,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/local", s.localStatus)
 	mux.HandleFunc("POST /api/v1/local/pin", s.localPin)
 	mux.HandleFunc("GET /api/v1/workspace/root", s.workspaceRoot)
+	mux.HandleFunc("GET /api/v1/workspace/roots", s.workspaceRoots)
+	mux.HandleFunc("POST /api/v1/workspace/select", s.workspaceSelect)
 	mux.HandleFunc("GET /api/v1/workspace/tree", s.workspaceTree)
 	mux.HandleFunc("GET /api/v1/workspace/file", s.workspaceFileGet)
 	mux.HandleFunc("PUT /api/v1/workspace/file", s.workspaceFilePut)
@@ -232,15 +245,16 @@ func (s *Server) StartScheduler(ctx context.Context) {
 	s.sched.Start(ctx, s.fireables, s.fireRoutine)
 }
 
-// fireables lists enabled routines with a parseable "every" trigger.
-// Trigger and LastFire must be carried through or Due() can never match.
+// fireables lists enabled routines whose trigger schedules work — an
+// "every <duration>" interval or a "cron <expr>" expression. Trigger and
+// LastFire must be carried through or Due() can never match.
 func (s *Server) fireables() []schedule.Fireable {
 	var out []schedule.Fireable
 	for _, rt := range s.store.ListRoutines(Actor) {
 		if rt.Paused {
 			continue
 		}
-		if _, ok := schedule.ParseEvery(rt.Trigger); !ok {
+		if _, _, ok := schedule.ParseTrigger(rt.Trigger); !ok {
 			continue
 		}
 		f := schedule.Fireable{
@@ -303,7 +317,7 @@ func (s *Server) fireRoutine(f schedule.Fired) error {
 		Pin:            pin,
 		Intent:         "ask",
 		Route:          bot.Route,
-		Dir:            s.workDir,
+		Dir:            s.workDirNow(),
 		ConfigOverride: cfgOverride,
 	})
 	s.hub.publish(store.Event{Kind: "routine_fire", Text: rt.ID})
@@ -534,7 +548,7 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
 			Pin:            pin,
 			Intent:         intent,
 			Route:          bot.Route,
-			Dir:            s.workDir,
+			Dir:            s.workDirNow(),
 			ConfigOverride: cfgOverride,
 		})
 		out["run"] = run
@@ -629,7 +643,7 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 		Verify:         false,
 		Route:          bot.Route,
 		Timeout:        executor.AskTimeout,
-		Dir:            s.workDir,
+		Dir:            s.workDirNow(),
 		ConfigOverride: cfgOverride,
 	})
 	writeJSON(w, map[string]any{
@@ -881,7 +895,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		Verify:         body.Verify,
 		Worktree:       body.Worktree,
 		Route:          bot.Route,
-		Dir:            s.workDir,
+		Dir:            s.workDirNow(),
 		ConfigOverride: cfgOverride,
 	})
 	writeJSON(w, run)
@@ -990,6 +1004,13 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 		if res.Err != nil {
 			status = "error"
 			errText = res.Err.Error()
+			// A bare "exit status 1" hides the cause. Map flocode's known
+			// fatal failure modes (unreadable events, process aborts) to a
+			// one-line hint, appending the scrubbed stderr diagnostic tail so
+			// the run detail shows why, not just that.
+			if hint := runFailureHint(errText, res.Stderr); hint != "" {
+				errText = errText + " — " + hint
+			}
 		}
 		if s.wasStopped(run.ID) {
 			// A user-initiated stop is not an error; surface it as such.
@@ -1224,7 +1245,7 @@ func (s *Server) httpError(w http.ResponseWriter, err error) {
 // leak vectors (workspace root, home dir, temp dirs) rather than every
 // possible path.
 func (s *Server) scrubPaths(msg string) string {
-	for _, root := range []string{s.home, s.workDir} {
+	for _, root := range []string{s.home, s.workDirNow()} {
 		if root == "" {
 			continue
 		}

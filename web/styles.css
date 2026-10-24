@@ -1069,3 +1069,13 @@ button.mini { padding: 1px 7px; font-size: 10.5px; border-radius: var(--r-sm); }
 .ed-touched .chip.from-diff {
   border-color: var(--acc); color: var(--acc);
 }
+
+/* Code panel: build-artifact visibility toggle + tree status line */
+#edShowFiles.on { color: var(--acc); border-color: var(--acc); }
+.ed-tree-note {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
