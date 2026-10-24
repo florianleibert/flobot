@@ -1751,7 +1751,7 @@ When a release is cut:
         const loc = m.location === "local" ? `<span class="tag">local</span>` : `<span class="tag">${esc3(m.location)}</span>`;
         const startBtn = m.location === "local" && m.state !== "ready"
           ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="start ${esc3(m.display)}">\u25B6 start</button>` : "";
-        return `<div class="hub-model">
+        return `<div class="hub-model" data-state="${esc3(m.state)}">
         <div class="hub-model-name">${esc3(m.display || m.id)}</div>
         <div class="hub-model-meta">${loc}${st}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>
         <div class="spacer"></div>${startBtn}
@@ -1763,7 +1763,9 @@ When a release is cut:
     }
   }
   async function startModel(id, btn) {
-    if (btn) { btn.disabled = true; btn.textContent = "starting…"; }
+    if (btn) { btn.disabled = true; btn.textContent = "starting\u2026"; }
+    const row = btn && btn.closest(".hub-model");
+    if (row) row.dataset.state = "starting";
     try {
       await api("POST", "/api/v1/models/" + encodeURIComponent(id) + "/start");
       toast2("start accepted \u2014 model warming up", "ok");
@@ -1771,6 +1773,7 @@ When a release is cut:
     } catch (e) {
       toast2(safe(e.message), "err");
       if (btn) { btn.disabled = false; btn.textContent = "\u25B6 start"; }
+      if (row) row.dataset.state = "stopped";
     }
   }
   var openTools = /* @__PURE__ */ new Map();
