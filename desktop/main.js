@@ -100,12 +100,36 @@ async function choosePort() {
 
 function workspaceDir() {
   // The Code panel edits this directory. An explicit FLOBOT_WORKSPACE wins;
-  // otherwise default to ~/flobot-workspace so a GUI launch does not fall
-  // back to the spawn cwd (literally "/" for a double-clicked app).
+  // otherwise the last folder chosen in the Code panel wins, so a runtime
+  // switch survives a relaunch; otherwise default to ~/flobot-workspace so a
+  // GUI launch does not fall back to the spawn cwd (literally "/" for a
+  // double-clicked app).
   const env = (process.env.FLOBOT_WORKSPACE || '').trim();
-  const dir = env || path.join(os.homedir(), 'flobot-workspace');
+  if (env) {
+    try { fs.mkdirSync(env, { recursive: true }); } catch {}
+    return env;
+  }
+  const recent = latestWorkspace();
+  if (recent) return recent;
+  const dir = path.join(os.homedir(), 'flobot-workspace');
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
   return dir;
+}
+
+// latestWorkspace returns the most recently selected Code Studio folder from
+// ~/.flobot/config.json, or null when unset or the folder no longer exists.
+// The server persists this list on POST /api/v1/workspace/select; the desktop
+// shell reads it so the picker choice survives an app restart.
+function latestWorkspace() {
+  try {
+    const cfgPath = path.join(os.homedir(), '.flobot', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const dir = (cfg.workspaces || [])[0];
+    if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return null;
+    return dir;
+  } catch {
+    return null;
+  }
 }
 
 // guiPath returns the login shell's PATH plus the usual user install dirs.
