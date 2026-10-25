@@ -1667,10 +1667,12 @@ When a release is cut:
       <div class="actions">
         <button class="ghost" data-test="${esc3(rt.id)}">test-run</button>
         <button class="ghost" data-en="${esc3(rt.id)}">enable</button>
+        <button class="ghost" data-pause="${esc3(rt.id)}" data-paused="${rt.paused ? "0" : "1"}">${rt.paused ? "resume" : "pause"}</button>
       </div></li>`;
     }).join("") || empty("\u21BB", "Nothing on the clock \u2014 arm a routine above.");
     $2("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
     $2("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
+    $2("routines").querySelectorAll("[data-pause]").forEach((btn) => btn.onclick = () => pauseRtn(btn.dataset.pause, btn.dataset.paused === "1"));
     const tb = $2("routes").querySelector("tbody");
     tb.innerHTML = (roster.routes || []).map(
       (r) => `<tr><td>${esc3(r.id)}</td><td>${esc3(r.role)}</td><td>${esc3(r.model)}</td><td class="tag">${esc3(r.purpose)}</td></tr>`
@@ -1762,8 +1764,7 @@ When a release is cut:
         const backend = m.backend ? `<span class="tag">${esc3(m.backend)}</span>` : "";
         const shared = m.shared ? `<span class="chip acc" title="shared on the mesh">\u25C8 shared</span>` : "";
         const routes = m.route_count > 0 ? `<span class="tag">${m.route_count} route${m.route_count === 1 ? "" : "s"}</span>` : "";
-        const startBtn = m.state !== "ready"
-          ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="warm ${esc3(m.display)}">\u25B6 start</button>` : "";
+        const startBtn = m.state !== "ready" ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="warm ${esc3(m.display)}">\u25B6 start</button>` : "";
         return `<div class="hub-model" data-state="${esc3(m.state)}">
         <div class="hub-model-name">${esc3(m.display || m.id)}</div>
         <div class="hub-model-meta">${loc}${st}${backend}${shared}${routes}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>
@@ -1776,16 +1777,22 @@ When a release is cut:
     }
   }
   async function startModel(id, btn) {
-    if (btn) { btn.disabled = true; btn.textContent = "starting\u2026"; }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "starting\u2026";
+    }
     const row = btn && btn.closest(".hub-model");
     if (row) row.dataset.state = "starting";
     try {
       await api("POST", "/api/v1/models/" + encodeURIComponent(id) + "/start");
       toast2("start accepted \u2014 model warming up", "ok");
-      setTimeout(() => loadHubs(), 4000);
+      setTimeout(() => loadHubs(), 4e3);
     } catch (e) {
-      toast2(safe(e.message), "err");
-      if (btn) { btn.disabled = false; btn.textContent = "\u25B6 start"; }
+      toast2(safe2(e.message), "err");
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "\u25B6 start";
+      }
       if (row) row.dataset.state = "stopped";
     }
   }
@@ -1807,11 +1814,11 @@ When a release is cut:
         <span class="tag">${err} err</span>
         <span class="tag">default hub ${esc3(d.default_hub || "\u2014")}</span>
       </div>
-      <div class="hub-doctor-checks">${checks.map((c) =>
-        `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`
+      <div class="hub-doctor-checks">${checks.map(
+        (c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`
       ).join("") || `<span class="tag">no checks</span>`}</div>`;
     } catch (e) {
-      bar.innerHTML = `<span class="tag err">doctor failed: ${safe(e.message)}</span>`;
+      bar.innerHTML = `<span class="tag err">doctor failed: ${safe2(e.message)}</span>`;
     }
   }
   async function openHubDetail(name) {
@@ -1827,16 +1834,16 @@ When a release is cut:
       const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
       const def = h.default ? `<span class="chip acc">default</span>` : "";
       $2("hubDetailBody").innerHTML = `
-        <div class="hub-detail-row"><span class="tag">url</span><code>${esc3(h.url || "")}</code></div>
-        ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc3(h.controller_url)}</code></div>` : ""}
-        ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc3(h.fingerprint)}</code></div>` : ""}
-        ${h.wg_status && h.wg_status.ip ? `<div class="hub-detail-row"><span class="tag">wg ip</span><code>${esc3(h.wg_status.ip)}</code></div>` : ""}
-        <div class="hub-detail-row"><span class="tag">status</span>${wg}${def}</div>
-        <h4>Health checks</h4>
-        ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
-      `;
+      <div class="hub-detail-row"><span class="tag">url</span><code>${esc3(h.url || "")}</code></div>
+      ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc3(h.controller_url)}</code></div>` : ""}
+      ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc3(h.fingerprint)}</code></div>` : ""}
+      ${h.wg_status && h.wg_status.ip ? `<div class="hub-detail-row"><span class="tag">wg ip</span><code>${esc3(h.wg_status.ip)}</code></div>` : ""}
+      <div class="hub-detail-row"><span class="tag">status</span>${wg}${def}</div>
+      <h4>Health checks</h4>
+      ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
+    `;
     } catch (e) {
-      $2("hubDetailBody").innerHTML = `<span class="tag err">${safe(e.message)}</span>`;
+      $2("hubDetailBody").innerHTML = `<span class="tag err">${safe2(e.message)}</span>`;
     }
   }
   var openTools = /* @__PURE__ */ new Map();
@@ -2573,6 +2580,15 @@ When a release is cut:
       showErr(e.message);
     }
   }
+  async function pauseRtn(id, paused) {
+    try {
+      await api("POST", "/api/v1/routines/" + id + "/pause", { paused });
+      toast2(paused ? "routine paused \u2014 it won't fire" : "routine resumed \u2014 it's live", "ok");
+      await refresh();
+    } catch (e) {
+      showErr(e.message);
+    }
+  }
   $2("probeBtn").onclick = async () => {
     try {
       const h = await api("GET", "/api/v1/health/models");
@@ -2601,7 +2617,10 @@ When a release is cut:
   var hubsDoctorBtn = $2("hubsDoctor");
   if (hubsDoctorBtn) hubsDoctorBtn.onclick = () => runDoctor().catch((e) => showErr(e.message));
   var hubDetailCloseBtn = $2("hubDetailClose");
-  if (hubDetailCloseBtn) hubDetailCloseBtn.onclick = () => { const el = $2("hubDetail"); if (el) el.hidden = true; };
+  if (hubDetailCloseBtn) hubDetailCloseBtn.onclick = () => {
+    const el = $2("hubDetail");
+    if (el) el.hidden = true;
+  };
   (function() {
     "use strict";
     if (window.__researchV2Loaded) return;
