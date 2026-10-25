@@ -327,6 +327,13 @@ func (s *Server) fireRoutine(f schedule.Fired) error {
 		ConfigOverride: cfgOverride,
 	})
 	s.hub.publish(store.Event{Kind: "routine_fire", Text: rt.ID})
+	// Record the fire on the routine: the store keeps LastRun/LastNote, not
+	// the run itself, and the card reads them. LastRun also feeds
+	// fireables().LastFire so a fired cron routine does not re-fire in the
+	// same minute.
+	if _, err := s.store.TestRun(rt.ID, rt.Owner, run.ID, "scheduled fire "+run.ID); err != nil {
+		return fmt.Errorf("routine %s record fire: %w", rt.ID, err)
+	}
 	return nil
 }
 
