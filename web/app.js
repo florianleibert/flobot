@@ -109,7 +109,7 @@
     await renderLevel(frag, ".", 0);
     const note = document.createElement("div");
     note.className = "ed-tree-note";
-    note.textContent = edTreeCount.hidden ? edTreeCount.files + " files \xB7 " + edTreeCount.hidden + " build dirs hidden" : edTreeCount.files + " files";
+    note.textContent = edTreeCount.hidden ? edTreeCount.files + " files \xB7 " + edTreeCount.hidden + " artifact dirs hidden" : edTreeCount.files + " files";
     frag.appendChild(note);
     host.replaceChildren(frag);
     const t = $("edShowFiles");
@@ -118,8 +118,10 @@
   async function renderLevel(host, dir, depth) {
     let entries;
     try {
-      const r = await edApi("GET", "/api/v1/workspace/tree?dir=" + encodeURIComponent(dir));
+      const q = "/api/v1/workspace/tree?dir=" + encodeURIComponent(dir) + (edShowAll ? "&noise=1" : "");
+      const r = await edApi("GET", q);
       entries = r.entries || [];
+      edTreeCount.hidden += Number(r.hidden || 0);
     } catch (e) {
       const div = document.createElement("div");
       div.className = "ed-node err";
@@ -799,16 +801,25 @@
     } catch {
     }
   }
+  function cpNote(c) {
+    const run = c.runId ? String(c.runId).replace(/^run-/, "").slice(0, 8) : "";
+    const files = Number(c.files || 0);
+    const add = Number(c.additions || 0);
+    const del = Number(c.deletions || 0);
+    if (!files) return run || c.id || "checkpoint";
+    const diff = `+${add} \u2212${del}`;
+    return run ? `run ${run} \xB7 ${files} file${files === 1 ? "" : "s"} \xB7 ${diff}` : `${files} file${files === 1 ? "" : "s"} \xB7 ${diff}`;
+  }
   async function loadCheckpoints() {
     const box = $("edCheck");
     if (!box) return;
     try {
       const list = await edApi("GET", "/api/v1/checkpoints");
-      const cps = list || [];
+      const cps = Array.isArray(list) ? list : list && list.checkpoints || [];
       box.innerHTML = cps.length ? cps.map((c) => `<div class="ed-check-item" data-id="${esc(c.id)}">
           <span class="tag">\u21BA</span>
-          <span class="ck-note">${safe(c.note || c.id)}</span>
-          <span class="ck-time">${safe(c.ts || "")}</span>
+          <span class="ck-note">${safe(c.note || cpNote(c))}</span>
+          <span class="ck-time">${safe(c.ts || c.createdAt || "")}</span>
         </div>`).join("") : `<p class="tag">no checkpoints yet.</p>`;
       box.querySelectorAll(".ed-check-item").forEach((item) => {
         item.onclick = async () => {

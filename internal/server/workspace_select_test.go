@@ -134,3 +134,67 @@ func TestRunFailureHint(t *testing.T) {
 		t.Errorf("non-exit error should not hint, got %q", h)
 	}
 }
+
+// TestWorkspaceTreeNoiseFlag proves the 👁 toggle has a server-side
+// counterpart: dependency/build artifact directories are hidden by default
+// and listed when noise=1 is requested. It also proves the workspace API
+// can create a file inside directories that do not exist yet.
+func TestWorkspaceTreeNoiseFlag(t *testing.T) {
+	home := t.TempDir()
+	start := t.TempDir()
+	if p, err := filepath.EvalSymlinks(start); err == nil {
+		start = p
+	}
+	if err := os.MkdirAll(filepath.Join(start, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(start, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(nil, WithHome(home), WithWorkDir(start))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	names := func(tree map[string]any) []string {
+		var out []string
+		ents, _ := tree["entries"].([]any)
+		for _, e := range ents {
+			m, _ := e.(map[string]any)
+			if n, ok := m["name"].(string); ok {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+
+	tree := getJSON(t, ts, "/api/v1/workspace/tree?dir=.")
+	for _, n := range names(tree) {
+		if n == "node_modules" {
+			t.Fatalf("node_modules visible by default: %v", names(tree))
+		}
+	}
+	if hidden, _ := tree["hidden"].(float64); hidden != 1 {
+		t.Fatalf("hidden = %v, want 1", tree["hidden"])
+	}
+
+	tree = getJSON(t, ts, "/api/v1/workspace/tree?dir=.&noise=1")
+	found := false
+	for _, n := range names(tree) {
+		if n == "node_modules" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("node_modules missing with noise=1: %v", names(tree))
+	}
+
+	// A file can be created inside directories that do not exist yet.
+	res := postJSONStatus(t, ts, "/api/v1/workspace/file?path=a/b/c.js", map[string]any{"content": "hi"})
+	if res.code != 201 {
+		t.Fatalf("nested create: %d %s", res.code, res.body)
+	}
+	if _, err := os.Stat(filepath.Join(start, "a", "b", "c.js")); err != nil {
+		t.Fatalf("nested file not written: %v", err)
+	}
+}

@@ -604,6 +604,10 @@ func (s *Server) createRoutine(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, smallBodyLimit, &body) {
 		return
 	}
+	if err := validateTrigger(body.Trigger); err != nil {
+		s.httpError(w, err)
+		return
+	}
 	rt, err := s.store.CreateRoutine(Actor, body.BotID, body.SkillID, body.Trigger)
 	if err != nil {
 		s.httpError(w, err)
@@ -611,6 +615,26 @@ func (s *Server) createRoutine(w http.ResponseWriter, r *http.Request) {
 	}
 	s.persist()
 	writeJSON(w, rt)
+}
+
+// validateTrigger rejects a schedule that announces itself as a cron or an
+// interval but does not parse. Without this a typo'd cron ("cron 09 * *")
+// is stored happily and then treated as manual: the routine never fires and
+// nothing says why. A trigger that is neither ("manual", an event trigger)
+// is allowed — it never fires from the ticker by design.
+func validateTrigger(trigger string) error {
+	t := strings.TrimSpace(trigger)
+	switch lower := strings.ToLower(t); {
+	case strings.HasPrefix(lower, "cron "):
+		if _, err := schedule.ParseCron(strings.TrimSpace(t[len("cron "):])); err != nil {
+			return fmt.Errorf("invalid cron schedule %q: %w", t, err)
+		}
+	case strings.HasPrefix(lower, "every "):
+		if _, ok := schedule.ParseEvery(t); !ok {
+			return fmt.Errorf("invalid interval schedule %q: want a duration like \"every 5m\"", t)
+		}
+	}
+	return nil
 }
 
 func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
@@ -673,7 +697,19 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) enableRoutine(w http.ResponseWriter, r *http.Request) {
-	rt, err := s.store.EnableRoutine(r.PathValue("id"), Actor)
+	id := r.PathValue("id")
+	cur, err := s.store.GetRoutine(id, Actor)
+	if err != nil {
+		s.httpError(w, err)
+		return
+	}
+	// Arming a routine whose schedule does not parse would arm a fire that
+	// can never happen; refuse with the reason instead.
+	if err := validateTrigger(cur.Trigger); err != nil {
+		s.httpError(w, err)
+		return
+	}
+	rt, err := s.store.EnableRoutine(id, Actor)
 	if err != nil {
 		s.httpError(w, err)
 		return

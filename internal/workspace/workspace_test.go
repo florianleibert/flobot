@@ -72,7 +72,7 @@ func TestValidateSymlinkEscape(t *testing.T) {
 
 func TestTreeSkipsHidden(t *testing.T) {
 	ws := newTestWS(t)
-	entries, err := ws.Tree(".", false)
+	entries, _, err := ws.Tree(".", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestTreeSkipsHidden(t *testing.T) {
 		t.Errorf("tree missing entries: %v", names)
 	}
 	// all=true includes dotfiles
-	all, err := ws.Tree(".", true)
+	all, _, err := ws.Tree(".", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +93,83 @@ func TestTreeSkipsHidden(t *testing.T) {
 		if e.Name == "node_modules" {
 			t.Error("node_modules should always be skipped")
 		}
+	}
+}
+
+// TestTreeNoiseRevealsArtifactDirs proves the 👁 toggle has something to
+// reveal: artifact dirs are hidden by default, listed when noise is on,
+// and the hidden count tells the UI how many were left out.
+func TestTreeNoiseRevealsArtifactDirs(t *testing.T) {
+	ws := newTestWS(t)
+	if err := os.MkdirAll(filepath.Join(ws.Root(), "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws.Root(), "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, hidden, err := ws.Tree(".", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name == "node_modules" || e.Name == "dist" {
+			t.Errorf("artifact dir %q visible without noise", e.Name)
+		}
+	}
+	if hidden != 2 {
+		t.Errorf("hidden count = %d, want 2", hidden)
+	}
+
+	entries, hidden, err = ws.Tree(".", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	for _, e := range entries {
+		if e.Name == "node_modules" || e.Name == "dist" {
+			seen = append(seen, e.Name)
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("noise tree = %v, want node_modules and dist", seen)
+	}
+	if hidden != 0 {
+		t.Errorf("hidden count with noise = %d, want 0", hidden)
+	}
+}
+
+// TestCreateNestedDirs proves a file can be created inside directories
+// that do not exist yet: the ancestor walk must resolve the deepest
+// existing parent, and the write must create the missing levels.
+func TestCreateNestedDirs(t *testing.T) {
+	ws := newTestWS(t)
+	f, err := ws.Create("a/b/c.js", "console.log(1)")
+	if err != nil {
+		t.Fatalf("create nested: %v", err)
+	}
+	if f.Path != "a/b/c.js" {
+		t.Errorf("path = %q, want a/b/c.js", f.Path)
+	}
+	raw, err := os.ReadFile(filepath.Join(ws.Root(), "a", "b", "c.js"))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(raw) != "console.log(1)" {
+		t.Errorf("content = %q", raw)
+	}
+	// A write into the same nested dir (no base sha, file exists) must be
+	// refused by the optimistic-concurrency rule, not by path resolution.
+	if _, err := ws.Write("a/b/c.js", "x", ""); !errors.Is(err, ErrShaMismatch) {
+		t.Errorf("write without sha = %v, want ErrShaMismatch", err)
+	}
+	// A nested path under a symlink that escapes the root is still refused.
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(ws.Root(), "esc")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Create("esc/nested.txt", "s"); !errors.Is(err, ErrNotInWorkspace) {
+		t.Errorf("symlink escape = %v, want ErrNotInWorkspace", err)
 	}
 }
 

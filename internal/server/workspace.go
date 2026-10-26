@@ -118,12 +118,17 @@ func (s *Server) workspaceTree(w http.ResponseWriter, r *http.Request) {
 		dir = "."
 	}
 	all := r.URL.Query().Get("all") == "1"
-	entries, err := ws.Tree(dir, all)
+	// noise=1 reveals dependency/build artifact directories (node_modules,
+	// dist, …). They stay hidden by default; the Code Studio 👁 toggle asks
+	// for them explicitly. hidden reports how many were left out at this
+	// level so the UI can say so honestly.
+	noise := r.URL.Query().Get("noise") == "1"
+	entries, hidden, err := ws.Tree(dir, all, noise)
 	if err != nil {
 		wsError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"dir": dir, "entries": entries})
+	writeJSON(w, map[string]any{"dir": dir, "entries": entries, "hidden": hidden})
 }
 
 func (s *Server) workspaceFileGet(w http.ResponseWriter, r *http.Request) {
