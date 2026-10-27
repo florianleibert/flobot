@@ -108,6 +108,22 @@ for them explicitly (`?noise=1`); the choice persists in `localStorage`.
 - **Workspace defaults** — the workspace folder is chosen on first launch and remembered;
   it can be re-pointed at any time from the editor header.
 
+## Context surfaces (verified by `verify-context-surfaces`)
+
+Four additions that turn the buffer from a single-textarea surface into an editor you can
+navigate. Audited by `audit/verify-context-surfaces.mjs` (19 checks) and
+`audit/verify-editor-regression.mjs` (7 checks), both against the real server.
+
+| Surface | What it does | Audit ID |
+|---|---|---|
+| **File handles (descriptors)** | Opening a file takes a server-side descriptor (`POST /api/v1/workspace/descriptors`). Reads and saves go through that handle, so the server knows exactly which file is open and refuses a save that would clobber an external change with `409`. | `A1`, `A2`, `F1`, `F2` |
+| **Breadcrumbs** | The path of the open file, one segment per directory. Clicking a directory reveals it in the tree. | `B1`, `B2` |
+| **Symbol outline** | The functions/types/classes of the open file (Go, JS/TS, Python, Rust, shell), listed beside the buffer. Clicking one selects its line. | `C1`–`C4` |
+| **@-mentions** | Typing `@` in the mission prompt opens a file picker; a picked file becomes a chip under the prompt and its path travels with the run, so the teammate starts from the files the user pointed at. | `D1`–`D6`, `R7` |
+
+The descriptor layer is the reason the conflict message exists at all: before it, a save
+was a blind overwrite when the client and the file disagreed about the content.
+
 ## Known gaps (not yet in the UI)
 
 - **No next-fire preview.** A valid schedule can still not be the one you meant
@@ -116,3 +132,12 @@ for them explicitly (`?noise=1`); the choice persists in `localStorage`.
   the trigger, so the routine has to be deleted and recreated. Pause/resume is available.
 - **Diff pane for a run that is still in flight** — the live diff lands only after the run
   finishes; there is no streaming hunk view.
+- **No syntax highlighting in the buffer.** The buffer is a plain `<textarea>`; a real
+  editor core (CodeMirror 6 or Monaco) would bring highlighting, multi-cursor and
+  inlay hints. Research consensus (see `docs/research-visual-editors-a.md`) favours
+  CodeMirror 6 for a bespoke web editor, but it means shipping a JS dependency inside
+  the embedded bundle — a deliberate decision, not an oversight.
+- **No symbol search across the workspace.** The outline covers the open file only; a
+  project-wide "go to symbol" would need an index the server does not keep yet.
+- **No multi-cursor, split editors, or minimap.** The same CodeMirror decision covers
+  these.

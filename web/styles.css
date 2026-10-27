@@ -1141,3 +1141,94 @@ button.mini { padding: 1px 7px; font-size: 10.5px; border-radius: var(--r-sm); }
 .hub-detail-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
 .hub-detail-row code { font-family: var(--font-mono); font-size: 11px; color: var(--muted); word-break: break-all; }
 .hub-detail h4 { margin: var(--sp-3) 0 var(--sp-2); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+
+/* --- editor context surfaces -------------------------------------------------------
+   Breadcrumbs, the symbol outline, referenced-file chips and the @-mention
+   picker. The surface tokens carry a fallback so these rules work in both
+   the current theme (--card/--card-hi) and the Obsidian Deck theme
+   (--surface-2/--surface-3): var(--new, var(--old)) prefers the new token
+   and falls back to the old one. */
+
+.ed-crumbs {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  min-height: 20px; margin-bottom: var(--sp-2);
+  font-family: var(--font-mono); font-size: 11px; color: var(--faint);
+}
+.ed-crumb {
+  background: none; border: none; padding: 1px 4px; border-radius: var(--r-sm);
+  color: var(--muted); font: inherit; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.ed-crumb:hover { background: var(--surface-3, var(--card-hi)); color: var(--fg); }
+.ed-crumb.file { color: var(--acc-2); font-weight: 600; }
+.ed-crumb-sep { color: var(--faint); opacity: .6; }
+
+/* The buffer is a row: text on the left, outline on the right. */
+.ed-buffer { display: flex; gap: var(--sp-2); flex: 1; min-height: 0; }
+.ed-buffer textarea { flex: 1; min-width: 0; min-height: 0; }
+
+.ed-outline {
+  width: 178px; flex: none; overflow: auto;
+  background: var(--surface-2, var(--card));
+  border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  padding: var(--sp-1);
+}
+.ed-outline-item {
+  display: flex; align-items: baseline; gap: 6px; width: 100%;
+  background: none; border: none; text-align: left;
+  padding: 3px 6px; border-radius: var(--r-sm);
+  color: var(--fg-dim); font-family: var(--font-mono); font-size: 11px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.ed-outline-item:hover { background: var(--surface-3, var(--card-hi)); color: var(--fg); }
+.ed-outline-kind {
+  flex: none; font-family: var(--font-ui); font-size: 9px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .06em;
+  color: var(--faint); min-width: 30px;
+}
+.ed-outline-kind.func, .ed-outline-kind.fn { color: var(--acc-2); }
+.ed-outline-kind.type, .ed-outline-kind.class { color: var(--ok); }
+.ed-outline-kind.const { color: var(--warn); }
+.ed-outline-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-outline-note { padding: var(--sp-2); color: var(--faint); font-size: 11px; }
+
+/* Referenced files (from @-mentions) travel with the mission. */
+.ed-ctx { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.ed-ctx-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--surface-2, var(--card));
+  border: 1px solid var(--line-soft); border-radius: var(--r-pill);
+  padding: 2px 4px 2px 8px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim);
+  cursor: pointer;
+}
+.ed-ctx-chip:hover { border-color: var(--line); color: var(--fg); }
+.ed-ctx-x {
+  background: none; border: none; cursor: pointer; padding: 0 4px;
+  color: var(--faint); font-size: 12px; line-height: 1;
+}
+.ed-ctx-x:hover { color: var(--err); }
+
+/* The @-mention picker floats under the mission prompt. */
+.ed-prompt-wrap { position: relative; flex: 3; min-width: 220px; }
+.ed-prompt-wrap #edPrompt { width: 100%; }
+.ed-mention {
+  position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; right: 0;
+  max-height: 240px; overflow: auto;
+  background: var(--surface-3, var(--card-hi));
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  padding: var(--sp-1);
+}
+.ed-mention-item {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%;
+  background: none; border: none; text-align: left; cursor: pointer;
+  padding: 4px 8px; border-radius: var(--r-sm);
+  color: var(--fg-dim); font-family: var(--font-mono); font-size: 11.5px;
+}
+.ed-mention-item:hover { background: var(--acc-soft); color: var(--fg); }
+.ed-mention .ed-ico { color: var(--faint); }
+
+/* The run bar anchors the mention popup. */
+.ed-runbar { position: relative; }
