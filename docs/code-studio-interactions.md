@@ -111,18 +111,33 @@ for them explicitly (`?noise=1`); the choice persists in `localStorage`.
 ## Context surfaces (verified by `verify-context-surfaces`)
 
 Four additions that turn the buffer from a single-textarea surface into an editor you can
-navigate. Audited by `audit/verify-context-surfaces.mjs` (19 checks) and
-`audit/verify-editor-regression.mjs` (7 checks), both against the real server.
+navigate. Audited by `docs/audit/verify-context-surfaces.mjs` (19 checks),
+`docs/audit/verify-editor-regression.mjs` (7 checks) and
+`docs/audit/verify-project-build.mjs` (9 checks), all against the real server.
 
 | Surface | What it does | Audit ID |
 |---|---|---|
 | **File handles (descriptors)** | Opening a file takes a server-side descriptor (`POST /api/v1/workspace/descriptors`). Reads and saves go through that handle, so the server knows exactly which file is open and refuses a save that would clobber an external change with `409`. | `A1`, `A2`, `F1`, `F2` |
-| **Breadcrumbs** | The path of the open file, one segment per directory. Clicking a directory reveals it in the tree. | `B1`, `B2` |
+| **Breadcrumbs** | The path of the open file, one segment per directory. Clicking a directory reveals it in the tree. | `B1`, `B2`, `P2` |
 | **Symbol outline** | The functions/types/classes of the open file (Go, JS/TS, Python, Rust, shell), listed beside the buffer. Clicking one selects its line. | `C1`–`C4` |
-| **@-mentions** | Typing `@` in the mission prompt opens a file picker; a picked file becomes a chip under the prompt and its path travels with the run, so the teammate starts from the files the user pointed at. | `D1`–`D6`, `R7` |
+| **@-mentions** | Typing `@` in the mission prompt opens a file picker; a picked file becomes a chip under the prompt and its path travels with the run, so the teammate starts from the files the user pointed at. | `D1`–`D6`, `R7`, `P3`–`P7` |
 
 The descriptor layer is the reason the conflict message exists at all: before it, a save
 was a blind overwrite when the client and the file disagreed about the content.
+
+`verify-project-build.mjs` is the end-to-end check: it creates a project file, opens it
+through the tree, references it from the mission prompt with `@`, and asserts the
+referenced path travels in the run body (`Referenced files (read these first): …`).
+
+## Research
+
+- `docs/research-visual-editors-a.md` — cycles 1–4: the Codex IDE review surface, the
+  Zed Agent Panel, Cursor/Windsurf/Claude Code, and the VS Code & JetBrains agent diff
+  editors.
+- `docs/research-visual-editors-b.md` — cycles 5–10: visual/vibe-coding editors
+  (Bolt, Onlook, v0, Replit), multi-buffer diff review, navigation chrome, code
+  intelligence, run visualization, and **buffer integrity** — the cycle that decided the
+  descriptor design.
 
 ## Known gaps (not yet in the UI)
 
