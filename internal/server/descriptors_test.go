@@ -144,6 +144,62 @@ func TestDescriptorRouteInvalidID(t *testing.T) {
 	}
 }
 
+func TestDescriptorRouteReleaseAll(t *testing.T) {
+	ts, dir := descriptorWorkspace(t)
+	// Open two handles.
+	for _, name := range []string{"main.go"} {
+		res := postJSONStatus(t, ts, "/api/v1/workspace/descriptors", map[string]any{"path": name})
+		if res.code != 201 {
+			t.Fatalf("open %s: status %d (%s)", name, res.code, res.body)
+		}
+	}
+	// A second file, so the release has something to count.
+	if err := os.WriteFile(filepath.Join(dir, "other.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := postJSONStatus(t, ts, "/api/v1/workspace/descriptors", map[string]any{"path": "other.go"})
+	if res.code != 201 {
+		t.Fatalf("open other: status %d (%s)", res.code, res.body)
+	}
+
+	list := getJSON(t, ts, "/api/v1/workspace/descriptors")
+	descs, _ := list["descriptors"].([]any)
+	if len(descs) != 2 {
+		t.Fatalf("descriptors = %v, want 2", list["descriptors"])
+	}
+
+	// The editor calls this when the tab goes away.
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/workspace/descriptors", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("release all: status %d", resp.StatusCode)
+	}
+	var out map[string]any
+	b, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["ok"] != true {
+		t.Errorf("ok = %v, want true", out["ok"])
+	}
+	if closed, _ := out["closed"].(float64); closed != 2 {
+		t.Errorf("closed = %v, want 2", out["closed"])
+	}
+
+	list = getJSON(t, ts, "/api/v1/workspace/descriptors")
+	descs, _ = list["descriptors"].([]any)
+	if len(descs) != 0 {
+		t.Errorf("descriptors after release = %v, want none", list["descriptors"])
+	}
+}
+
 func TestDescriptorRouteConflictOnExternalChange(t *testing.T) {
 	ts, dir := descriptorWorkspace(t)
 	res := postJSONStatus(t, ts, "/api/v1/workspace/descriptors", map[string]any{"path": "main.go"})

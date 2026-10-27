@@ -28,6 +28,24 @@ func (s *Server) workspaceDescriptors(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"descriptors": ws.Descriptors()})
 }
 
+// workspaceDescriptorReleaseAll closes every open descriptor.
+//
+// A descriptor outlives the browser tab that opened it: the server keeps the
+// handle until the client releases it, and a tab that closes without saying
+// so leaks one. The registry is bounded, so a leak eventually exhausts it and
+// the editor can no longer open a file. The editor calls this on page unload
+// (with keepalive, so it survives the navigation).
+func (s *Server) workspaceDescriptorReleaseAll(w http.ResponseWriter, _ *http.Request) {
+	ws, err := s.workspaceWS()
+	if err != nil {
+		wsError(w, err)
+		return
+	}
+	closed := len(ws.Descriptors())
+	ws.CloseAllDescriptors()
+	writeJSON(w, map[string]any{"ok": true, "closed": closed})
+}
+
 func (s *Server) workspaceDescriptorOpen(w http.ResponseWriter, r *http.Request) {
 	ws, err := s.workspaceWS()
 	if err != nil {

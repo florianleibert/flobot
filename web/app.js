@@ -1,6 +1,6 @@
 /* Code Studio redesign — esbuild bundle of src/*.js, embedded via web/embed.go. Edit flobot-ui-redesign/src and run sync-to-flobot.mjs. */
 (() => {
-  // src/ctx.js
+  // ../../../../flobot-ui-redesign/src/ctx.js
   var $ = (id) => document.getElementById(id);
   var OUTLINE_RULES = {
     go: [
@@ -271,7 +271,7 @@
     };
   }
 
-  // src/editor.js
+  // ../../../../flobot-ui-redesign/src/editor.js
   var $2 = (id) => document.getElementById(id);
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -1259,6 +1259,13 @@
       }
     });
     ctx?.wireMention();
+    window.addEventListener("pagehide", () => {
+      try {
+        fetch("/api/v1/workspace/descriptors", { method: "DELETE", keepalive: true }).catch(() => {
+        });
+      } catch {
+      }
+    });
     document.querySelectorAll(".ed-tab").forEach((t) => t.onclick = () => switchTab(t.dataset.tab));
     $2("edDiff").addEventListener("click", (ev) => {
       const btn = ev.target.closest("button[data-act]");
@@ -1319,7 +1326,7 @@
     initEditor();
   }
 
-  // src/examples.js
+  // ../../../../flobot-ui-redesign/src/examples.js
   var MISSIONS = [
     {
       icon: "\u{1F41B}",
@@ -1470,7 +1477,7 @@ When a release is cut:
     };
   }
 
-  // src/power.js
+  // ../../../../flobot-ui-redesign/src/power.js
   function fuzzy(needle, hay) {
     needle = needle.toLowerCase();
     hay = String(hay).toLowerCase();
@@ -1656,7 +1663,7 @@ When a release is cut:
     requestAnimationFrame(frame);
   }
 
-  // src/telemetry.js
+  // ../../../../flobot-ui-redesign/src/telemetry.js
   var Stats = class {
     constructor() {
       this.t0 = Date.now();
@@ -1819,7 +1826,7 @@ When a release is cut:
     return L.join("\n");
   }
 
-  // src/vibe.js
+  // ../../../../flobot-ui-redesign/src/vibe.js
   function vibe() {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const cv = document.createElement("canvas");
@@ -1873,7 +1880,7 @@ When a release is cut:
     requestAnimationFrame(frame);
   }
 
-  // src/main.js
+  // ../../../../flobot-ui-redesign/src/main.js
   var $3 = (id) => document.getElementById(id);
   var roster = { bots: [], skills: [], routines: [], messages: [], routes: [], runs: [] };
   var activeRun = null;
