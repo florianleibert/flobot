@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/florianleibert/flobot/internal/amesh"
@@ -62,6 +63,7 @@ func cmdServe(args []string) error {
 		return err
 	}
 	opts := []server.Option{}
+	explicit := false
 	if *wsDir == "" {
 		// Precedence: flag > FLOBOT_WORKSPACE > last folder chosen in the
 		// Code panel (persisted by /api/v1/workspace/select) > cwd.
@@ -73,8 +75,23 @@ func cmdServe(args []string) error {
 		} else if recent := server.LatestWorkspace(); recent != "" {
 			*wsDir = recent
 		}
+	} else {
+		explicit = true
 	}
 	if *wsDir != "" {
+		// flocode refuses to start in a temporary, system or .git directory,
+		// and it is spawned with cwd = the workspace. An explicit choice is
+		// refused outright; a restored one (the desktop shell replays the
+		// last folder) must not keep the app from starting, so it falls back
+		// to the default project folder with a warning.
+		if reason := server.WorkspaceRefusalReason(*wsDir); reason != "" {
+			if explicit {
+				return fmt.Errorf("workspace %q cannot be used: %s", *wsDir, reason)
+			}
+			fmt.Fprintf(os.Stderr, "flobot: workspace %q cannot be used (%s); using %s instead\n",
+				*wsDir, reason, defaultWorkspaceDir())
+			*wsDir = defaultWorkspaceDir()
+		}
 		opts = append(opts, server.WithWorkDir(*wsDir))
 	}
 	s := server.New(store.New(), opts...)
@@ -97,6 +114,13 @@ func cmdRun(args []string) error {
 	}
 	if strings.TrimSpace(*prompt) == "" {
 		return fmt.Errorf("--prompt required")
+	}
+	// The child inherits this process's working directory, and flocode
+	// refuses to start in a temporary, system or .git directory.
+	if cwd, err := os.Getwd(); err == nil {
+		if reason := server.WorkspaceRefusalReason(cwd); reason != "" {
+			return fmt.Errorf("cannot run here: %s", reason)
+		}
 	}
 	pin, cfgOverride, err := resolvePin(context.Background(), *route)
 	if err != nil {
@@ -123,6 +147,16 @@ func cmdRun(args []string) error {
 		_ = enc.Encode(ev)
 	})
 	return res.Err
+}
+
+// defaultWorkspaceDir is ~/flobot-workspace: the project folder the desktop
+// shell and the CLI share.
+func defaultWorkspaceDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "."
+	}
+	return filepath.Join(home, "flobot-workspace")
 }
 
 // resolvePin maps a route to a flocode pin, resolving mesh routes against

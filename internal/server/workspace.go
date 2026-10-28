@@ -370,6 +370,13 @@ func (s *Server) workspaceSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"refusing to open / or your home directory as a workspace; pick a project folder"}`, http.StatusBadRequest)
 		return
 	}
+	// flocode refuses to start in a temporary, system or .git directory, and
+	// it is spawned with cwd = the workspace. Refuse here, with a reason,
+	// instead of letting every run die with flocode's safety block.
+	if reason := WorkspaceRefusalReason(abs); reason != "" {
+		http.Error(w, `{"error":"refusing to use that folder as the workspace: `+reason+`"}`, http.StatusBadRequest)
+		return
+	}
 	// Creating the target is only allowed inside ~/flobot-workspace (a new
 	// project subfolder); anywhere else it must already exist.
 	st, err := os.Stat(abs)
