@@ -82,8 +82,10 @@ func TestRunLogsCCPMRunLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := t.TempDir()
+	home := t.TempDir()
 	ex := &Exec{
 		Bin:     bin,
+		Home:    home,
 		Environ: func() []string { return []string{} },
 	}
 	res := ex.Run(context.Background(), Request{
@@ -96,7 +98,8 @@ func TestRunLogsCCPMRunLine(t *testing.T) {
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
-	b, err := os.ReadFile(filepath.Join(ws, "docs", "ccpm-runs.md"))
+	logPath := filepath.Join(home, ".flobot", "ccpm-runs.md")
+	b, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +110,17 @@ func TestRunLogsCCPMRunLine(t *testing.T) {
 	if !strings.Contains(got, "| glm-5.2 | code | ok |") {
 		t.Fatalf("missing run line: %s", got)
 	}
+	// The log must never land in the user's workspace: it would dirty the
+	// tree on every run and show up in the agent's diff as a change the
+	// user never made.
+	if _, statErr := os.Stat(filepath.Join(ws, "docs")); !os.IsNotExist(statErr) {
+		t.Fatalf("the workspace was touched: %v", statErr)
+	}
 	// Second run appends a second line.
 	if res := ex.Run(context.Background(), Request{Prompt: "again", Pin: "qwen-3.8", Intent: "ask", Route: "qwen", Dir: ws}, nil); res.Err != nil {
 		t.Fatal(res.Err)
 	}
-	b, err = os.ReadFile(filepath.Join(ws, "docs", "ccpm-runs.md"))
+	b, err = os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -114,10 +114,14 @@ func TestRunDiffReviewFlow(t *testing.T) {
 			paths[m["path"].(string)] = true
 		}
 	}
-	// a.txt (modified) and new.txt (created) must be present; the
-	// executor's own docs/ccpm-runs.md log may also appear.
+	// a.txt (modified) and new.txt (created) must be present — and nothing
+	// else. flobot's own bookkeeping (the run log) must never appear in the
+	// agent's diff: it would be a change the user never made.
 	if !paths["a.txt"] || !paths["new.txt"] {
 		t.Fatalf("diff paths = %v", paths)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("diff contains files the agent did not touch: %v", paths)
 	}
 	tot, _ := diffBody["totals"].(map[string]any)
 	if tot == nil || tot["files"].(float64) < 2 {

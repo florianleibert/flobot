@@ -149,6 +149,19 @@ func New(st *store.Store, opts ...Option) *Server {
 	for _, o := range opts {
 		o(s)
 	}
+	// The executor writes its run log under the home directory
+	// (~/.flobot/ccpm-runs.md). A server with its own home — a test, a
+	// sandbox — keeps that log inside it instead of in the operator's.
+	if s.exec.Home == "" {
+		s.exec.Home = s.home
+	}
+	if s.exec.Home == "" {
+		// FLOBOT_TEST_STATE is the test-isolated state directory: keep the
+		// run log out of the operator's real ~/.flobot.
+		if ts := os.Getenv("FLOBOT_TEST_STATE"); ts != "" {
+			s.exec.Home = ts
+		}
+	}
 	if s.store == nil {
 		s.store = store.New()
 	}

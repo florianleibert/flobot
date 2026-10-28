@@ -127,7 +127,7 @@ Every claim below was checked against source on 2026-10-22:
 | Event text cap 8 KiB (`clip`) | `store.go:747`, `executor.go:325` | Diffs can **never** travel through run events — confirms the git-snapshot diff source and rules out event-borne patches. |
 | `stopped` map + `cancels` | `server.go:53-57` | Stop semantics already distinguish user-stop from error; diff review must treat a stopped run's partial changes as reviewable. |
 | `executor.Request.Worktree` | `executor.go:121` | Worktree isolation flag already passes through to flocode — a per-run worktree option is a small extension, not new surface. |
-| `docs/ccpm-runs.md` log | `executor.go:459` | A run audit trail already exists in the workspace; run summaries belong beside it, not in state.json. |
+| `~/.flobot/ccpm-runs.md` log | `executor.go:459` | A run audit trail already exists. It now lives in `~/.flobot` beside flobot's other state: it used to be written into the workspace, which dirtied the user's tree on every run and polluted the agent's diff. Run summaries belong beside it, not in state.json. |
 | Electron shell | `desktop/main.js` | `Notification` API available for completion notifications; preload currently exposes **no IPC channels** (UI talks HTTP directly) — notifications need a new preload channel or can be done from the renderer via the Notification API. |
 | `go:embed` asset list | `web/embed.go` | Embeds are **per-file directives** (`index.html`, `app.js`, `styles.css`) — every new JS file needs its own `//go:embed` line and a `<script>` tag in index.html. |
 

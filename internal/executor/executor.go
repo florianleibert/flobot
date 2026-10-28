@@ -247,7 +247,8 @@ func (e *Exec) run(ctx context.Context, req Request, reqEnv []string, emit func(
 	stderr := scrubKey(ring.String(), envVal(cmd.Env, ModelAPIKeyEnv))
 
 	// ccpm run log: one line per finished child. Never includes secrets.
-	logCCPMRun(req.Dir, req.Pin, req.Intent, waitErr)
+	// The log lives in ~/.flobot, never in the user's workspace.
+	e.logCCPMRun(req.Pin, req.Intent, waitErr)
 
 	if ctx.Err() != nil {
 		err := ctx.Err()
@@ -445,8 +446,24 @@ func (r *ringBuf) String() string {
 	return string(r.buf)
 }
 
-// ccpmRunsRel is the run log inside the workspace.
-const ccpmRunsRel = "docs/ccpm-runs.md"
+// ccpmRunsFile is the run log inside ~/.flobot.
+//
+// It used to live in the workspace (docs/ccpm-runs.md). That put flobot's own
+// bookkeeping into the user's repository: it dirtied the tree on every run,
+// and — because the post-run snapshot is taken after the log is written — it
+// showed up in the agent's diff as a change the user never made. The log
+// belongs with flobot's other state, not in the user's project.
+const ccpmRunsFile = "ccpm-runs.md"
+
+const (
+	// ccpmMaxBytes and ccpmMaxLines bound the log: an audit trail is useful
+	// for the recent past, not forever.
+	ccpmMaxBytes = 256 << 10
+	ccpmMaxLines = 500
+	// ccpmHeaderLines is the length of the markdown header (title, blank,
+	// note, blank, table head).
+	ccpmHeaderLines = 5
+)
 
 const ccpmRunsHeader = `# ccpm runs
 
@@ -456,15 +473,19 @@ One line per flocode child. Never contains API keys or tokens.
 | --- | --- | --- | --- |
 `
 
-// logCCPMRun appends one markdown table row to docs/ccpm-runs.md in dir
-// (or the current directory). It never writes API keys, MODEL_API_KEY or
-// LLM_ tokens: only the pin, intent and a sanitized result are recorded.
-func logCCPMRun(dir, pin, intent string, err error) {
-	if dir == "" {
-		dir, _ = os.Getwd()
+// logCCPMRun appends one markdown table row to ~/.flobot/ccpm-runs.md.
+//
+// It never writes API keys, MODEL_API_KEY or LLM_ tokens: only the pin,
+// intent and a sanitized result are recorded. If the home directory cannot
+// be resolved the line is dropped: the log must never fall back to the
+// user's workspace.
+func (e *Exec) logCCPMRun(pin, intent string, runErr error) {
+	home := e.home()
+	if home == "" {
+		return
 	}
 	result := "ok"
-	if err != nil {
+	if runErr != nil {
 		result = "error"
 	}
 	line := fmt.Sprintf("| %s | %s | %s | %s |\n",
@@ -473,21 +494,56 @@ func logCCPMRun(dir, pin, intent string, err error) {
 		sanitizeCell(intent),
 		result,
 	)
-	path := filepath.Join(dir, ccpmRunsRel)
+	dir := filepath.Join(home, ".flobot")
+	path := filepath.Join(dir, ccpmRunsFile)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-		if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
-			return
-		}
-		if wErr := os.WriteFile(path, []byte(ccpmRunsHeader), 0o644); wErr != nil {
+		if wErr := os.WriteFile(path, []byte(ccpmRunsHeader), 0o600); wErr != nil {
 			return
 		}
 	}
-	f, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if openErr != nil {
 		return
 	}
-	defer f.Close()
 	_, _ = f.WriteString(line)
+	_ = f.Close()
+	trimCCPMRuns(path)
+}
+
+// trimCCPMRuns keeps the log bounded: the header plus the newest lines.
+func trimCCPMRuns(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= ccpmMaxBytes {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(raw), "\n")
+	if len(lines) <= ccpmHeaderLines {
+		return
+	}
+	tail := lines[ccpmHeaderLines:]
+	if len(tail) > ccpmMaxLines {
+		tail = tail[len(tail)-ccpmMaxLines:]
+	}
+	kept := append([]string{}, lines[:ccpmHeaderLines]...)
+	kept = append(kept, tail...)
+	out := strings.Join(kept, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+	}
 }
 
 // sanitizeCell keeps a value safe for a markdown table cell: no pipes,
