@@ -22,3 +22,5 @@
 | 2026-10-28T03:05:00Z | A | codex-desktop-prd | MiniMax-M3.1 | ok | PRD v1, 20 research cycles |
 | 2026-10-28T03:12:00Z | B | codex-desktop-epic-tasks | MiniMax-M3.1 | ok | 7 tasks, disjoint files |
 | 2026-10-28T03:20:00Z | C | implement-T-1-symbols | MiniMax-M3.1 | ok | workspace symbol search |
+| 2026-10-28T03:40:00Z | C | implement-T-3-sched | MiniMax-M3.1 | ok | next-fire preview, editable trigger |
+| 2026-10-28T03:52:00Z | C | implement-T-2-durable | MiniMax-M3.1 | ok | threads + review queue store |

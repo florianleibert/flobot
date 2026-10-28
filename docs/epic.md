@@ -5,7 +5,7 @@ in-scope:
 - Review queue: finished runs with a non-empty diff appear automatically, carry a pending-hunk count, and survive a restart.
 - Next-fire preview and editable routine triggers: the schedule card says when it will next fire, and a trigger can be changed without deleting the routine.
 - Workspace-wide symbol search: "go to symbol" across the whole workspace, not just the open file.
-- Durability: threads, queue entries and run summaries persist to a new `~/.flobot/threads.json`, leaving `state.json`'s "never persists runs" contract intact.
+- Durability: threads and review-queue entries persist to a new `~/.flobot/threads.json`, leaving `state.json`'s "never persists runs" contract intact. Run summaries keep their existing home in `~/.flobot/runs.json`.
 non-goals:
 - Shipping a Monaco or CodeMirror editor core. Highlighting, multi-cursor, split views and a minimap are a separate dependency decision, not a task in this epic.
 - Cloud sync, remote workspace sharing, or multi-user collaboration.

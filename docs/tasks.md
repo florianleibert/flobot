@@ -3,13 +3,16 @@
 Epic: [`docs/epic.md`](./epic.md) · PRD: [`docs/prd-codex-desktop-editor.md`](./prd-codex-desktop-editor.md)
 
 Ordering is by dependency. Tasks marked `parallel: true` own disjoint files and may run
-concurrently. **No two tasks edit the same file.**
+concurrently. **No two tasks edit the same file** — with one deliberate exception: the route
+table in `internal/server/server.go` is shared, and each server-side task adds exactly one
+additive line to it. Those lines never touch the same context, so they merge cleanly; every
+other file is owned by exactly one task.
 
 | id | requirement | files owned | depends_on | parallel | status |
 |---|---|---|---|---|---|
 | T-1 | R-EDIT-a | `internal/workspace/symbols.go`, `internal/workspace/symbols_test.go`, `internal/server/symbols.go`, `internal/server/symbols_test.go`, `internal/server/server.go` | none | true | **done** |
-| T-2 | R-DURABLE | `internal/store/threads.go`, `internal/store/threads_test.go` | none | true | pending |
-| T-3 | R-SCHED | `internal/schedule/next.go`, `internal/schedule/next_test.go`, `internal/server/routines.go`, `internal/server/routines_test.go` | none | true | pending |
+| T-2 | R-DURABLE | `internal/store/threads.go`, `internal/store/threads_test.go` | none | true | **done** |
+| T-3 | R-SCHED | `internal/schedule/next.go`, `internal/schedule/next_test.go`, `internal/server/routines.go`, `internal/server/routines_test.go`, `internal/store/store.go` | none | true | **done** |
 | T-4 | R-THREAD | `internal/threads/threads.go`, `internal/threads/threads_test.go`, `internal/server/threads.go`, `internal/server/threads_test.go` | T-2 | false | pending |
 | T-5 | R-QUEUE | `internal/queue/queue.go`, `internal/queue/queue_test.go`, `internal/server/queue.go`, `internal/server/queue_test.go` | T-2 | false | pending |
 | T-6 | R-LIVEDIFF | `internal/server/livediff.go`, `internal/server/livediff_test.go` | T-4 | false | pending |
@@ -33,19 +36,25 @@ files: `internal/store/threads.go`, `internal/store/threads_test.go`
 depends_on: none
 parallel: true
 acceptance: Reads and writes `~/.flobot/threads.json` with 0600 permissions via atomic rename. Persists thread
-records, review-queue entries and run summaries. Corrupted JSON is handled without crashing. The persisted
-bytes never contain `api_key`, `secret`, `llm_` or `"owner"` — enforced by the existing `assertNoLeaks` check
-at write time plus a grep test.
+records and review-queue entries. Corrupted JSON is handled without crashing. The persisted bytes never
+contain `api_key`, `secret`, `llm_` or `"owner"` — enforced by the existing `assertNoLeaks` check at write
+time plus a test that the write is refused when a goal looks like a secret.
+**Run summaries are deliberately not stored here.** They already persist to `~/.flobot/runs.json` through
+`RunStore` (`internal/store/runs.go`); copying them into a second file would create two sources of truth
+for the same data. The PRD was corrected to match.
 
 ## T-3 — next-fire preview and editable triggers (R-SCHED)
 
 files: `internal/schedule/next.go`, `internal/schedule/next_test.go`, `internal/server/routines.go`,
-`internal/server/routines_test.go`
+`internal/server/routines_test.go`, `internal/store/store.go`
 depends_on: none
 parallel: true
-acceptance: `internal/schedule` computes the next fire time for a cron expression, an interval and a manual
-trigger. `PATCH /api/v1/routines/{id}` accepts a new trigger and validates it before storing; an unparseable
-trigger is still refused at write time with the existing 400. The routine card renders the next fire time.
+acceptance: `internal/schedule.NextFire` computes the next fire time for a cron expression, an interval and a
+manual trigger. A cron is anchored to the clock; an interval is anchored to the last fire, and an overdue
+routine reports its next fire from now rather than a time that has already passed. `PATCH
+/api/v1/routines/{id}` accepts a new trigger and/or paused flag, validates the trigger with the same rule the
+create path uses (an unparseable cron is refused at write time with 400 and is not stored), and leaves the
+routine's other fields untouched. The roster now carries each routine's `next_fire`.
 
 ## T-4 — threads with worktree isolation (R-THREAD)
 

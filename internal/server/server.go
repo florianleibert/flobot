@@ -200,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/skills", s.createSkill)
 	mux.HandleFunc("DELETE /api/v1/skills/{id}", s.deleteSkill)
 	mux.HandleFunc("POST /api/v1/routines", s.createRoutine)
+	mux.HandleFunc("PATCH /api/v1/routines/{id}", s.patchRoutine)
 	mux.HandleFunc("POST /api/v1/routines/{id}/test-run", s.testRun)
 	mux.HandleFunc("POST /api/v1/routines/{id}/enable", s.enableRoutine)
 	mux.HandleFunc("POST /api/v1/routines/{id}/pause", s.pauseRoutine)
@@ -424,7 +425,7 @@ func (s *Server) roster(w http.ResponseWriter, _ *http.Request) {
 		"install_free": true,
 		"bots":         s.store.ListBots(Actor),
 		"skills":       s.store.ListSkills(Actor),
-		"routines":     s.store.ListRoutines(Actor),
+		"routines":     routineViews(s.store.ListRoutines(Actor), time.Now()),
 		"messages":     s.store.ListMessages(Actor),
 		"runs":         s.runsWithSummaries(),
 		"routes":       routes.DefaultRoutes(),

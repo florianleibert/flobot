@@ -76,7 +76,10 @@ shows is absent:
 5. **No workspace-wide symbol search.** The outline covers the open file only.
 6. **No syntax highlighting / multi-cursor / split / minimap.** One root cause: the buffer is a
    `<textarea>`.
-7. **Runs and events are in-memory only** — a restart mid-review orphans the review state.
+7. **Threads and the review queue do not exist at all.** Run *summaries* already survive a
+   restart (`~/.flobot/runs.json`, `RunStore`); the run *event stream* is in-memory only. What is
+   missing is any durable record of the threads themselves and of work waiting for review, so a
+   restart mid-review orphans everything.
 
 ---
 
@@ -193,13 +196,21 @@ with no highlighting, no multi-cursor, no split.
 - An empty `q` returns an empty list, not the whole workspace.
 - The search is bounded (file count and bytes per file) and cannot walk outside the workspace root.
 
-### 3.6 R-DURABLE — runs, threads and queue survive a restart
+### 3.6 R-DURABLE — threads and the review queue survive a restart
 
-**Problem.** Runs and events are in-memory only. A restart mid-review orphans everything.
+**Problem.** A restart mid-review orphans everything: there is no durable record of the threads,
+nor of the work waiting for a human decision.
 
-**Requirement.** Persist threads, review-queue entries and run summaries to a new
-`~/.flobot/threads.json` (0600, atomic rename), leaving `state.json`'s "never persists runs"
-contract untouched. Reuse the existing `assertNoLeaks` scrub-check at write time.
+**Requirement.** Persist threads and review-queue entries to a new `~/.flobot/threads.json`
+(0600, atomic rename), leaving `state.json`'s "never persists runs" contract untouched. Reuse
+the existing `assertNoLeaks` scrub-check at write time, so a leak fails the write instead of
+landing on disk.
+
+**Run summaries are deliberately out of this requirement.** They already persist to
+`~/.flobot/runs.json` through `RunStore`, with the same 0600 + atomic-rename + leak-check
+pattern. Copying them into a second file would create two sources of truth for the same data,
+and the copy would be the one that goes stale. (Corrected during implementation — the first
+draft of this PRD had threads.json holding run summaries too.)
 
 **Acceptance.**
 - Threads and queue entries survive an app restart.
@@ -231,7 +242,7 @@ contract untouched. Reuse the existing `assertNoLeaks` scrub-check at write time
 | R-QUEUE | `hub` publish path | `internal/server/queue.go` |
 | R-SCHED | `internal/schedule/cron.go`, `POST /api/v1/routines` (`server.go:202`) | `internal/server/routines.go` (PATCH), `internal/schedule/next.go` |
 | R-EDIT-a | `GET /api/v1/workspace/tree` (`server.go:226`) | `internal/workspace/symbols.go`, `internal/server/symbols.go` |
-| R-DURABLE | `internal/store/state.go` atomic-rename + `assertNoLeaks` | `internal/store/threads.go` |
+| R-DURABLE | `internal/store/state.go` atomic-rename + `assertNoLeaks`; the existing `RunStore` (`internal/store/runs.go`) already persists run summaries to `~/.flobot/runs.json` | `internal/store/threads.go` |
 
 **One deliberate contract change:** threads/queue live in a *new* file, not `state.json`. The
 existing contract ("`state.json` never persists runs") stays true and stays tested.

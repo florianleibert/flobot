@@ -386,6 +386,38 @@ func (s *Store) CreateRoutine(owner, botID, skillID, trigger string) (Routine, e
 	return rt, nil
 }
 
+// UpdateRoutine changes a routine's trigger and/or paused flag. A nil
+// field is left unchanged. The trigger is validated by the caller before
+// it gets here — the store only persists what it is given — so a routine's
+// trigger can be corrected without deleting and recreating it.
+func (s *Store) UpdateRoutine(id, actor string, trigger *string, paused *bool) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok {
+		s.mu.Unlock()
+		return Routine{}, ErrNotFound
+	}
+	if rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	if trigger != nil {
+		t := strings.TrimSpace(*trigger)
+		if t == "" {
+			s.mu.Unlock()
+			return Routine{}, fmt.Errorf("trigger required")
+		}
+		rt.Trigger = t
+	}
+	if paused != nil {
+		rt.Paused = *paused
+	}
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
 // DeleteRoutine removes a routine.
 func (s *Store) DeleteRoutine(id, actor string) error {
 	s.mu.Lock()
