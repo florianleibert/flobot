@@ -1,7 +1,278 @@
 /* Code Studio redesign — esbuild bundle of src/*.js, embedded via web/embed.go. Edit flobot-ui-redesign/src and run sync-to-flobot.mjs. */
 (() => {
-  // src/editor.js
+  // ../../../../flobot-ui-redesign/src/ctx.js
   var $ = (id) => document.getElementById(id);
+  var OUTLINE_RULES = {
+    go: [
+      [/^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/, "func"],
+      [/^\s*type\s+([A-Za-z_]\w*)/, "type"],
+      [/^\s*(?:const|var)\s+([A-Za-z_]\w*)/, "const"]
+    ],
+    js: [
+      [/^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/, "func"],
+      [/^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/, "class"],
+      [/^\s*(?:export\s+)?(?:interface|type|enum)\s+([A-Za-z_$][\w$]*)/, "type"],
+      [/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function\b)/, "fn"]
+    ],
+    py: [
+      [/^\s*def\s+([A-Za-z_]\w*)/, "func"],
+      [/^\s*class\s+([A-Za-z_]\w*)/, "class"]
+    ],
+    rs: [
+      [/^\s*(?:pub\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)/, "func"],
+      [/^\s*(?:pub\s+)?(?:struct|enum|trait|impl)\s+([A-Za-z_]\w*)/, "type"]
+    ],
+    sh: [
+      [/^\s*(?:function\s+)?([A-Za-z_]\w*)\s*\(\)\s*\{/, "func"]
+    ]
+  };
+  var EXT_LANG = {
+    go: "go",
+    js: "js",
+    jsx: "js",
+    mjs: "js",
+    cjs: "js",
+    ts: "js",
+    tsx: "js",
+    py: "py",
+    rs: "rs",
+    sh: "sh",
+    bash: "sh",
+    zsh: "sh"
+  };
+  function langFor(path) {
+    const m = /\.([A-Za-z0-9]+)$/.exec(String(path || ""));
+    if (!m) return null;
+    return EXT_LANG[m[1].toLowerCase()] || null;
+  }
+  function splitPath(path) {
+    return String(path || "").split("/").filter(Boolean);
+  }
+  function createCtx(api2) {
+    const { ed: ed2, edApi: edApi2, safe: safe3, toast: toast3, getQuickIndex, ensureQuickIndex, renderTree: renderTree2, edExpanded: edExpanded2 } = api2;
+    function renderBreadcrumbs(path) {
+      const host = $("edCrumbs");
+      if (!host) return;
+      const segs = splitPath(path);
+      host.replaceChildren();
+      if (!segs.length) return;
+      segs.forEach((seg, i) => {
+        const isLast = i === segs.length - 1;
+        if (i > 0) {
+          const sep = document.createElement("span");
+          sep.className = "ed-crumb-sep";
+          sep.textContent = "/";
+          host.appendChild(sep);
+        }
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ed-crumb" + (isLast ? " file" : " dir");
+        b.textContent = seg;
+        b.title = segs.slice(0, i + 1).join("/");
+        if (isLast) {
+          b.onclick = () => toast3(safe3(segs.join("/")), "");
+        } else {
+          const dir = segs.slice(0, i + 1).join("/");
+          b.onclick = () => {
+            edExpanded2.add(dir);
+            renderTree2();
+          };
+        }
+        host.appendChild(b);
+      });
+    }
+    function gotoLine(lineNo) {
+      const ta = $("edContent");
+      if (!ta) return;
+      const lines = ta.value.split("\n");
+      const idx = Math.max(0, Math.min(lines.length - 1, lineNo - 1));
+      let pos = 0;
+      for (let i = 0; i < idx; i++) pos += lines[i].length + 1;
+      ta.focus();
+      ta.setSelectionRange(pos, pos + lines[idx].length);
+      const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+      ta.scrollTop = Math.max(0, (idx - 4) * lineHeight);
+    }
+    function renderOutline(content, path) {
+      const host = $("edOutline");
+      if (!host) return;
+      host.replaceChildren();
+      const lang = langFor(path);
+      const rules = lang ? OUTLINE_RULES[lang] : null;
+      if (!rules) {
+        const note = document.createElement("div");
+        note.className = "ed-outline-note";
+        note.textContent = lang === null ? "no outline for this file type" : "";
+        host.appendChild(note);
+        return;
+      }
+      const lines = String(content || "").split("\n");
+      const found = [];
+      lines.forEach((line, i) => {
+        for (const [re, kind] of rules) {
+          const m = re.exec(line);
+          if (m) {
+            found.push({ name: m[1], kind, line: i + 1 });
+            break;
+          }
+        }
+      });
+      if (!found.length) {
+        const note = document.createElement("div");
+        note.className = "ed-outline-note";
+        note.textContent = "no symbols found";
+        host.appendChild(note);
+        return;
+      }
+      for (const s of found) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ed-outline-item";
+        b.title = s.kind + " \xB7 line " + s.line;
+        const k = document.createElement("span");
+        k.className = "ed-outline-kind " + s.kind;
+        k.textContent = s.kind;
+        const n = document.createElement("span");
+        n.className = "ed-outline-name";
+        n.textContent = s.name;
+        b.appendChild(k);
+        b.appendChild(n);
+        b.onclick = () => gotoLine(s.line);
+        host.appendChild(b);
+      }
+    }
+    function mentionToken(input) {
+      const upto = input.value.slice(0, input.selectionStart ?? input.value.length);
+      const m = /@([\w./\-*]*)$/.exec(upto);
+      return m ? m[1] : null;
+    }
+    function hideMention() {
+      const pop = $("edMention");
+      if (pop) {
+        pop.hidden = true;
+        pop.replaceChildren();
+      }
+    }
+    async function showMention(term) {
+      const pop = $("edMention");
+      if (!pop) return;
+      const t = String(term || "").toLowerCase();
+      let files = (getQuickIndex() || []).filter((f) => !t || f.path.toLowerCase().includes(t));
+      if (!files.length && ensureQuickIndex) {
+        await ensureQuickIndex();
+        files = (getQuickIndex() || []).filter((f) => !t || f.path.toLowerCase().includes(t));
+      }
+      pop.replaceChildren();
+      if (!files.length) {
+        hideMention();
+        return;
+      }
+      for (const f of files.slice(0, 30)) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "ed-mention-item";
+        const ico = document.createElement("span");
+        ico.className = "ed-ico";
+        ico.textContent = "\u25E6";
+        const label = document.createElement("span");
+        label.textContent = f.path;
+        item.appendChild(ico);
+        item.appendChild(label);
+        item.onclick = () => {
+          applyMention(f.path);
+          hideMention();
+        };
+        pop.appendChild(item);
+      }
+      pop.hidden = false;
+    }
+    function applyMention(path) {
+      const input = $("edPrompt");
+      if (!input) return;
+      const caret = input.selectionStart ?? input.value.length;
+      const before = input.value.slice(0, caret);
+      const after = input.value.slice(caret);
+      const at = before.lastIndexOf("@");
+      if (at < 0) return;
+      const next = before.slice(0, at) + "@" + path + " " + after;
+      input.value = next;
+      const pos = at + path.length + 2;
+      input.setSelectionRange(pos, pos);
+      addContext(path);
+    }
+    function addContext(path) {
+      if (!ed2.ctxPaths.includes(path)) ed2.ctxPaths.push(path);
+      renderContext();
+    }
+    function removeContext(path) {
+      ed2.ctxPaths = ed2.ctxPaths.filter((p) => p !== path);
+      renderContext();
+    }
+    function clearContext() {
+      ed2.ctxPaths = [];
+      renderContext();
+    }
+    function renderContext() {
+      const host = $("edCtx");
+      if (!host) return;
+      host.replaceChildren();
+      host.hidden = ed2.ctxPaths.length === 0;
+      for (const p of ed2.ctxPaths) {
+        const chip = document.createElement("span");
+        chip.className = "ed-ctx-chip";
+        const label = document.createElement("span");
+        label.textContent = p;
+        const x = document.createElement("button");
+        x.type = "button";
+        x.className = "ed-ctx-x";
+        x.textContent = "\xD7";
+        x.title = "remove reference";
+        x.onclick = () => removeContext(p);
+        chip.appendChild(label);
+        chip.appendChild(x);
+        chip.onclick = (ev) => {
+          if (ev.target === x) return;
+          api2.openFile(p);
+        };
+        host.appendChild(chip);
+      }
+    }
+    function contextPaths() {
+      return ed2.ctxPaths.slice();
+    }
+    function wireMention() {
+      const input = $("edPrompt");
+      if (!input) return;
+      input.addEventListener("input", () => {
+        const term = mentionToken(input);
+        if (term === null) hideMention();
+        else showMention(term);
+      });
+      input.addEventListener("blur", () => setTimeout(hideMention, 120));
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape") hideMention();
+      });
+    }
+    function contextBlock() {
+      const paths = contextPaths();
+      if (!paths.length) return "";
+      return "\n\nReferenced files (read these first):\n" + paths.map((p) => "- " + p).join("\n");
+    }
+    return {
+      renderBreadcrumbs,
+      renderOutline,
+      gotoLine,
+      wireMention,
+      contextPaths,
+      contextBlock,
+      clearContext,
+      renderContext,
+      hideMention
+    };
+  }
+
+  // ../../../../flobot-ui-redesign/src/editor.js
+  var $2 = (id) => document.getElementById(id);
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
@@ -26,8 +297,12 @@
     tree: null,
     openPath: null,
     openSha: null,
+    // descId is the server-side file descriptor for the open file.
+    descId: null,
     dirty: false,
     runs: [],
+    // ctxPaths are files referenced from the mission prompt (@-mentions).
+    ctxPaths: [],
     // diff review state
     review: null,
     // { runId, files, totals, checkpoint, reviewState }
@@ -36,6 +311,7 @@
     focus: null
     // [path, hunkIndex]
   };
+  var ctx = null;
   function edApi(method, path, body) {
     const opt = { method, headers: {} };
     if (body !== void 0) {
@@ -44,7 +320,15 @@
     }
     return fetch(path, opt).then(async (r) => {
       const text = await r.text();
-      if (!r.ok) throw new Error(text.trim() || r.statusText);
+      if (!r.ok) {
+        let msg = text.trim() || r.statusText;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && parsed.error) msg = String(parsed.error);
+        } catch {
+        }
+        throw new Error(msg);
+      }
       if (!text) return null;
       try {
         return JSON.parse(text);
@@ -95,31 +379,33 @@
   async function loadTree() {
     try {
       const root = await edApi("GET", "/api/v1/workspace/root");
-      $("edRoot").textContent = safe(root.root || root.name || "");
+      $2("edRoot").textContent = safe(root.root || root.name || "");
     } catch (e) {
-      $("edRoot").textContent = "no workspace";
+      $2("edRoot").textContent = "no workspace";
     }
     await renderTree();
   }
   async function renderTree() {
-    const host = $("edTree");
+    const host = $2("edTree");
     if (!host) return;
     edTreeCount = { files: 0, hidden: 0 };
     const frag = document.createDocumentFragment();
     await renderLevel(frag, ".", 0);
     const note = document.createElement("div");
     note.className = "ed-tree-note";
-    note.textContent = edTreeCount.hidden ? edTreeCount.files + " files \xB7 " + edTreeCount.hidden + " build dirs hidden" : edTreeCount.files + " files";
+    note.textContent = edTreeCount.hidden ? edTreeCount.files + " files \xB7 " + edTreeCount.hidden + " artifact dirs hidden" : edTreeCount.files + " files";
     frag.appendChild(note);
     host.replaceChildren(frag);
-    const t = $("edShowFiles");
+    const t = $2("edShowFiles");
     if (t) t.classList.toggle("on", edShowAll);
   }
   async function renderLevel(host, dir, depth) {
     let entries;
     try {
-      const r = await edApi("GET", "/api/v1/workspace/tree?dir=" + encodeURIComponent(dir));
+      const q = "/api/v1/workspace/tree?dir=" + encodeURIComponent(dir) + (edShowAll ? "&noise=1" : "");
+      const r = await edApi("GET", q);
       entries = r.entries || [];
+      edTreeCount.hidden += Number(r.hidden || 0);
     } catch (e) {
       const div = document.createElement("div");
       div.className = "ed-node err";
@@ -162,33 +448,58 @@
       }
     }
   }
+  async function openDescriptor(path) {
+    const d = await edApi("POST", "/api/v1/workspace/descriptors", { path });
+    return d && d.id ? d.id : null;
+  }
+  async function closeDescriptor(id) {
+    if (!id) return;
+    try {
+      await edApi("DELETE", "/api/v1/workspace/descriptors/" + id);
+    } catch {
+    }
+  }
   async function openFile(path) {
     path = String(path || "").trim();
     if (!path) {
       toast("type a path first", "err");
       return;
     }
+    const prev = ed.descId;
     try {
-      const f = await edApi("GET", "/api/v1/workspace/file?path=" + encodeURIComponent(path));
+      const id = await openDescriptor(path);
+      if (!id) throw new Error("could not open " + path);
+      ed.descId = id;
+      await closeDescriptor(prev);
+      const f = await edApi("GET", "/api/v1/workspace/descriptors/" + id);
       ed.openPath = f.path;
       ed.openSha = f.sha256;
       ed.dirty = false;
-      $("edPath").value = f.path;
-      $("edContent").value = f.content || "";
-      $("edDirty").textContent = "";
+      $2("edPath").value = f.path;
+      $2("edContent").value = f.content || "";
+      $2("edDirty").textContent = "";
       markOpen(f.path);
+      ctx?.renderBreadcrumbs(f.path);
+      ctx?.renderOutline(f.content || "", f.path);
     } catch (e) {
-      if (/not found/.test(e.message)) {
+      ed.descId = null;
+      if (/not found|does not exist/i.test(e.message)) {
         if (confirm(path + " does not exist yet \u2014 create it?")) {
           try {
             const f = await edApi("POST", "/api/v1/workspace/file?path=" + encodeURIComponent(path), { content: "" });
             ed.openPath = f.path;
             ed.openSha = f.sha256;
             ed.dirty = false;
-            $("edPath").value = f.path;
-            $("edContent").value = "";
-            $("edDirty").textContent = "";
+            $2("edPath").value = f.path;
+            $2("edContent").value = "";
+            $2("edDirty").textContent = "";
+            try {
+              ed.descId = await openDescriptor(f.path);
+            } catch {
+            }
             await loadTree();
+            ctx?.renderBreadcrumbs(f.path);
+            ctx?.renderOutline("", f.path);
             toast("created " + f.path, "ok");
           } catch (e2) {
             toast(safe(e2.message), "err");
@@ -201,21 +512,25 @@
   }
   async function saveFile() {
     if (!ed.openPath) {
-      if (!$("edContent").value) {
+      if (!$2("edContent").value) {
         toast("nothing to save", "err");
         return;
       }
-      const path = $("edPath").value.trim();
+      const path = $2("edPath").value.trim();
       if (!path) {
         toast("type a path to save to", "err");
         return;
       }
       try {
-        const f = await edApi("POST", "/api/v1/workspace/file?path=" + encodeURIComponent(path), { content: $("edContent").value });
+        const f = await edApi("POST", "/api/v1/workspace/file?path=" + encodeURIComponent(path), { content: $2("edContent").value });
         ed.openPath = f.path;
         ed.openSha = f.sha256;
         ed.dirty = false;
-        $("edDirty").textContent = "";
+        $2("edDirty").textContent = "";
+        try {
+          ed.descId = await openDescriptor(f.path);
+        } catch {
+        }
         await loadTree();
         toast("created " + f.path, "ok");
       } catch (e) {
@@ -224,25 +539,37 @@
       return;
     }
     try {
-      const f = await edApi("PUT", "/api/v1/workspace/file?path=" + encodeURIComponent(ed.openPath), {
-        content: $("edContent").value,
-        baseSha256: ed.openSha
-      });
+      let f;
+      if (ed.descId) {
+        f = await edApi("PUT", "/api/v1/workspace/descriptors/" + ed.descId, {
+          content: $2("edContent").value
+        });
+      } else {
+        f = await edApi("PUT", "/api/v1/workspace/file?path=" + encodeURIComponent(ed.openPath), {
+          content: $2("edContent").value,
+          baseSha256: ed.openSha
+        });
+      }
       ed.openSha = f.sha256;
       ed.dirty = false;
-      $("edDirty").textContent = "";
+      $2("edDirty").textContent = "";
       toast("saved " + ed.openPath, "ok");
     } catch (e) {
+      const msg = String(e.message || "");
+      if (/changed since read|sha mismatch/i.test(msg)) {
+        toast("this file changed on disk \u2014 reopen it to see the newer version", "err");
+        return;
+      }
       toast(safe(e.message), "err");
     }
   }
   function markOpen(path) {
-    $("edTree").querySelectorAll(".ed-node.file").forEach((n) => n.classList.remove("active"));
-    const el = $("edTree").querySelector(`.ed-node[title="${CSS.escape(path)}"]`);
+    $2("edTree").querySelectorAll(".ed-node.file").forEach((n) => n.classList.remove("active"));
+    const el = $2("edTree").querySelector(`.ed-node[title="${CSS.escape(path)}"]`);
     if (el) el.classList.add("active");
   }
   function renderReviewState() {
-    const el = $("edReviewState");
+    const el = $2("edReviewState");
     if (!el) return;
     const st = ed.review?.reviewState || ed.review?.review_state || "";
     el.textContent = st ? st : "";
@@ -259,9 +586,9 @@
     }
   }
   function renderDiff() {
-    const box = $("edDiff");
+    const box = $2("edDiff");
     const files = ed.review?.files || [];
-    const badge = $("edDiffBadge");
+    const badge = $2("edDiffBadge");
     if (badge) {
       const pending = files.reduce((n, fd) => {
         const sel = ed.sel[fd.path] || { accepted: /* @__PURE__ */ new Set(), rejected: /* @__PURE__ */ new Set() };
@@ -373,7 +700,7 @@
       const withDiff = list.filter((r) => r.diffSummary || r.diff_summary);
       if (!withDiff.length) {
         ed.review = null;
-        $("edDiff").innerHTML = `<p class="tag">no run diff yet \u2014 run a mission, then review its changes here.</p>`;
+        $2("edDiff").innerHTML = `<p class="tag">no run diff yet \u2014 run a mission, then review its changes here.</p>`;
         return;
       }
       const latest = withDiff[0];
@@ -393,7 +720,7 @@
       renderReviewState();
       return d;
     } catch (e) {
-      $("edDiff").innerHTML = `<p class="tag">${safe(e.message)}</p>`;
+      $2("edDiff").innerHTML = `<p class="tag">${safe(e.message)}</p>`;
       return null;
     }
   }
@@ -407,12 +734,12 @@
     return Math.floor(sec / 3600) + "h" + Math.floor(sec % 3600 / 60) + "m";
   }
   async function loadRuns() {
-    const box = $("edRuns");
+    const box = $2("edRuns");
     if (!box) return;
     try {
       const runs = await edApi("GET", "/api/v1/runs");
       const list = (runs.runs || runs || []).slice(0, 30);
-      const badge = $("edRunsBadge");
+      const badge = $2("edRunsBadge");
       if (badge) {
         const pending = list.filter((r) => !r.reviewState || r.reviewState === "pending").length;
         badge.hidden = !pending;
@@ -534,31 +861,31 @@
       }
     }
     edQuickIndex = out;
-    edQuickRoot = $("edRoot") ? $("edRoot").textContent : null;
+    edQuickRoot = $2("edRoot") ? $2("edRoot").textContent : null;
   }
   function invalidateQuickIndex() {
     edQuickIndex = [];
   }
   function openQuick() {
-    const q = $("edQuick");
+    const q = $2("edQuick");
     if (!q) return;
     q.classList.add("open");
     q.setAttribute("aria-hidden", "false");
-    const inp = $("edQuickInput");
+    const inp = $2("edQuickInput");
     inp.value = "";
     renderQuickList("");
     inp.focus();
-    const root = $("edRoot") ? $("edRoot").textContent : null;
+    const root = $2("edRoot") ? $2("edRoot").textContent : null;
     if (edQuickIndex.length === 0 || edQuickRoot !== root) buildQuickIndex().then(() => renderQuickList(inp.value));
   }
   function closeQuick() {
-    const q = $("edQuick");
+    const q = $2("edQuick");
     if (!q) return;
     q.classList.remove("open");
     q.setAttribute("aria-hidden", "true");
   }
   function renderQuickList(q) {
-    const list = $("edQuickList");
+    const list = $2("edQuickList");
     const term = q.trim().toLowerCase();
     const items = edQuickIndex.filter((f) => !term || f.path.toLowerCase().includes(term)).slice(0, 40);
     list.innerHTML = items.map((f) => `<div class="ed-quick-item" data-path="${esc(f.path)}"><span class="ed-ico">\u25E6</span><span>${safe(f.path)}</span></div>`).join("");
@@ -588,49 +915,50 @@
     });
   }
   function setRunStatus(text, cls) {
-    const el = $("edRunStatus");
+    const el = $2("edRunStatus");
     if (!el) return;
     el.textContent = text;
     el.classList.remove("live", "working", "err");
     if (cls) el.classList.add(cls);
-    const dot = $("edLiveDot");
+    const dot = $2("edLiveDot");
     if (dot) dot.hidden = cls !== "live";
   }
   function fillRunBot(bots) {
-    const el = $("edRunBot");
+    const el = $2("edRunBot");
     if (!el) return;
     const cur = el.value;
     const opts = (bots || []).map((b) => `<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.route)})</option>`).join("");
     el.innerHTML = opts ? opts : `<option value="">no teammate deployed</option>`;
     if ([...el.options].some((o) => o.value === cur)) el.value = cur;
-    const runBtn = $("edRunBtn");
+    const runBtn = $2("edRunBtn");
     if (runBtn) runBtn.disabled = !(bots || []).length;
   }
   async function edRun() {
-    const prompt = $("edPrompt").value.trim();
+    const prompt = $2("edPrompt").value.trim();
     if (!prompt) {
       toast("give it a mission first", "err");
       return;
     }
-    const bot = $("edRunBot").value;
+    const bot = $2("edRunBot").value;
     if (!bot) {
       toast("deploy a teammate first", "err");
       return;
     }
+    const fullPrompt = prompt + (ctx?.contextBlock() || "");
     try {
       const run = await edApi("POST", "/api/v1/runs", {
         bot_id: bot,
-        prompt,
+        prompt: fullPrompt,
         intent: "code",
-        yolo: $("edYolo").checked
+        yolo: $2("edYolo").checked
       });
       edRunId = run.id;
       edTouched.length = 0;
       edTouchedDiff.clear();
       renderTouched();
-      $("edStopBtn").disabled = false;
+      $2("edStopBtn").disabled = false;
       setRunStatus("working\u2026", "working");
-      $("edStream").innerHTML = "";
+      $2("edStream").innerHTML = "";
       renderBrief(prompt, run.id);
       switchTab("stream");
       edConnectStream(run.id);
@@ -679,7 +1007,7 @@
     });
   }
   function renderBrief(prompt, runId) {
-    const box = $("edStream");
+    const box = $2("edStream");
     if (!box) return;
     const card = document.createElement("div");
     card.className = "ed-brief";
@@ -699,7 +1027,7 @@
     box.scrollTop = box.scrollHeight;
   }
   function renderResultCard(status, diff) {
-    const box = $("edStream");
+    const box = $2("edStream");
     if (!box) return;
     const card = document.createElement("div");
     card.className = "ed-result " + (status === "done" ? "ok" : "err");
@@ -737,7 +1065,7 @@
       return;
     }
     if (!ev || typeof ev !== "object") return;
-    const box = $("edStream");
+    const box = $2("edStream");
     if (!box) return;
     const kind = ev.kind || "";
     const text = String(ev.text || "");
@@ -773,7 +1101,7 @@
     if (kind === "done" || kind === "run_status") {
       if (/^(done|error|stopped)$/.test(ev.text || "")) {
         setRunStatus(ev.text, ev.text === "done" ? "live" : "err");
-        $("edStopBtn").disabled = true;
+        $2("edStopBtn").disabled = true;
         notifyRunDone(ev.text, edRunId);
         loadLatestDiff().then((d) => {
           renderResultCard(ev.text, d);
@@ -799,16 +1127,25 @@
     } catch {
     }
   }
+  function cpNote(c) {
+    const run = c.runId ? String(c.runId).replace(/^run-/, "").slice(0, 8) : "";
+    const files = Number(c.files || 0);
+    const add = Number(c.additions || 0);
+    const del = Number(c.deletions || 0);
+    if (!files) return run || c.id || "checkpoint";
+    const diff = `+${add} \u2212${del}`;
+    return run ? `run ${run} \xB7 ${files} file${files === 1 ? "" : "s"} \xB7 ${diff}` : `${files} file${files === 1 ? "" : "s"} \xB7 ${diff}`;
+  }
   async function loadCheckpoints() {
-    const box = $("edCheck");
+    const box = $2("edCheck");
     if (!box) return;
     try {
       const list = await edApi("GET", "/api/v1/checkpoints");
-      const cps = list || [];
+      const cps = Array.isArray(list) ? list : list && list.checkpoints || [];
       box.innerHTML = cps.length ? cps.map((c) => `<div class="ed-check-item" data-id="${esc(c.id)}">
           <span class="tag">\u21BA</span>
-          <span class="ck-note">${safe(c.note || c.id)}</span>
-          <span class="ck-time">${safe(c.ts || "")}</span>
+          <span class="ck-note">${safe(c.note || cpNote(c))}</span>
+          <span class="ck-time">${safe(c.ts || c.createdAt || "")}</span>
         </div>`).join("") : `<p class="tag">no checkpoints yet.</p>`;
       box.querySelectorAll(".ed-check-item").forEach((item) => {
         item.onclick = async () => {
@@ -831,10 +1168,10 @@
   }
   async function pickFolder() {
     if (window.flobotDesktop?.pickFolder) return window.flobotDesktop.pickFolder();
-    const bar = $("edFolderBar");
+    const bar = $2("edFolderBar");
     if (bar.hidden) {
       bar.hidden = false;
-      $("edFolderPath").focus();
+      $2("edFolderPath").focus();
       return void 0;
     }
     bar.hidden = true;
@@ -852,22 +1189,39 @@
       ed.openPath = null;
       ed.openSha = null;
       ed.dirty = false;
-      $("edPath").value = "";
-      $("edContent").value = "";
-      $("edDirty").textContent = "";
+      ed.descId = null;
+      $2("edPath").value = "";
+      $2("edContent").value = "";
+      $2("edDirty").textContent = "";
+      ctx?.clearContext();
+      ctx?.renderBreadcrumbs("");
+      ctx?.renderOutline("", "");
       edExpanded.clear();
       invalidateQuickIndex();
-      $("edFolderBar").hidden = true;
+      $2("edFolderBar").hidden = true;
       await loadTree();
     } catch (e) {
       toast("open folder failed: " + e.message, "err");
     }
   }
   function initEditor() {
-    $("edOpen").onclick = () => openFile($("edPath").value.trim());
-    $("edSave").onclick = saveFile;
-    $("edRefresh").onclick = loadTree;
-    $("edShowFiles").onclick = async () => {
+    ctx = createCtx({
+      ed,
+      edApi,
+      safe,
+      toast,
+      openFile,
+      getQuickIndex: () => edQuickIndex,
+      // The quick-open index is built lazily; the mention picker needs it too,
+      // so it asks for a build rather than showing an empty list.
+      ensureQuickIndex: () => edQuickIndex.length ? Promise.resolve(edQuickIndex) : buildQuickIndex().then(() => edQuickIndex),
+      renderTree,
+      edExpanded
+    });
+    $2("edOpen").onclick = () => openFile($2("edPath").value.trim());
+    $2("edSave").onclick = saveFile;
+    $2("edRefresh").onclick = loadTree;
+    $2("edShowFiles").onclick = async () => {
       edShowAll = !edShowAll;
       try {
         localStorage.setItem("edShowAll", edShowAll ? "1" : "0");
@@ -875,36 +1229,45 @@
       }
       await renderTree();
     };
-    $("edFolder").onclick = async () => {
+    $2("edFolder").onclick = async () => {
       const p = await pickFolder();
       if (p) await selectWorkspace(p);
     };
-    $("edFolderGo").onclick = () => selectWorkspace($("edFolderPath").value);
-    $("edFolderPath").addEventListener("keydown", (ev) => {
+    $2("edFolderGo").onclick = () => selectWorkspace($2("edFolderPath").value);
+    $2("edFolderPath").addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") {
         ev.preventDefault();
-        selectWorkspace($("edFolderPath").value);
+        selectWorkspace($2("edFolderPath").value);
       }
       if (ev.key === "Escape") {
-        $("edFolderBar").hidden = true;
+        $2("edFolderBar").hidden = true;
       }
     });
-    $("edContent").addEventListener("input", () => {
+    $2("edContent").addEventListener("input", () => {
       if (!ed.openPath) return;
       ed.dirty = true;
-      $("edDirty").textContent = "\u25CF unsaved";
+      $2("edDirty").textContent = "\u25CF unsaved";
+      ctx?.renderOutline($2("edContent").value, ed.openPath);
     });
-    $("edRunBtn").onclick = edRun;
-    $("edStopBtn").onclick = edStop;
-    $("edRevertBtn").onclick = revertRun;
-    $("edPrompt").addEventListener("keydown", (ev) => {
+    $2("edRunBtn").onclick = edRun;
+    $2("edStopBtn").onclick = edStop;
+    $2("edRevertBtn").onclick = revertRun;
+    $2("edPrompt").addEventListener("keydown", (ev) => {
       if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
         ev.preventDefault();
         edRun();
       }
     });
+    ctx?.wireMention();
+    window.addEventListener("pagehide", () => {
+      try {
+        fetch("/api/v1/workspace/descriptors", { method: "DELETE", keepalive: true }).catch(() => {
+        });
+      } catch {
+      }
+    });
     document.querySelectorAll(".ed-tab").forEach((t) => t.onclick = () => switchTab(t.dataset.tab));
-    $("edDiff").addEventListener("click", (ev) => {
+    $2("edDiff").addEventListener("click", (ev) => {
       const btn = ev.target.closest("button[data-act]");
       if (!btn) return;
       const hunkEl = btn.closest(".ed-hunk");
@@ -915,21 +1278,21 @@
       ed.focus = [fd.path, hi];
       toggleHunk(fd.path, hi, btn.dataset.act === "a");
     });
-    $("edQuickInput").addEventListener("input", (ev) => renderQuickList(ev.target.value));
-    $("edQuickInput").addEventListener("keydown", (ev) => {
+    $2("edQuickInput").addEventListener("input", (ev) => renderQuickList(ev.target.value));
+    $2("edQuickInput").addEventListener("keydown", (ev) => {
       if (ev.key === "Escape") {
         ev.preventDefault();
         closeQuick();
       } else if (ev.key === "Enter") {
         ev.preventDefault();
-        const sel = $("edQuickList").querySelector(".ed-quick-item");
+        const sel = $2("edQuickList").querySelector(".ed-quick-item");
         if (sel) {
           closeQuick();
           openFile(sel.dataset.path);
         }
       }
     });
-    $("edQuickList").addEventListener("click", (ev) => {
+    $2("edQuickList").addEventListener("click", (ev) => {
       const item = ev.target.closest(".ed-quick-item");
       if (!item) return;
       closeQuick();
@@ -948,6 +1311,8 @@
     openQuick: () => window.dispatchEvent(new CustomEvent("code-studio:quick-open")),
     openFile,
     fillRunBot,
+    // gotoLine jumps the buffer to a 1-based line (used by the outline).
+    gotoLine: (n) => ctx?.gotoLine(n),
     refresh: async () => {
       await loadTree();
       await loadLatestDiff();
@@ -961,7 +1326,7 @@
     initEditor();
   }
 
-  // src/examples.js
+  // ../../../../flobot-ui-redesign/src/examples.js
   var MISSIONS = [
     {
       icon: "\u{1F41B}",
@@ -1112,7 +1477,7 @@ When a release is cut:
     };
   }
 
-  // src/power.js
+  // ../../../../flobot-ui-redesign/src/power.js
   function fuzzy(needle, hay) {
     needle = needle.toLowerCase();
     hay = String(hay).toLowerCase();
@@ -1264,7 +1629,7 @@ When a release is cut:
     cv.width = innerWidth;
     cv.height = innerHeight;
     document.body.appendChild(cv);
-    const ctx = cv.getContext("2d");
+    const ctx2 = cv.getContext("2d");
     const colors = ["#6366f1", "#22d3ee", "#4ee6a8", "#e879f9", "#fbbf24"];
     const parts = Array.from({ length: 120 }, () => ({
       x: Math.random() * cv.width,
@@ -1280,17 +1645,17 @@ When a release is cut:
     const t0 = performance.now();
     const frame = (t) => {
       const dt = t - t0;
-      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx2.clearRect(0, 0, cv.width, cv.height);
       for (const p of parts) {
         p.x += p.vx;
         p.y += p.vy;
         p.rot += p.vr;
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.rot);
-        ctx.fillStyle = p.c;
-        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
-        ctx.restore();
+        ctx2.save();
+        ctx2.translate(p.x, p.y);
+        ctx2.rotate(p.rot);
+        ctx2.fillStyle = p.c;
+        ctx2.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx2.restore();
       }
       if (dt < 2200) requestAnimationFrame(frame);
       else cv.remove();
@@ -1298,7 +1663,7 @@ When a release is cut:
     requestAnimationFrame(frame);
   }
 
-  // src/telemetry.js
+  // ../../../../flobot-ui-redesign/src/telemetry.js
   var Stats = class {
     constructor() {
       this.t0 = Date.now();
@@ -1385,17 +1750,17 @@ When a release is cut:
       return this.ctx;
     }
     tone(freq, dur, delay = 0, type = "sine", gain = 0.04) {
-      const ctx = this.ensure();
-      if (!ctx || !this.on) return;
-      const t = ctx.currentTime + delay;
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
+      const ctx2 = this.ensure();
+      if (!ctx2 || !this.on) return;
+      const t = ctx2.currentTime + delay;
+      const o = ctx2.createOscillator();
+      const g = ctx2.createGain();
       o.type = type;
       o.frequency.value = freq;
       g.gain.setValueAtTime(gain, t);
       g.gain.exponentialRampToValueAtTime(1e-4, t + dur);
       o.connect(g);
-      g.connect(ctx.destination);
+      g.connect(ctx2.destination);
       o.start(t);
       o.stop(t + dur);
     }
@@ -1461,13 +1826,13 @@ When a release is cut:
     return L.join("\n");
   }
 
-  // src/vibe.js
+  // ../../../../flobot-ui-redesign/src/vibe.js
   function vibe() {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const cv = document.createElement("canvas");
     cv.className = "starfield";
     document.body.prepend(cv);
-    const ctx = cv.getContext("2d");
+    const ctx2 = cv.getContext("2d");
     let W, H, stars = [];
     const resize = () => {
       W = cv.width = innerWidth;
@@ -1496,7 +1861,7 @@ When a release is cut:
       if (document.hidden) return;
       if (t - last < 40) return;
       last = t;
-      ctx.clearRect(0, 0, W, H);
+      ctx2.clearRect(0, 0, W, H);
       for (const s of stars) {
         s.y += s.vy;
         s.tw += 0.04;
@@ -1505,18 +1870,18 @@ When a release is cut:
           s.x = Math.random() * W;
         }
         const a = 0.25 + 0.55 * Math.abs(Math.sin(s.tw));
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, s.r, 0, 7);
-        ctx.fillStyle = `rgba(165,180,252,${a})`;
-        ctx.fill();
+        ctx2.beginPath();
+        ctx2.arc(s.x, s.y, s.r, 0, 7);
+        ctx2.fillStyle = `rgba(165,180,252,${a})`;
+        ctx2.fill();
       }
       glow.style.transform = `translate(${mx - 260}px, ${my - 260}px)`;
     };
     requestAnimationFrame(frame);
   }
 
-  // src/main.js
-  var $2 = (id) => document.getElementById(id);
+  // ../../../../flobot-ui-redesign/src/main.js
+  var $3 = (id) => document.getElementById(id);
   var roster = { bots: [], skills: [], routines: [], messages: [], routes: [], runs: [] };
   var activeRun = null;
   var pollTimer = null;
@@ -1551,7 +1916,7 @@ When a release is cut:
     const t = document.createElement("div");
     t.className = "toast" + (cls ? " " + cls : "");
     t.textContent = msg;
-    $2("toasts").appendChild(t);
+    $3("toasts").appendChild(t);
     setTimeout(() => {
       t.style.opacity = "0";
       t.style.transition = "opacity .3s";
@@ -1590,13 +1955,13 @@ When a release is cut:
     el.innerHTML = opts + meshOpts;
     if ([...el.options].some((o) => o.value === cur)) el.value = cur;
   }
-  var nav = $2("nav");
+  var nav = $3("nav");
   nav.querySelectorAll("button[data-panel]").forEach((btn) => {
     btn.onclick = () => {
       nav.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       document.querySelectorAll(".panel").forEach((p2) => p2.classList.remove("active"));
-      const p = $2("panel-" + btn.dataset.panel);
+      const p = $3("panel-" + btn.dataset.panel);
       if (p) p.classList.add("active");
     };
   });
@@ -1619,15 +1984,15 @@ When a release is cut:
     return `<li class="empty"><span class="ico">${icon}</span>${esc3(text)}</li>`;
   }
   function render() {
-    $2("navBots").textContent = roster.bots.length;
-    $2("navRuns").textContent = (roster.runs || []).length;
-    $2("navRtn").textContent = roster.routines.length;
-    $2("navSkills").textContent = roster.skills.length;
-    $2("statBots").textContent = roster.bots.length;
-    $2("statRoutines").textContent = roster.routines.length;
-    $2("statRuns").textContent = (roster.runs || []).length;
-    $2("statMesh").textContent = meshModels.length;
-    $2("bots").innerHTML = roster.bots.map(
+    $3("navBots").textContent = roster.bots.length;
+    $3("navRuns").textContent = (roster.runs || []).length;
+    $3("navRtn").textContent = roster.routines.length;
+    $3("navSkills").textContent = roster.skills.length;
+    $3("statBots").textContent = roster.bots.length;
+    $3("statRoutines").textContent = roster.routines.length;
+    $3("statRuns").textContent = (roster.runs || []).length;
+    $3("statMesh").textContent = meshModels.length;
+    $3("bots").innerHTML = roster.bots.map(
       (b) => `<li>${avatar(b.name)}
       <div class="body">
         <div class="title">${esc3(b.name)} <span class="chip acc">${esc3(b.role)}</span></div>
@@ -1635,29 +2000,29 @@ When a release is cut:
       </div>
       <div class="actions">${presenceHTML(b)}<span class="tag">${esc3(b.id)}</span></div></li>`
     ).join("") || empty("\u25CD", "No teammates yet \u2014 deploy one above.");
-    fillSelect($2("runBot"), roster.bots, (b) => `${b.name} (${b.route})`);
+    fillSelect($3("runBot"), roster.bots, (b) => `${b.name} (${b.route})`);
     window.codeStudio?.fillRunBot?.(roster.bots);
-    fillSelect($2("rtnBot"), roster.bots, (b) => b.name);
-    fillSelect($2("fromBot"), roster.bots, (b) => b.name);
-    fillSelect($2("toBot"), roster.bots, (b) => b.name);
-    fillSelect($2("rtnSkill"), roster.skills, (s) => s.name);
-    fillSelect($2("memBot"), roster.bots, (b) => b.name);
-    fillRouteSelect($2("botRoute"), meshModels);
-    $2("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
+    fillSelect($3("rtnBot"), roster.bots, (b) => b.name);
+    fillSelect($3("fromBot"), roster.bots, (b) => b.name);
+    fillSelect($3("toBot"), roster.bots, (b) => b.name);
+    fillSelect($3("rtnSkill"), roster.skills, (s) => s.name);
+    fillSelect($3("memBot"), roster.bots, (b) => b.name);
+    fillRouteSelect($3("botRoute"), meshModels);
+    $3("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
     const botName = {};
     for (const b of roster.bots) botName[b.id] = b.name;
-    $2("msgs").innerHTML = (roster.messages || []).map(
+    $3("msgs").innerHTML = (roster.messages || []).map(
       (m) => `<li>${avatar(m.from)}
       <div class="body">
         <div class="title">${esc3(botName[m.from] || m.from)} \u2192 ${esc3(botName[m.to] || m.to)} <span class="tag">owner ${esc3(botName[m.owner_bot] || m.owner_bot)}</span></div>
         <div class="clip">${safe2(m.body)}</div>
       </div></li>`
     ).join("") || empty("\u21C4", "No handoffs yet.");
-    $2("skills").innerHTML = roster.skills.map(
+    $3("skills").innerHTML = roster.skills.map(
       (s) => `<li><span class="avatar" style="background:var(--grad)">\u2726</span>
       <div class="body"><div class="title">${esc3(s.name)}</div><div class="clip">${esc3(s.id)}</div></div></li>`
     ).join("") || empty("\u2726", "The library is empty \u2014 write a playbook above.");
-    $2("routines").innerHTML = roster.routines.map((rt) => {
+    $3("routines").innerHTML = roster.routines.map((rt) => {
       const state = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
       return `<li><span class="avatar" style="background:var(--grad)">\u21BB</span>
       <div class="body">
@@ -1667,11 +2032,13 @@ When a release is cut:
       <div class="actions">
         <button class="ghost" data-test="${esc3(rt.id)}">test-run</button>
         <button class="ghost" data-en="${esc3(rt.id)}">enable</button>
+        <button class="ghost" data-pause="${esc3(rt.id)}" data-paused="${rt.paused ? "0" : "1"}">${rt.paused ? "resume" : "pause"}</button>
       </div></li>`;
     }).join("") || empty("\u21BB", "Nothing on the clock \u2014 arm a routine above.");
-    $2("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
-    $2("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
-    const tb = $2("routes").querySelector("tbody");
+    $3("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
+    $3("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
+    $3("routines").querySelectorAll("[data-pause]").forEach((btn) => btn.onclick = () => pauseRtn(btn.dataset.pause, btn.dataset.paused === "1"));
+    const tb = $3("routes").querySelector("tbody");
     tb.innerHTML = (roster.routes || []).map(
       (r) => `<tr><td>${esc3(r.id)}</td><td>${esc3(r.role)}</td><td>${esc3(r.model)}</td><td class="tag">${esc3(r.purpose)}</td></tr>`
     ).join("");
@@ -1680,7 +2047,7 @@ When a release is cut:
       const d = new Date(ts);
       return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     };
-    $2("runHistory").innerHTML = (roster.runs || []).slice(0, 20).map((r) => {
+    $3("runHistory").innerHTML = (roster.runs || []).slice(0, 20).map((r) => {
       const chip = r.status === "done" ? "ok" : r.status === "running" ? "acc" : "err";
       return `<li>
       <div class="body">
@@ -1688,7 +2055,7 @@ When a release is cut:
         <div class="clip">${esc3(botName[r.bot_id] || r.bot_id || "\u2014")} \xB7 ${esc3(r.intent)}${r.error ? " \xB7 " + esc3(r.error) : ""}</div>
       </div></li>`;
     }).join("") || empty("\u25B6", "Nothing has run yet. Give it a mission.");
-    $2("runHistory").querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
+    $3("runHistory").querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
       clearLog();
       stopPoll();
       activeRun = null;
@@ -1705,12 +2072,12 @@ When a release is cut:
     try {
       const res = await api("GET", "/api/v1/mesh/models");
       meshModels = res.ok ? res.models || [] : [];
-      $2("meshCount").textContent = res.ok ? `${meshModels.length} ready` : `unavailable (${res.reason || "amesh-web unreachable"})`;
+      $3("meshCount").textContent = res.ok ? `${meshModels.length} ready` : `unavailable (${res.reason || "amesh-web unreachable"})`;
     } catch (e) {
       meshModels = [];
-      $2("meshCount").textContent = `unavailable (${e.message})`;
+      $3("meshCount").textContent = `unavailable (${e.message})`;
     }
-    $2("meshModels").innerHTML = meshModels.map(
+    $3("meshModels").innerHTML = meshModels.map(
       (m) => `<li><span class="avatar" style="background:var(--grad)">\u25C8</span>
       <div class="body">
         <div class="title">${esc3(m.route)}</div>
@@ -1721,11 +2088,11 @@ When a release is cut:
   }
   var hubData = { hubs: [], models: [] };
   async function loadHubs() {
-    const statusEl = $2("hubsStatus");
-    const listEl = $2("hubList");
-    const modelsEl = $2("hubModels");
-    const countEl = $2("modelCount");
-    const navEl = $2("navHubs");
+    const statusEl = $3("hubsStatus");
+    const listEl = $3("hubList");
+    const modelsEl = $3("hubModels");
+    const countEl = $3("modelCount");
+    const navEl = $3("navHubs");
     try {
       const res = await api("GET", "/api/v1/hubs");
       hubData.hubs = res.hubs || [];
@@ -1762,8 +2129,7 @@ When a release is cut:
         const backend = m.backend ? `<span class="tag">${esc3(m.backend)}</span>` : "";
         const shared = m.shared ? `<span class="chip acc" title="shared on the mesh">\u25C8 shared</span>` : "";
         const routes = m.route_count > 0 ? `<span class="tag">${m.route_count} route${m.route_count === 1 ? "" : "s"}</span>` : "";
-        const startBtn = m.state !== "ready"
-          ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="warm ${esc3(m.display)}">\u25B6 start</button>` : "";
+        const startBtn = m.state !== "ready" ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="warm ${esc3(m.display)}">\u25B6 start</button>` : "";
         return `<div class="hub-model" data-state="${esc3(m.state)}">
         <div class="hub-model-name">${esc3(m.display || m.id)}</div>
         <div class="hub-model-meta">${loc}${st}${backend}${shared}${routes}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>
@@ -1776,21 +2142,27 @@ When a release is cut:
     }
   }
   async function startModel(id, btn) {
-    if (btn) { btn.disabled = true; btn.textContent = "starting\u2026"; }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "starting\u2026";
+    }
     const row = btn && btn.closest(".hub-model");
     if (row) row.dataset.state = "starting";
     try {
       await api("POST", "/api/v1/models/" + encodeURIComponent(id) + "/start");
       toast2("start accepted \u2014 model warming up", "ok");
-      setTimeout(() => loadHubs(), 4000);
+      setTimeout(() => loadHubs(), 4e3);
     } catch (e) {
-      toast2(safe(e.message), "err");
-      if (btn) { btn.disabled = false; btn.textContent = "\u25B6 start"; }
+      toast2(safe2(e.message), "err");
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "\u25B6 start";
+      }
       if (row) row.dataset.state = "stopped";
     }
   }
   async function runDoctor() {
-    const bar = $2("hubDoctor");
+    const bar = $3("hubDoctor");
     if (!bar) return;
     bar.hidden = false;
     bar.innerHTML = `<span class="tag">running amesh doctor\u2026</span>`;
@@ -1807,41 +2179,41 @@ When a release is cut:
         <span class="tag">${err} err</span>
         <span class="tag">default hub ${esc3(d.default_hub || "\u2014")}</span>
       </div>
-      <div class="hub-doctor-checks">${checks.map((c) =>
-        `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`
+      <div class="hub-doctor-checks">${checks.map(
+        (c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`
       ).join("") || `<span class="tag">no checks</span>`}</div>`;
     } catch (e) {
-      bar.innerHTML = `<span class="tag err">doctor failed: ${safe(e.message)}</span>`;
+      bar.innerHTML = `<span class="tag err">doctor failed: ${safe2(e.message)}</span>`;
     }
   }
   async function openHubDetail(name) {
-    const el = $2("hubDetail");
+    const el = $3("hubDetail");
     if (!el) return;
     el.hidden = false;
-    $2("hubDetailName").textContent = name;
-    $2("hubDetailBody").innerHTML = `<span class="tag">inspecting ${esc3(name)}\u2026</span>`;
+    $3("hubDetailName").textContent = name;
+    $3("hubDetailBody").innerHTML = `<span class="tag">inspecting ${esc3(name)}\u2026</span>`;
     try {
       const d = await api("GET", "/api/v1/hubs/" + encodeURIComponent(name));
       const h = d.hub || {};
       const checks = d.checks || [];
       const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
       const def = h.default ? `<span class="chip acc">default</span>` : "";
-      $2("hubDetailBody").innerHTML = `
-        <div class="hub-detail-row"><span class="tag">url</span><code>${esc3(h.url || "")}</code></div>
-        ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc3(h.controller_url)}</code></div>` : ""}
-        ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc3(h.fingerprint)}</code></div>` : ""}
-        ${h.wg_status && h.wg_status.ip ? `<div class="hub-detail-row"><span class="tag">wg ip</span><code>${esc3(h.wg_status.ip)}</code></div>` : ""}
-        <div class="hub-detail-row"><span class="tag">status</span>${wg}${def}</div>
-        <h4>Health checks</h4>
-        ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
-      `;
+      $3("hubDetailBody").innerHTML = `
+      <div class="hub-detail-row"><span class="tag">url</span><code>${esc3(h.url || "")}</code></div>
+      ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc3(h.controller_url)}</code></div>` : ""}
+      ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc3(h.fingerprint)}</code></div>` : ""}
+      ${h.wg_status && h.wg_status.ip ? `<div class="hub-detail-row"><span class="tag">wg ip</span><code>${esc3(h.wg_status.ip)}</code></div>` : ""}
+      <div class="hub-detail-row"><span class="tag">status</span>${wg}${def}</div>
+      <h4>Health checks</h4>
+      ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
+    `;
     } catch (e) {
-      $2("hubDetailBody").innerHTML = `<span class="tag err">${safe(e.message)}</span>`;
+      $3("hubDetailBody").innerHTML = `<span class="tag err">${safe2(e.message)}</span>`;
     }
   }
   var openTools = /* @__PURE__ */ new Map();
   function logEl() {
-    return $2("log");
+    return $3("log");
   }
   function appendEvent(e) {
     const log = logEl();
@@ -2037,7 +2409,7 @@ When a release is cut:
     evCount = 0;
     updateStats();
     planSteps = null;
-    $2("timeline").hidden = true;
+    $3("timeline").hidden = true;
   }
   function startElapsed() {
     runStart = Date.now();
@@ -2045,7 +2417,7 @@ When a release is cut:
     const tick = () => {
       if (!runStart) return;
       const s = Math.floor((Date.now() - runStart) / 1e3);
-      const el = $2("elapsed");
+      const el = $3("elapsed");
       if (el) el.textContent = s < 60 ? s + "s" : Math.floor(s / 60) + "m " + s % 60 + "s";
     };
     tick();
@@ -2123,8 +2495,8 @@ When a release is cut:
     });
   }
   function setStreamState(state) {
-    const el = $2("streamState");
-    const pill = $2("streamPill");
+    const el = $3("streamState");
+    const pill = $3("streamPill");
     if (el) el.textContent = state;
     if (pill) {
       pill.classList.remove("live", "reconnecting");
@@ -2168,41 +2540,41 @@ When a release is cut:
     }
   }
   function renderMissions() {
-    $2("missionGrid").innerHTML = MISSIONS.map((m, i) => `<button type="button" class="mission" data-mission="${i}">
+    $3("missionGrid").innerHTML = MISSIONS.map((m, i) => `<button type="button" class="mission" data-mission="${i}">
        <span class="m-ico">${m.icon}</span>
        <span class="m-title">${esc3(m.title)}</span>
        <span class="m-desc">${esc3(m.prompt)}</span>
      </button>`).join("");
-    $2("missionGrid").querySelectorAll("[data-mission]").forEach((btn) => {
+    $3("missionGrid").querySelectorAll("[data-mission]").forEach((btn) => {
       btn.onclick = () => {
         const m = MISSIONS[+btn.dataset.mission];
-        $2("prompt").value = m.prompt;
-        $2("intent").value = m.intent;
-        $2("prompt").focus();
+        $3("prompt").value = m.prompt;
+        $3("intent").value = m.intent;
+        $3("prompt").focus();
         toast2(`mission loaded: ${m.title}`, "ok");
       };
     });
   }
   function renderSkillTemplates() {
-    $2("skillTemplates").innerHTML = SKILL_TEMPLATES.map((t, i) => `<button type="button" class="mission" data-tpl="${i}">
+    $3("skillTemplates").innerHTML = SKILL_TEMPLATES.map((t, i) => `<button type="button" class="mission" data-tpl="${i}">
        <span class="m-ico">\u2726</span>
        <span class="m-title">${esc3(t.name)}</span>
        <span class="m-desc">${esc3(t.body.split("\n").slice(1).join(" ").trim().slice(0, 120))}\u2026</span>
      </button>`).join("");
-    $2("skillTemplates").querySelectorAll("[data-tpl]").forEach((btn) => {
+    $3("skillTemplates").querySelectorAll("[data-tpl]").forEach((btn) => {
       btn.onclick = () => {
         const t = SKILL_TEMPLATES[+btn.dataset.tpl];
-        $2("skillName").value = t.name;
-        $2("skillBody").value = t.body;
+        $3("skillName").value = t.name;
+        $3("skillBody").value = t.body;
         toast2(`template loaded: ${t.name}`, "ok");
       };
     });
   }
   function renderRtnTriggers() {
-    $2("rtnTriggers").innerHTML = ROUTINE_TRIGGERS.map((t) => `<button type="button" class="chip ghost-chip" data-trig="${esc3(t.value)}">${esc3(t.label)}</button>`).join("");
-    $2("rtnTriggers").querySelectorAll("[data-trig]").forEach((btn) => {
+    $3("rtnTriggers").innerHTML = ROUTINE_TRIGGERS.map((t) => `<button type="button" class="chip ghost-chip" data-trig="${esc3(t.value)}">${esc3(t.label)}</button>`).join("");
+    $3("rtnTriggers").querySelectorAll("[data-trig]").forEach((btn) => {
       btn.onclick = () => {
-        $2("rtnTrigger").value = btn.dataset.trig;
+        $3("rtnTrigger").value = btn.dataset.trig;
       };
     });
   }
@@ -2214,15 +2586,15 @@ When a release is cut:
     return t.content.firstElementChild;
   }
   setInterval(() => {
-    $2("tsEpm").textContent = stats.perMin();
-    $2("tsTools").textContent = stats.tools();
-    $2("tsErrs").textContent = stats.errs();
-    $2("tsTotal").textContent = stats.total();
+    $3("tsEpm").textContent = stats.perMin();
+    $3("tsTools").textContent = stats.tools();
+    $3("tsErrs").textContent = stats.errs();
+    $3("tsTotal").textContent = stats.total();
   }, 1e3);
   function renderTimeline() {
     const events = [...logEl().querySelectorAll(".ev")].map((r) => ({ kind: r.dataset.kind }));
     const segs = timeline(events);
-    const tl = $2("timeline");
+    const tl = $3("timeline");
     if (!segs.length) {
       tl.hidden = true;
       return;
@@ -2230,13 +2602,13 @@ When a release is cut:
     tl.hidden = false;
     tl.innerHTML = segs.map((s) => `<div class="tl-seg tl-${s.p}" style="flex:${Math.max(s.frac * 100, 4)}" title="${Math.round(s.frac * 100)}% ${s.p}"></div>`).join("");
   }
-  $2("sfxToggle").onclick = () => {
+  $3("sfxToggle").onclick = () => {
     sfx.on = !sfx.on;
-    $2("sfxToggle").textContent = sfx.on ? "\u266A on" : "\u266A off";
-    $2("sfxToggle").classList.toggle("sel", sfx.on);
+    $3("sfxToggle").textContent = sfx.on ? "\u266A on" : "\u266A off";
+    $3("sfxToggle").classList.toggle("sel", sfx.on);
     if (sfx.on) sfx.tick();
   };
-  $2("shareRun").onclick = async () => {
+  $3("shareRun").onclick = async () => {
     const events = [...logEl().querySelectorAll(".ev")].map((r) => {
       const ev = { kind: r.dataset.kind };
       const k = r.querySelector(".k");
@@ -2276,27 +2648,27 @@ When a release is cut:
   function updateStats() {
     const log = logEl();
     const visible = [...log.querySelectorAll(".ev")].filter((r) => r.style.display !== "none").length;
-    $2("logStats").textContent = `${visible} events`;
+    $3("logStats").textContent = `${visible} events`;
   }
-  $2("logFilters").querySelectorAll("[data-f]").forEach((btn) => {
+  $3("logFilters").querySelectorAll("[data-f]").forEach((btn) => {
     btn.onclick = () => {
-      $2("logFilters").querySelectorAll("[data-f]").forEach((b) => b.classList.remove("sel"));
+      $3("logFilters").querySelectorAll("[data-f]").forEach((b) => b.classList.remove("sel"));
       btn.classList.add("sel");
       logFilter = btn.dataset.f;
       applyFilter();
     };
   });
-  $2("tsToggle").onclick = () => {
+  $3("tsToggle").onclick = () => {
     showTs = !showTs;
-    $2("tsToggle").classList.toggle("sel", showTs);
+    $3("tsToggle").classList.toggle("sel", showTs);
     applyFilter();
   };
-  $2("autoScroll").onclick = () => {
+  $3("autoScroll").onclick = () => {
     autoScroll = !autoScroll;
-    $2("autoScroll").classList.toggle("sel", autoScroll);
+    $3("autoScroll").classList.toggle("sel", autoScroll);
     if (autoScroll) logEl().scrollTop = logEl().scrollHeight;
   };
-  $2("copyLog").onclick = async () => {
+  $3("copyLog").onclick = async () => {
     const lines = [...logEl().querySelectorAll(".ev")].map((r) => r.textContent.trim()).join("\n");
     try {
       await navigator.clipboard.writeText(lines);
@@ -2316,7 +2688,7 @@ When a release is cut:
   }
   function renderSpark() {
     const runs = roster.runs || [];
-    $2("sparkCard").hidden = runs.length === 0;
+    $3("sparkCard").hidden = runs.length === 0;
     if (!runs.length) return;
     const now = Date.now();
     const buckets = new Array(24).fill(0);
@@ -2327,17 +2699,17 @@ When a release is cut:
       if (h >= 0 && h < 24) buckets[23 - h]++;
     }
     const max = Math.max(...buckets, 1);
-    $2("spark").innerHTML = buckets.map((n, i) => `<div class="spark-col" title="${n} run${n === 1 ? "" : "s"}">
+    $3("spark").innerHTML = buckets.map((n, i) => `<div class="spark-col" title="${n} run${n === 1 ? "" : "s"}">
        <div class="spark-bar" style="height:${Math.max(4, n / max * 100)}%"></div>
        <div class="spark-lbl">${i === 23 ? "now" : i === 0 ? "-24h" : ""}</div>
      </div>`).join("");
   }
   function renderHero() {
     const empty2 = roster.bots.length === 0;
-    $2("heroCard").hidden = !empty2;
+    $3("heroCard").hidden = !empty2;
     if (!empty2) return;
-    $2("heroDeploy").onclick = () => gotoPanel("bots");
-    $2("heroDemo").onclick = playDemoRun;
+    $3("heroDeploy").onclick = () => gotoPanel("bots");
+    $3("heroDemo").onclick = playDemoRun;
   }
   var palette = null;
   function paletteCommands() {
@@ -2357,25 +2729,25 @@ When a release is cut:
       { label: "Watch a demo run", icon: "\u25B6", hint: "demo", run: playDemoRun },
       { label: "Run the pulse check", icon: "\u2665", hint: "health", run: () => {
         gotoPanel("health");
-        $2("probeBtn").click();
+        $3("probeBtn").click();
       } },
-      { label: "Copy the console", icon: "\u29C9", hint: "log", run: () => $2("copyLog").click() }
+      { label: "Copy the console", icon: "\u29C9", hint: "log", run: () => $3("copyLog").click() }
     ];
     for (const m of MISSIONS) {
       cmds.push({ label: `Mission: ${m.title}`, icon: m.icon, hint: m.intent, run: () => {
         gotoPanel("run");
-        $2("prompt").value = m.prompt;
-        $2("intent").value = m.intent;
-        $2("prompt").focus();
+        $3("prompt").value = m.prompt;
+        $3("intent").value = m.intent;
+        $3("prompt").focus();
         toast2(`mission loaded: ${m.title}`, "ok");
       } });
     }
     for (const b of roster.bots) {
       cmds.push({ label: `Run with ${b.name}`, icon: "\u25B6", hint: b.role, run: () => {
         gotoPanel("run");
-        fillSelect($2("runBot"), roster.bots, (x) => `${x.name} (${x.route})`);
-        $2("runBot").value = b.id;
-        $2("prompt").focus();
+        fillSelect($3("runBot"), roster.bots, (x) => `${x.name} (${x.route})`);
+        $3("runBot").value = b.id;
+        $3("prompt").focus();
       } });
     }
     for (const s of roster.skills) {
@@ -2430,7 +2802,7 @@ When a release is cut:
     stopStream();
     clearLog();
     gotoPanel("run");
-    $2("runWho").textContent = "demo \xB7 scripted replay";
+    $3("runWho").textContent = "demo \xB7 scripted replay";
     startElapsed();
     demoCancel = playDemo(appendEvent, () => {
       demoCancel = null;
@@ -2439,23 +2811,23 @@ When a release is cut:
       startStream(null);
     });
   }
-  $2("demoBtn").onclick = playDemoRun;
+  $3("demoBtn").onclick = playDemoRun;
   function require2(id, msg) {
-    const el = $2(id);
+    const el = $3(id);
     const v = String(el ? el.value : "").trim();
     if (!v) throw new Error(msg);
     return v;
   }
   function markField(id) {
-    const el = $2(id);
+    const el = $3(id);
     if (!el) return;
     el.classList.add("invalid");
     setTimeout(() => el.classList.remove("invalid"), 1200);
   }
-  $2("createBot").onclick = async () => {
+  $3("createBot").onclick = async () => {
     try {
       const name = require2("botName", "give the teammate a name");
-      await api("POST", "/api/v1/bots", { name, role: $2("botRole").value.trim() || "coder", route: $2("botRoute").value });
+      await api("POST", "/api/v1/bots", { name, role: $3("botRole").value.trim() || "coder", route: $3("botRoute").value });
       toast2("teammate deployed", "ok");
       await refresh();
     } catch (e) {
@@ -2463,12 +2835,12 @@ When a release is cut:
       markField("botName");
     }
   };
-  $2("memBtn").onclick = async () => {
+  $3("memBtn").onclick = async () => {
     try {
       const bot = require2("memBot", "deploy a teammate first");
       const note = require2("memNote", "what should it remember?");
       await api("POST", "/api/v1/bots/" + bot + "/remember", { note });
-      $2("memNote").value = "";
+      $3("memNote").value = "";
       toast2("burned into memory", "ok");
       await refresh();
     } catch (e) {
@@ -2476,7 +2848,7 @@ When a release is cut:
       markField("memNote");
     }
   };
-  $2("createSkill").onclick = async () => {
+  $3("createSkill").onclick = async () => {
     try {
       const name = require2("skillName", "give the playbook a name");
       const body = require2("skillBody", "write the playbook body");
@@ -2488,24 +2860,24 @@ When a release is cut:
       markField("skillName");
     }
   };
-  $2("createRtn").onclick = async () => {
+  $3("createRtn").onclick = async () => {
     try {
       const bot = require2("rtnBot", "deploy a teammate first");
       const skill = require2("rtnSkill", "add a playbook first");
-      await api("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $2("rtnTrigger").value.trim() || "manual" });
+      await api("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $3("rtnTrigger").value.trim() || "manual" });
       toast2("routine armed", "ok");
       await refresh();
     } catch (e) {
       showErr(e.message);
     }
   };
-  $2("sendHandoff").onclick = async () => {
+  $3("sendHandoff").onclick = async () => {
     try {
       const from = require2("fromBot", "deploy a teammate first");
       const to = require2("toBot", "deploy a recipient teammate first");
       if (from === to) throw new Error("pick two different teammates");
       const body = require2("handoffBody", "what is the work item?");
-      const out = await api("POST", "/api/v1/handoff", { from, to, body, run: $2("handoffRun").checked });
+      const out = await api("POST", "/api/v1/handoff", { from, to, body, run: $3("handoffRun").checked });
       toast2("handoff away", "ok");
       await refresh();
       if (out.run && out.run.id) {
@@ -2520,17 +2892,17 @@ When a release is cut:
       markField("handoffBody");
     }
   };
-  $2("runBtn").onclick = async () => {
+  $3("runBtn").onclick = async () => {
     try {
       const bot = require2("runBot", "deploy a teammate first");
       const prompt = require2("prompt", "type a prompt for the run");
       const run = await api("POST", "/api/v1/runs", {
         bot_id: bot,
         prompt,
-        intent: $2("intent").value,
-        yolo: $2("yolo").checked,
-        verify: $2("verify").checked,
-        worktree: $2("worktree").value
+        intent: $3("intent").value,
+        yolo: $3("yolo").checked,
+        verify: $3("verify").checked,
+        worktree: $3("worktree").value
       });
       clearLog();
       stopPoll();
@@ -2543,10 +2915,10 @@ When a release is cut:
       markField("prompt");
     }
   };
-  $2("prompt").addEventListener("keydown", (ev) => {
+  $3("prompt").addEventListener("keydown", (ev) => {
     if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
       ev.preventDefault();
-      $2("runBtn").click();
+      $3("runBtn").click();
     }
   });
   async function testRun(id) {
@@ -2573,10 +2945,19 @@ When a release is cut:
       showErr(e.message);
     }
   }
-  $2("probeBtn").onclick = async () => {
+  async function pauseRtn(id, paused) {
+    try {
+      await api("POST", "/api/v1/routines/" + id + "/pause", { paused });
+      toast2(paused ? "routine paused \u2014 it won't fire" : "routine resumed \u2014 it's live", "ok");
+      await refresh();
+    } catch (e) {
+      showErr(e.message);
+    }
+  }
+  $3("probeBtn").onclick = async () => {
     try {
       const h = await api("GET", "/api/v1/health/models");
-      const tb = $2("health").querySelector("tbody");
+      const tb = $3("health").querySelector("tbody");
       tb.innerHTML = (h.probes || []).map((p) => {
         const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
         return `<tr><td>${esc3(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc3((p.ids || []).join(", "))}</td><td class="tag">${esc3(p.error || "")}${mm}</td></tr>`;
@@ -2594,14 +2975,17 @@ When a release is cut:
   boot();
   vibe();
   startStream(null);
-  var meshRefreshBtn = $2("meshRefresh");
+  var meshRefreshBtn = $3("meshRefresh");
   if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch((e) => showErr(e.message));
-  var hubsRefreshBtn = $2("hubsRefresh");
+  var hubsRefreshBtn = $3("hubsRefresh");
   if (hubsRefreshBtn) hubsRefreshBtn.onclick = () => loadHubs().catch((e) => showErr(e.message));
-  var hubsDoctorBtn = $2("hubsDoctor");
+  var hubsDoctorBtn = $3("hubsDoctor");
   if (hubsDoctorBtn) hubsDoctorBtn.onclick = () => runDoctor().catch((e) => showErr(e.message));
-  var hubDetailCloseBtn = $2("hubDetailClose");
-  if (hubDetailCloseBtn) hubDetailCloseBtn.onclick = () => { const el = $2("hubDetail"); if (el) el.hidden = true; };
+  var hubDetailCloseBtn = $3("hubDetailClose");
+  if (hubDetailCloseBtn) hubDetailCloseBtn.onclick = () => {
+    const el = $3("hubDetail");
+    if (el) el.hidden = true;
+  };
   (function() {
     "use strict";
     if (window.__researchV2Loaded) return;

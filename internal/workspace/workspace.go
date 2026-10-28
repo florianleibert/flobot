@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const (
@@ -40,6 +41,9 @@ var ErrProtected = errors.New("path is protected")
 // Workspace is a rooted file view.
 type Workspace struct {
 	root string
+	// desc is the registry of open file descriptors (see descriptor.go).
+	desc   descriptors
+	descMu sync.Mutex
 }
 
 // New returns a Workspace rooted at dir (resolved to an absolute path).
@@ -98,20 +102,25 @@ func (w *Workspace) validate(rel string) (string, error) {
 		return resolved, nil
 	}
 	// Non-existent target: validate the deepest existing ancestor.
-	dir, base := filepath.Split(abs)
+	// The walk uses filepath.Dir, not filepath.Split: Split returns the
+	// same dir for a path with a trailing separator, so the walk stopped
+	// at the first missing parent and every nested path was reported as
+	// "unresolvable" ("a/b/c.js" with no "a" could never be created).
+	dir, tail := filepath.Dir(abs), filepath.Base(abs)
 	for {
 		rd, err := filepath.EvalSymlinks(dir)
 		if err == nil {
 			if !within(rd, w.root) {
 				return "", ErrNotInWorkspace
 			}
-			return filepath.Join(rd, base), nil
+			return filepath.Join(rd, tail), nil
 		}
-		nd, nb := filepath.Split(dir)
-		if nd == dir {
+		parent := filepath.Dir(dir)
+		if parent == dir {
 			return "", fmt.Errorf("workspace: unresolvable path %q", rel)
 		}
-		dir, base = nd, filepath.Join(nb, base)
+		tail = filepath.Join(filepath.Base(dir), tail)
+		dir = parent
 	}
 }
 
@@ -174,21 +183,41 @@ type Entry struct {
 	FileCount int    `json:"fileCount,omitempty"`
 }
 
-// Tree lists one directory level, sorted dirs-first then name. Hidden
-// entries (dotfiles, .git, node_modules) are skipped unless all is true.
-func (w *Workspace) Tree(dir string, all bool) ([]Entry, error) {
+// ArtifactDirs are the dependency and build-output directories that the
+// editor tree hides by default. They are listed only when the tree is
+// requested with noise (GET /api/v1/workspace/tree?noise=1), which is
+// what Code Studio's 👁 toggle does.
+var ArtifactDirs = map[string]bool{
+	"node_modules": true, "dist": true, "build": true, "out": true,
+	"coverage": true, "webextensions": true, "target": true, "vendor": true,
+	"bower_components": true, "venv": true, ".venv": true,
+	"__pycache__": true, ".next": true, ".nuxt": true, ".vite": true,
+	".cache": true, ".turbo": true, ".parcel-cache": true,
+	".pytest_cache": true, ".mypy_cache": true, ".ruff_cache": true,
+	".tox": true, ".terraform": true,
+}
+
+// Tree lists one directory level, sorted dirs-first then name. Dotfiles
+// are skipped unless all is true; dependency/build artifact directories
+// are skipped unless noise is true. The second result counts the artifact
+// directories hidden at this level, so the UI can report them honestly.
+func (w *Workspace) Tree(dir string, all, noise bool) ([]Entry, int, error) {
 	abs, err := w.validate(dir)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	dirents, err := os.ReadDir(abs)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	entries := make([]Entry, 0, len(dirents))
+	hidden := 0
 	for _, de := range dirents {
 		name := de.Name()
-		if !all && skipEntry(name) {
+		if skipEntry(name, all, noise) {
+			if ArtifactDirs[name] {
+				hidden++
+			}
 			continue
 		}
 		// abs is symlink-resolved; compute rel against the resolved root
@@ -205,7 +234,10 @@ func (w *Workspace) Tree(dir string, all bool) ([]Entry, error) {
 		e := Entry{Name: name, Path: filepath.ToSlash(rel)}
 		if de.IsDir() {
 			e.Type = "dir"
-			e.FileCount = countFiles(filepath.Join(abs, name), 0)
+			// Artifact trees can be huge (node_modules); don't walk them.
+			if !ArtifactDirs[name] {
+				e.FileCount = countFiles(filepath.Join(abs, name), 0)
+			}
 		} else {
 			e.Type = "file"
 			if fi, err := de.Info(); err == nil {
@@ -223,14 +255,23 @@ func (w *Workspace) Tree(dir string, all bool) ([]Entry, error) {
 		}
 		return entries[i].Name < entries[j].Name
 	})
-	return entries, nil
+	return entries, hidden, nil
 }
 
-func skipEntry(name string) bool {
-	if strings.HasPrefix(name, ".") {
+// skipEntry reports whether a tree entry is hidden. .git is always
+// hidden: the editor may not touch it on any path. Dotfiles need all=1,
+// artifact/build directories need noise=1.
+func skipEntry(name string, all, noise bool) bool {
+	if strings.EqualFold(name, ".git") {
 		return true
 	}
-	return name == "node_modules"
+	if ArtifactDirs[name] {
+		return !noise
+	}
+	if strings.HasPrefix(name, ".") {
+		return !all
+	}
+	return false
 }
 
 // countFiles counts files under dir up to a small depth, for the tree UI.
@@ -244,7 +285,7 @@ func countFiles(dir string, depth int) int {
 	}
 	n := 0
 	for _, de := range dirents {
-		if skipEntry(de.Name()) {
+		if skipEntry(de.Name(), false, false) {
 			continue
 		}
 		if de.IsDir() {

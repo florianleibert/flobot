@@ -782,6 +782,19 @@ func TestSchedulerFiresEnabledRoutine(t *testing.T) {
 	if len(list) < 2 {
 		t.Fatalf("routine fire spawned no run: %v", list)
 	}
+
+	// The fire must be recorded on the routine so the card shows when it
+	// last ran (the store keeps LastRun/LastNote, not the run itself).
+	rtAfter, err := srv.store.GetRoutine(rt["id"].(string), Actor)
+	if err != nil {
+		t.Fatalf("get routine: %v", err)
+	}
+	if rtAfter.LastRun == "" {
+		t.Fatalf("routine last_run not recorded: %+v", rtAfter)
+	}
+	if !strings.Contains(rtAfter.LastNote, "scheduled fire") {
+		t.Fatalf("routine last_note = %q, want a scheduled-fire note", rtAfter.LastNote)
+	}
 }
 
 // TestRememberAndRunWithMemory proves the remember endpoint stores a note

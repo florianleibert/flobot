@@ -179,11 +179,15 @@
   <div class="ed-runbar">
     <div class="ed-runbar-inner">
       <select id="edRunBot" title="which teammate runs this mission"></select>
-      <input id="edPrompt" placeholder="give it a mission…  (⌘↵ to run)" spellcheck="false">
+      <div class="ed-prompt-wrap">
+        <input id="edPrompt" placeholder="give it a mission…  (@ to reference a file, ⌘↵ to run)" spellcheck="false">
+        <div class="ed-mention" id="edMention" hidden></div>
+      </div>
       <label class="check" title="allow mutating tools"><input type="checkbox" id="edYolo"> yolo</label>
       <button type="button" class="primary" id="edRunBtn">Run</button>
       <button type="button" class="ghost" id="edStopBtn" title="stop the run" disabled>■ Stop</button>
     </div>
+    <div class="ed-ctx" id="edCtx" hidden></div>
     <div class="ed-runbar-meta">
       <span class="tag" id="edRunStatus">idle</span>
       <span class="spacer"></span>
@@ -213,7 +217,11 @@
         <span class="spacer"></span>
         <span class="tag" id="edDirty"></span>
       </div>
-      <textarea id="edContent" spellcheck="false" placeholder="open a file to edit it"></textarea>
+      <div class="ed-crumbs" id="edCrumbs"></div>
+      <div class="ed-buffer">
+        <textarea id="edContent" spellcheck="false" placeholder="open a file to edit it"></textarea>
+        <div class="ed-outline" id="edOutline"></div>
+      </div>
       <div class="row ed-keys">
         <span><b>⌘P</b> open file</span>
         <span><b>⌘S</b> save</span>
