@@ -63,11 +63,11 @@ func TestHubModelsEndpoint(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 	var body struct {
-		OK     bool `json:"ok"`
-		Hubs   []struct {
-			Name  string `json:"name"`
-			WGUp  bool   `json:"wg_up"`
-			Default bool `json:"default"`
+		OK   bool `json:"ok"`
+		Hubs []struct {
+			Name    string `json:"name"`
+			WGUp    bool   `json:"wg_up"`
+			Default bool   `json:"default"`
 		} `json:"hubs"`
 		Models []struct {
 			ID       string `json:"id"`
@@ -252,9 +252,9 @@ func TestHubDetailEndpoint(t *testing.T) {
 	}
 	var body struct {
 		Hub struct {
-			Name  string `json:"name"`
-			WGUp  bool   `json:"wg_up"`
-			Default bool `json:"default"`
+			Name    string `json:"name"`
+			WGUp    bool   `json:"wg_up"`
+			Default bool   `json:"default"`
 		} `json:"hub"`
 		Checks []struct {
 			ID     string `json:"id"`

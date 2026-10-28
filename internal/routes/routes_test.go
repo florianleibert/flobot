@@ -107,11 +107,11 @@ func TestValidateRouteShapes(t *testing.T) {
 		id   string
 		want error
 	}{
-		{"", nil},             // defaults to glm
-		{"glm", nil},          // documented
-		{"qwen", nil},         // documented
-		{"muse", nil},         // documented
-		{"local", nil},        // shape-valid even unpinned
+		{"", nil},                 // defaults to glm
+		{"glm", nil},              // documented
+		{"qwen", nil},             // documented
+		{"muse", nil},             // documented
+		{"local", nil},            // shape-valid even unpinned
 		{"mesh/glm-5.2-fp8", nil}, // shape-valid; readiness at spawn
 		{"mesh/", fmt.Errorf("empty mesh route")},
 		{"direct/muse-spark-1.3", nil},

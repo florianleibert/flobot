@@ -40,11 +40,11 @@ type RunResult struct {
 // ResultContract is the flocode task result envelope subset flobot
 // surfaces in the UI (confidence, tests, review flag).
 type ResultContract struct {
-	Confidence         float64
+	Confidence          float64
 	RequiresHumanReview bool
-	TestsPassed        int
-	TestsTotal        int
-	Summary           string
+	TestsPassed         int
+	TestsTotal          int
+	Summary             string
 }
 
 // Run implements the executor surface used by server.spawn.
@@ -131,11 +131,11 @@ func (a *Adapter) Run(ctx context.Context, req executor.Request, emit func(ev ex
 	if payload, err := json.Marshal(map[string]any{
 		"confidence":            res.Confidence,
 		"requires_human_review": res.RequiresHumanReview,
-		"summary":              res.Summary,
-		"tests_passed":         passed,
-		"tests_total":          total,
-		"patch_sha256":         res.Patch.SHA256,
-		"patch_changed_files":  res.Patch.ChangedFiles,
+		"summary":               res.Summary,
+		"tests_passed":          passed,
+		"tests_total":           total,
+		"patch_sha256":          res.Patch.SHA256,
+		"patch_changed_files":   res.Patch.ChangedFiles,
 	}); err == nil {
 		emit(executor.Event{Kind: "result_contract", Text: string(payload)})
 	}
@@ -205,11 +205,11 @@ func (a *Adapter) pollToTerminal(ctx context.Context, id string, emit func(ev ex
 				if payload, err := json.Marshal(map[string]any{
 					"confidence":            res.Confidence,
 					"requires_human_review": res.RequiresHumanReview,
-					"summary":              res.Summary,
-					"tests_passed":         passed,
-					"tests_total":          total,
-					"patch_sha256":         res.Patch.SHA256,
-					"patch_changed_files":  res.Patch.ChangedFiles,
+					"summary":               res.Summary,
+					"tests_passed":          passed,
+					"tests_total":           total,
+					"patch_sha256":          res.Patch.SHA256,
+					"patch_changed_files":   res.Patch.ChangedFiles,
 				}); err == nil {
 					emit(executor.Event{Kind: "result_contract", Text: string(payload)})
 				}

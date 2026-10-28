@@ -73,7 +73,15 @@ func (rs *runSnapshots) evict(id string) {
 func (s *Server) checkpointStore() (*checkpoint.Store, error) {
 	s.cpMu.Lock()
 	defer s.cpMu.Unlock()
-	if s.cp != nil {
+	// A checkpoint store is bound to one git root, and the workspace can be
+	// switched at runtime. A store left over from the previous workspace
+	// would snapshot the old tree and restore into it — the wrong repository
+	// entirely — so it is rebuilt when the root changes.
+	root := s.workDirNow()
+	if root == "" {
+		root, _ = os.Getwd()
+	}
+	if s.cp != nil && s.cpRoot == root {
 		return s.cp, nil
 	}
 	dir := s.home
@@ -84,15 +92,12 @@ func (s *Server) checkpointStore() (*checkpoint.Store, error) {
 		}
 		dir = home
 	}
-	root := s.workDirNow()
-	if root == "" {
-		root, _ = os.Getwd()
-	}
 	cp, err := checkpoint.New(root, filepath.Join(dir, ".flobot"))
 	if err != nil {
 		return nil, err
 	}
 	s.cp = cp
+	s.cpRoot = root
 	return cp, nil
 }
 

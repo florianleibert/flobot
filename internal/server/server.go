@@ -77,7 +77,12 @@ type Server struct {
 
 	// cp is the checkpoint store; rs the persisted run summaries; snaps
 	// the in-memory pre/post-run git trees (Code Studio Phase 2).
-	cp     *checkpoint.Store
+	cp *checkpoint.Store
+	// cpRoot is the git root cp is rooted at. A checkpoint store is bound
+	// to one root and the workspace can be switched at runtime, so a store
+	// left over from the previous workspace would snapshot the old tree
+	// and restore into it — the wrong repository entirely.
+	cpRoot string
 	cpMu   sync.Mutex
 	rs     *store.RunStore
 	rsOnce sync.Once

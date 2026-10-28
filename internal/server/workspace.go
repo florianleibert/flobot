@@ -425,6 +425,16 @@ func (s *Server) workspaceSelect(w http.ResponseWriter, r *http.Request) {
 	s.wsMu.Unlock()
 	s.workMu.Unlock()
 
+	// The checkpoint store is bound to a git root, and the workspace just
+	// changed: the cached store must not outlive the tree it was built for.
+	// This runs after the work lock is released — the store reads the root
+	// under that lock, so taking the two in the other order here would
+	// deadlock.
+	s.cpMu.Lock()
+	s.cp = nil
+	s.cpRoot = ""
+	s.cpMu.Unlock()
+
 	s.rememberWorkspace(abs)
 	writeJSON(w, map[string]any{"root": ws.Root(), "name": ws.Name()})
 }

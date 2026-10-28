@@ -19,11 +19,11 @@ func (s *Server) hubModels(w http.ResponseWriter, r *http.Request) {
 	hubs, hubErr := amesh.Hubs(r.Context())
 	services, svcErr := amesh.Services(r.Context())
 	writeJSON(w, map[string]any{
-		"schema":   "flobot.hubs.v1",
-		"hubs":     hubs,
-		"models":   services,
-		"ok":       hubErr == nil && svcErr == nil,
-		"hub_error": errString(hubErr),
+		"schema":      "flobot.hubs.v1",
+		"hubs":        hubs,
+		"models":      services,
+		"ok":          hubErr == nil && svcErr == nil,
+		"hub_error":   errString(hubErr),
 		"model_error": errString(svcErr),
 	})
 }
