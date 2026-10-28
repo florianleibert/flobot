@@ -7,7 +7,12 @@
 // tree: a project names a folder plus the files in scope, tags label
 // projects (Apple Photos style), and an agent can be pointed at a project or
 // at a tag so the mission carries its scope.
-import { chromium } from "playwright";
+import { createRequire } from "node:module";
+
+// Playwright is resolved through CommonJS so NODE_PATH works: the other
+// audits in this folder assume the same setup.
+const require = createRequire(import.meta.url);
+const { chromium } = require("playwright");
 
 const base = process.env.FLOBOT_URL || "http://127.0.0.1:4120";
 const browser = await chromium.launch();
