@@ -985,11 +985,14 @@
     }
     const fullPrompt = prompt + (ctx?.contextBlock() || "");
     try {
+      const scope = window.codeStudioScope || {};
       const run = await edApi("POST", "/api/v1/runs", {
         bot_id: bot,
         prompt: fullPrompt,
         intent: "code",
-        yolo: $2("edYolo").checked
+        yolo: $2("edYolo").checked,
+        project: scope.project || "",
+        tag: scope.tag || ""
       });
       edRunId = run.id;
       edTouched.length = 0;
@@ -1418,6 +1421,344 @@
     document.addEventListener("DOMContentLoaded", initEditor);
   } else {
     initEditor();
+  }
+
+  // src/projects.js
+  var $p = (id) => document.getElementById(id);
+  var pProjects = [];
+  var pTags = [];
+  var pFilter = "";
+  var pScopeId = "";
+  var pScopeTree = [];
+  async function pApi(method, path, body) {
+    const opt = { method, headers: {} };
+    if (body !== void 0) {
+      opt.headers["Content-Type"] = "application/json";
+      opt.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opt);
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    if (!res.ok) {
+      const msg = data && (data.error || data.message) || res.statusText || "request failed";
+      throw new Error(msg);
+    }
+    return data;
+  }
+  function pToast(msg, cls) {
+    const host = $p("toasts");
+    if (!host) return;
+    const t = document.createElement("div");
+    t.className = "toast" + (cls ? " " + cls : "");
+    t.textContent = msg;
+    host.appendChild(t);
+    setTimeout(() => t.remove(), 2200);
+  }
+  function pEl(tag, cls, text, onclick) {
+    const el2 = document.createElement(tag);
+    if (cls) el2.className = cls;
+    if (text !== void 0 && text !== null) el2.textContent = String(text);
+    if (onclick) el2.onclick = onclick;
+    return el2;
+  }
+  async function pLoad() {
+    try {
+      const res = await pApi("GET", "/api/v1/projects");
+      pProjects = res && res.projects || [];
+      pTags = res && res.tags || [];
+    } catch (e) {
+      pProjects = [];
+      pTags = [];
+      pToast(e.message, "err");
+    }
+    pRenderTags();
+    pRenderProjects();
+    if (pScopeId) await pOpenScope(pScopeId);
+  }
+  function pRenderTags() {
+    const host = $p("edTags");
+    if (!host) return;
+    host.replaceChildren();
+    const all = pEl("button", "ed-tag" + (pFilter === "" ? " on" : ""), "all");
+    all.type = "button";
+    all.onclick = () => {
+      pFilter = "";
+      pRenderTags();
+      pRenderProjects();
+    };
+    host.appendChild(all);
+    const counts = /* @__PURE__ */ new Map();
+    pProjects.forEach((p) => (p.tags || []).forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
+    pTags.forEach((t) => {
+      const name = t.name || t;
+      const n = counts.get(name) || 0;
+      const b = pEl("button", "ed-tag" + (pFilter.toLowerCase() === name.toLowerCase() ? " on" : ""), "#" + name + " \xB7 " + n);
+      b.type = "button";
+      b.title = n + (n === 1 ? " project" : " projects");
+      b.onclick = () => {
+        pFilter = pFilter.toLowerCase() === name.toLowerCase() ? "" : name;
+        pRenderTags();
+        pRenderProjects();
+      };
+      host.appendChild(b);
+    });
+    const add = pEl("button", "ed-tag add", "+ tag");
+    add.type = "button";
+    add.title = "create a tag";
+    add.onclick = pNewTag;
+    host.appendChild(add);
+  }
+  async function pNewTag() {
+    const name = window.prompt("Tag name", "");
+    if (!name || !name.trim()) return;
+    try {
+      await pApi("POST", "/api/v1/tags", { name: name.trim() });
+      await pLoad();
+      pToast("tag added", "ok");
+    } catch (e) {
+      pToast(e.message, "err");
+    }
+  }
+  function pVisibleProjects() {
+    if (!pFilter) return pProjects;
+    const f = pFilter.toLowerCase();
+    return pProjects.filter((p) => (p.tags || []).some((t) => String(t).toLowerCase() === f));
+  }
+  function pRenderProjects() {
+    const host = $p("edProjects");
+    if (!host) return;
+    host.replaceChildren();
+    const list = pVisibleProjects();
+    if (!list.length) {
+      host.appendChild(pEl("div", "ed-empty", pFilter ? "no project carries #" + pFilter : "no project yet \u2014 create one to scope the work"));
+      return;
+    }
+    list.forEach((p) => {
+      const card = pEl("div", "ed-project");
+      card.dataset.project = p.id;
+      const top = pEl("div", "ed-project-top");
+      const name = pEl("button", "ed-project-name", p.name || "(unnamed)");
+      name.type = "button";
+      name.title = p.name || "";
+      name.onclick = () => pOpenScope(p.id);
+      top.appendChild(name);
+      top.appendChild(pEl("span", "ed-project-root", p.root || "workspace root"));
+      top.appendChild(pEl("span", "spacer"));
+      const count = (p.paths || []).length;
+      top.appendChild(pEl("span", "ed-project-scope", count ? count + " in scope" : "whole folder"));
+      card.appendChild(top);
+      const chips = pEl("div", "ed-project-tags");
+      (p.tags || []).forEach((t) => {
+        const c = pEl("button", "ed-tag small", "#" + t);
+        c.type = "button";
+        c.title = "remove tag " + t;
+        c.onclick = async (ev) => {
+          ev.stopPropagation();
+          await pSetTags(p, (p.tags || []).filter((x) => x !== t));
+        };
+        chips.appendChild(c);
+      });
+      const add = pEl("button", "ed-tag small add", "+ tag");
+      add.type = "button";
+      add.title = "tag this project";
+      add.onclick = async (ev) => {
+        ev.stopPropagation();
+        const t = window.prompt("Tag this project with", "");
+        if (!t || !t.trim()) return;
+        await pSetTags(p, (p.tags || []).concat([t.trim()]));
+      };
+      chips.appendChild(add);
+      card.appendChild(chips);
+      const actions = pEl("div", "ed-project-actions");
+      const scopeBtn = pEl("button", "ed-btn", "files");
+      scopeBtn.type = "button";
+      scopeBtn.title = "choose the files and folders in scope";
+      scopeBtn.onclick = () => pScopeId === p.id ? pCloseScope() : pOpenScope(p.id);
+      actions.appendChild(scopeBtn);
+      const work = pEl("button", "ed-btn primary", "work on this");
+      work.type = "button";
+      work.title = "point the next mission at this project";
+      work.onclick = () => pWork({ project: p.id, tag: "", label: p.name || "project" });
+      actions.appendChild(work);
+      const del = pEl("button", "ed-btn ghost", "delete");
+      del.type = "button";
+      del.onclick = async () => {
+        if (!window.confirm("Delete project " + (p.name || "") + "?")) return;
+        try {
+          await pApi("DELETE", "/api/v1/projects/" + encodeURIComponent(p.id));
+          if (pScopeId === p.id) pScopeId = "";
+          await pLoad();
+          pToast("project deleted", "ok");
+        } catch (e) {
+          pToast(e.message, "err");
+        }
+      };
+      actions.appendChild(del);
+      card.appendChild(actions);
+      if (pScopeId === p.id) card.appendChild(pScopeEditor(p));
+      host.appendChild(card);
+    });
+  }
+  async function pSetTags(project, tags) {
+    try {
+      await pApi("PATCH", "/api/v1/projects/" + encodeURIComponent(project.id), { tags });
+      await pLoad();
+    } catch (e) {
+      pToast(e.message, "err");
+    }
+  }
+  function pWork(scope) {
+    window.codeStudioScope = scope;
+    const prompt = $p("edPrompt");
+    if (prompt) {
+      prompt.focus();
+      const hint = "Work on " + (scope.label || scope.tag || scope.project) + ": ";
+      if (!prompt.value.startsWith(hint)) prompt.value = hint + prompt.value;
+    }
+    pToast("scope set: " + (scope.label || scope.tag || "project"), "ok");
+  }
+  async function pOpenScope(id) {
+    pScopeId = id;
+    const p = pProjects.find((x) => x.id === id);
+    if (!p) return;
+    pScopeTree = [];
+    try {
+      const res = await fetch("/api/v1/workspace/tree?dir=" + encodeURIComponent(p.root || ""));
+      if (res.ok) {
+        const body = await res.json();
+        pScopeTree = body && body.entries ? body.entries : [];
+      }
+    } catch {
+      pScopeTree = [];
+    }
+    pRenderProjects();
+  }
+  function pCloseScope() {
+    pScopeId = "";
+    pScopeTree = [];
+    pRenderProjects();
+  }
+  function pScopeEditor(project) {
+    const box = pEl("div", "ed-scope");
+    const selected = new Set(project.paths || []);
+    const head = pEl("div", "ed-scope-head");
+    head.appendChild(pEl("span", "tag", "files in scope"));
+    head.appendChild(pEl("span", "spacer"));
+    const save = pEl("button", "ed-btn primary", "save scope");
+    save.type = "button";
+    save.onclick = async () => {
+      try {
+        await pApi("PATCH", "/api/v1/projects/" + encodeURIComponent(project.id), { paths: Array.from(selected) });
+        await pLoad();
+        pToast("scope saved", "ok");
+      } catch (e) {
+        pToast(e.message, "err");
+      }
+    };
+    head.appendChild(save);
+    box.appendChild(head);
+    const list = pEl("div", "ed-scope-list");
+    const seen = /* @__PURE__ */ new Set();
+    const scopeRow = (path, label, isDir, checked) => {
+      const row = pEl("label", "ed-scope-item");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = checked;
+      cb.onchange = () => {
+        if (cb.checked) selected.add(path);
+        else selected.delete(path);
+      };
+      row.appendChild(cb);
+      row.appendChild(pEl("span", "ed-ico", isDir ? "\u25B8" : "\u25E6"));
+      const text = pEl("span", "ed-scope-path", label);
+      text.onclick = () => {
+        if (!isDir && window.codeStudio?.openFile) window.codeStudio.openFile(path);
+      };
+      row.appendChild(text);
+      return row;
+    };
+    (project.paths || []).forEach((path) => {
+      seen.add(path);
+      list.appendChild(scopeRow(path, path, !/\.[A-Za-z0-9]+$/.test(path), true));
+    });
+    pScopeTree.forEach((e) => {
+      if (seen.has(e.path)) return;
+      seen.add(e.path);
+      list.appendChild(scopeRow(e.path, e.name || e.path, e.type === "dir", selected.has(e.path)));
+    });
+    if (!list.childElementCount) {
+      list.appendChild(pEl("div", "ed-empty", "nothing to pick here \u2014 the root folder is outside the current workspace"));
+    }
+    box.appendChild(list);
+    return box;
+  }
+  function pShowNewProject() {
+    const host = $p("edProjectForm");
+    if (!host) return;
+    host.hidden = false;
+    host.replaceChildren();
+    const name = document.createElement("input");
+    name.placeholder = "project name";
+    name.id = "edProjName";
+    const root = document.createElement("input");
+    root.placeholder = "root folder (workspace-relative, . for the whole workspace)";
+    root.id = "edProjRoot";
+    root.value = ".";
+    const paths = document.createElement("input");
+    paths.placeholder = "files in scope (comma separated, optional)";
+    paths.id = "edProjPaths";
+    const tags = document.createElement("input");
+    tags.placeholder = "tags (comma separated, optional)";
+    tags.id = "edProjTags";
+    const row = pEl("div", "ed-form-row");
+    [name, root, paths, tags].forEach((i) => row.appendChild(i));
+    const actions = pEl("div", "ed-form-row");
+    const create = pEl("button", "ed-btn primary", "create project");
+    create.type = "button";
+    create.onclick = async () => {
+      try {
+        await pApi("POST", "/api/v1/projects", {
+          name: name.value.trim(),
+          root: root.value.trim(),
+          paths: paths.value.split(",").map((s) => s.trim()).filter(Boolean),
+          tags: tags.value.split(",").map((s) => s.trim()).filter(Boolean)
+        });
+        host.hidden = true;
+        host.replaceChildren();
+        await pLoad();
+        pToast("project created", "ok");
+      } catch (e) {
+        pToast(e.message, "err");
+      }
+    };
+    actions.appendChild(create);
+    const cancel = pEl("button", "ed-btn ghost", "cancel");
+    cancel.type = "button";
+    cancel.onclick = () => {
+      host.hidden = true;
+      host.replaceChildren();
+    };
+    actions.appendChild(cancel);
+    host.appendChild(row);
+    host.appendChild(actions);
+    name.focus();
+  }
+  function pInitProjects() {
+    const newProject = $p("edNewProject");
+    if (newProject) newProject.onclick = pShowNewProject;
+    const newTag = $p("edNewTag");
+    if (newTag) newTag.onclick = pNewTag;
+    pLoad();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", pInitProjects);
+  } else {
+    pInitProjects();
   }
 
   // src/examples.js

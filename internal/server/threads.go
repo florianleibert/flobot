@@ -29,6 +29,8 @@ func (s *Server) createThread(w http.ResponseWriter, r *http.Request) {
 		Yolo    bool   `json:"yolo"`
 		Verify  bool   `json:"verify"`
 		NoStart bool   `json:"no_start"`
+		Project string `json:"project"`
+		Tag     string `json:"tag"`
 	}
 	if !decodeJSON(w, r, runBodyLimit, &body) {
 		return
@@ -65,13 +67,30 @@ func (s *Server) createThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := map[string]any{"thread": th}
+	// A project or a tag scopes the thread's mission: the agent is told
+	// which files and folders it may touch.
+	scopeRoot, scopePaths, scopeLabel, scopeErr := s.scopeFor(body.Project, body.Tag)
+	if scopeErr != nil {
+		s.httpError(w, scopeErr)
+		return
+	}
 	// A thread with a prompt starts its run right away; without one it is
 	// an idle slot the user can start later.
 	if prompt := strings.TrimSpace(body.Prompt); prompt != "" && !body.NoStart {
+		if scopeLabel != "" {
+			prompt = scopeBlock(scopeLabel, scopeRoot, scopePaths) + prompt
+		}
 		run, err := s.startThreadRun(r, th, bot, prompt, body.Intent, body.Yolo, body.Verify)
 		if err != nil {
 			s.httpError(w, err)
 			return
+		}
+		if scopeLabel != "" {
+			run, err = s.store.SetRunScope(run.ID, Actor, body.Project, body.Tag, scopePaths)
+			if err != nil {
+				s.httpError(w, err)
+				return
+			}
 		}
 		out["run"] = run
 	}

@@ -89,22 +89,28 @@ type Event struct {
 
 // Run is one flocode child. Events stay off the default JSON (json:"-").
 type Run struct {
-	ID         string  `json:"id"`
-	BotID      string  `json:"bot_id,omitempty"`
-	Prompt     string  `json:"prompt"`
-	Intent     string  `json:"intent"`
-	Yolo       bool    `json:"yolo"`
-	Verify     bool    `json:"verify"`
-	Worktree   string  `json:"worktree,omitempty"`
-	Pin        string  `json:"pin,omitempty"`
-	Route      string  `json:"route,omitempty"`
-	Status     string  `json:"status"`
-	Err        string  `json:"error,omitempty"`
-	EventCount int     `json:"event_count"`
-	CreatedAt  string  `json:"created_at"`
-	EndedAt    string  `json:"ended_at,omitempty"`
-	Owner      string  `json:"-"`
-	Events     []Event `json:"-"`
+	ID       string `json:"id"`
+	BotID    string `json:"bot_id,omitempty"`
+	Prompt   string `json:"prompt"`
+	Intent   string `json:"intent"`
+	Yolo     bool   `json:"yolo"`
+	Verify   bool   `json:"verify"`
+	Worktree string `json:"worktree,omitempty"`
+	Pin      string `json:"pin,omitempty"`
+	Route    string `json:"route,omitempty"`
+	// Project scope: the project (or the tag's projects) this run was
+	// pointed at, and the workspace-relative paths the agent was told to
+	// work inside.
+	ProjectID  string   `json:"project_id,omitempty"`
+	Tag        string   `json:"tag,omitempty"`
+	ScopePaths []string `json:"scope_paths,omitempty"`
+	Status     string   `json:"status"`
+	Err        string   `json:"error,omitempty"`
+	EventCount int      `json:"event_count"`
+	CreatedAt  string   `json:"created_at"`
+	EndedAt    string   `json:"ended_at,omitempty"`
+	Owner      string   `json:"-"`
+	Events     []Event  `json:"-"`
 	// Code Studio AC-2f: merged from the persisted RunStore by
 	// Server.runsWithSummaries so run history shows the diff and review
 	// state without duplicating the summary fields on the in-memory Run.
@@ -632,6 +638,26 @@ func (s *Store) CreateRun(owner, botID, prompt, intent string, yolo, verify bool
 	s.mu.Lock()
 	s.runs[run.ID] = run
 	s.mu.Unlock()
+	return run, nil
+}
+
+// SetRunScope records the project scope a run was pointed at: which project
+// or tag it belongs to, and the files and folders the agent was told to work
+// inside. It is metadata about the mission, not a permission boundary.
+func (s *Store) SetRunScope(id, actor, projectID, tag string, paths []string) (Run, error) {
+	if id == "" || actor == "" {
+		return Run{}, ErrDenied
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok || run.Owner != actor {
+		return Run{}, ErrDenied
+	}
+	run.ProjectID = strings.TrimSpace(projectID)
+	run.Tag = strings.TrimSpace(tag)
+	run.ScopePaths = append([]string(nil), paths...)
+	s.runs[id] = run
 	return run, nil
 }
 

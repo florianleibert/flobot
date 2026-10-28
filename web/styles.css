@@ -1381,3 +1381,215 @@ button .kbd,
    the cards (later in the DOM) would cover the popup that drops out of the
    run bar. A positive z-index puts the run bar's whole subtree above them. */
 .ed-runbar { position: relative; z-index: 30; }
+
+/* ---- projects & tags (Code view) ------------------------------------------ */
+
+.ed-projects-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ed-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.ed-tag {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-dim);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ed-tag:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+
+.ed-tag.on {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.ed-tag.small {
+  font-size: 10px;
+  padding: 1px 7px;
+}
+
+.ed-tag.add {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.ed-projects {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+.ed-project {
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ed-project-top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.ed-project-name {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.ed-project-name:hover {
+  text-decoration: underline;
+}
+
+.ed-project-root {
+  font-size: 10px;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 14ch;
+}
+
+.ed-project-scope {
+  font-size: 10px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.ed-project-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ed-project-actions {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+.ed-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-dim);
+  border-radius: var(--r-1);
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ed-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+
+.ed-btn.primary {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.ed-btn.ghost {
+  border-color: transparent;
+}
+
+.ed-scope {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ed-scope-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.ed-scope-list {
+  max-height: 22vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.ed-scope-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 1px 0;
+}
+
+.ed-scope-path {
+  font-family: var(--mono);
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ed-scope-path:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.ed-empty {
+  font-size: 11px;
+  color: var(--fg-dim);
+  padding: var(--sp-1) 0;
+}
+
+.ed-project-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ed-form-row {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+.ed-form-row input {
+  flex: 1 1 10ch;
+  min-width: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: var(--r-1);
+  padding: 3px 7px;
+  font-size: 11px;
+}

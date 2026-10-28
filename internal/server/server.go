@@ -13,8 +13,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,10 +23,10 @@ import (
 	"github.com/florianleibert/flobot/internal/amesh"
 	"github.com/florianleibert/flobot/internal/checkpoint"
 	"github.com/florianleibert/flobot/internal/executor"
+	"github.com/florianleibert/flobot/internal/queue"
 	"github.com/florianleibert/flobot/internal/routes"
 	"github.com/florianleibert/flobot/internal/schedule"
 	"github.com/florianleibert/flobot/internal/store"
-	"github.com/florianleibert/flobot/internal/queue"
 	"github.com/florianleibert/flobot/internal/taskclient"
 	"github.com/florianleibert/flobot/internal/threads"
 	"github.com/florianleibert/flobot/internal/workspace"
@@ -42,14 +42,17 @@ const (
 
 // Server serves roster + runs on loopback.
 type Server struct {
-	store   *store.Store
-	exec    *executor.Exec
+	store *store.Store
+	exec  *executor.Exec
+	// projects is the project/tag store behind the Code view.
+	projects *store.ProjectStore
+	psOnce   sync.Once
 	taskExec *taskclient.Adapter
-	index   string
-	probes  []Probe
-	client  *http.Client
-	home    string
-	workDir string
+	index    string
+	probes   []Probe
+	client   *http.Client
+	home     string
+	workDir  string
 	// workMu guards workDir/ws: the workspace can be switched at runtime
 	// via POST /api/v1/workspace/select (Code Studio folder picker).
 	workMu sync.RWMutex
@@ -277,6 +280,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/threads", s.listThreads)
 	mux.HandleFunc("GET /api/v1/threads/{id}", s.getThread)
 	mux.HandleFunc("DELETE /api/v1/threads/{id}", s.deleteThread)
+	mux.HandleFunc("GET /api/v1/projects", s.listProjects)
+	mux.HandleFunc("POST /api/v1/projects", s.createProject)
+	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.patchProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.deleteProject)
+	mux.HandleFunc("GET /api/v1/tags", s.listTags)
+	mux.HandleFunc("POST /api/v1/tags", s.createTag)
+	mux.HandleFunc("DELETE /api/v1/tags/{name}", s.deleteTag)
 	mux.HandleFunc("GET /api/v1/queue", s.listQueue)
 	mux.HandleFunc("POST /api/v1/queue/{id}/state", s.setQueueState)
 	mux.HandleFunc("DELETE /api/v1/queue/{id}", s.resolveQueueEntry)
@@ -955,6 +965,8 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		Yolo     bool   `json:"yolo"`
 		Verify   bool   `json:"verify"`
 		Worktree string `json:"worktree"`
+		Project  string `json:"project"`
+		Tag      string `json:"tag"`
 	}
 	if !decodeJSON(w, r, runBodyLimit, &body) {
 		return
@@ -979,10 +991,27 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if bot.Memory != "" {
 		prompt = "Teammate memory (you said to remember this):\n" + bot.Memory + "\n\n" + prompt
 	}
+	// A project or a tag scopes the mission: the agent is told exactly
+	// which files and folders it may touch.
+	scopeRoot, scopePaths, scopeLabel, scopeErr := s.scopeFor(body.Project, body.Tag)
+	if scopeErr != nil {
+		s.httpError(w, scopeErr)
+		return
+	}
+	if scopeLabel != "" {
+		prompt = scopeBlock(scopeLabel, scopeRoot, scopePaths) + prompt
+	}
 	run, err := s.store.CreateRun(Actor, bot.ID, prompt, intent, body.Yolo, body.Verify, body.Worktree, pin, bot.Route)
 	if err != nil {
 		s.httpError(w, err)
 		return
+	}
+	if scopeLabel != "" {
+		run, err = s.store.SetRunScope(run.ID, Actor, body.Project, body.Tag, scopePaths)
+		if err != nil {
+			s.httpError(w, err)
+			return
+		}
 	}
 	s.spawn(run, executor.Request{
 		Prompt:         prompt,
