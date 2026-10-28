@@ -224,6 +224,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/workspace/roots", s.workspaceRoots)
 	mux.HandleFunc("POST /api/v1/workspace/select", s.workspaceSelect)
 	mux.HandleFunc("GET /api/v1/workspace/tree", s.workspaceTree)
+	mux.HandleFunc("GET /api/v1/workspace/symbols", s.workspaceSymbols)
 	mux.HandleFunc("GET /api/v1/workspace/file", s.workspaceFileGet)
 	mux.HandleFunc("PUT /api/v1/workspace/file", s.workspaceFilePut)
 	mux.HandleFunc("POST /api/v1/workspace/file", s.workspaceFilePost)

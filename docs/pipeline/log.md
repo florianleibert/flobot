@@ -19,3 +19,6 @@
 | 2026-08-20T02:22:45Z | C | implement-T-verify | qwen-3.8 | ok | 1m50s |
 | 2026-08-20T02:22:55Z | D | review-tasks | glm-5.2 | ok | 9s |
 | 2026-08-20T02:23:31Z | E | surface-review | muse-spark-1.2 | ok | 35s |
+| 2026-10-28T03:05:00Z | A | codex-desktop-prd | MiniMax-M3.1 | ok | PRD v1, 20 research cycles |
+| 2026-10-28T03:12:00Z | B | codex-desktop-epic-tasks | MiniMax-M3.1 | ok | 7 tasks, disjoint files |
+| 2026-10-28T03:20:00Z | C | implement-T-1-symbols | MiniMax-M3.1 | ok | workspace symbol search |
