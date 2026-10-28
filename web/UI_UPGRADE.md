@@ -1,5 +1,30 @@
 # flobot UI — 10x upgrade (implement)
 
+> **Update 2026-10-26 — "Obsidian Deck" redesign.** `web/styles.css` was
+> rewritten from the ground up (682 insertions / 547 deletions, one file
+> changed, no HTML or JS edits). Source of truth is
+> `flobot-ui-redesign/src/styles.css`; run `sync-to-flobot.mjs` to sync.
+> The design law is in the stylesheet header, the research mapping is in
+> `DESIGN_RESEARCH.md` §Status, and the engineering lessons (class-contract
+> discipline, JS-referenced tokens, the port-4120 screenshot trap) are in
+> `docs/LEARNINGS.md` §Design system.
+>
+> **What changed visually:** the aurora is now the *environment* only — every
+> data surface (card, log, editor, tree, input, list row) is opaque, stepped
+> `--surface-1..4`. Card shadows are gone; depth comes from surface value.
+> Status chips became saturated verdict pills with near-black ink. `--warn`
+> moved from magenta to amber, and thinking owns violet. One accent pair
+> (indigo = structure, lighter blue = live) replaced the spray of gradients
+> across headings, hairlines and rails; the only remaining gradient serves
+> the inline avatar glyphs. The Code Studio rail tabs became a segmented
+> control, the tree got its own label element, and diff hunks keep their
+> left-border decision state.
+>
+> **Verified:** 44/44 Playwright interaction-audit checks pass against a live
+> server, `go vet` clean, `go test ./web/...` pass, zero console errors on all
+> 9 panels, body text 18.1:1 and muted 6.25:1 against the card surface,
+> focus ring present on every input, KPI values `tabular-nums` in mono.
+
 ## Scope
 Dramatically upgraded the flobot agent-control web UI (`web/index.html`,
 `web/app.js`, `web/styles.css`) on top of the existing Liquid Glass design

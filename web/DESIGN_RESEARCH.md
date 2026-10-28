@@ -95,3 +95,28 @@ one-accent discipline (reduce chrome blue), tabular-nums everywhere numbers
 appear, denser 13px rows with tighter list padding, empty-state CTA copy on
 RECENT RUNS / HANDOFFS, skeleton loading on first paint, semantic-color-only
 status chips (already mostly there).
+
+---
+
+## Status: shipped as "Obsidian Deck" (2026-10-26)
+
+Every gap above is now closed in `web/styles.css` (source of truth:
+`flobot-ui-redesign/src/styles.css`). What the implementation looked like:
+
+| Research directive | Shipped implementation |
+|---|---|
+| Glass as ambient background, flat data surfaces | Aurora kept as `body::before`/`::after` behind the shell; every card, log, editor, tree, input and row is opaque (`--surface-1..4`, `alpha=1`) |
+| Near-black canvas, tiny lightness steps | `--bg: #08090c` → `--surface-1: #0c0e13` → `--surface-2: #12141a` → `--surface-3: #171a22` → `--surface-4: #1d2029` |
+| Depth from background shifts, not shadows | Card shadows removed entirely; `--shadow` survives only for toast / palette / quick-open (things that float) |
+| One chromatic accent | `--acc: #6366f1` (structure) + `--acc-2: #7c9bff` (live content). The single `--grad` gradient now serves only the inline avatar glyphs in `main.js` |
+| Hairline borders as texture | Two weights: `--line: #23262e` (edges) and `--line-soft: #1b1e26` (dividers) |
+| Semantic color strictly for status | Saturated verdict pills: solid `--ok`/`--err`/`--warn`/`--acc-2` fill with near-black ink. `--warn` moved magenta → amber `#ffb454`; thinking owns `--violet` |
+| 13px body, compact rows, tabular-nums | 13px body on a 4px grid; `--sp-*` scale; `tabular-nums` + mono on `.num`, KPI values, elapsed counters, diff line numbers, tab badges |
+| Three states per component | Empty states name the condition and offer the action; invalid inputs flash `--err`; hub/editor wells carry explicit error rows |
+| Command palette, keyboard-only | ⌘K palette and ⌘P quick-open kept and re-skinned to the opaque sheet treatment |
+| Dark mode from day one | Dark-first; the token set is centralized in `:root` so a light theme is a second block, not a rewrite |
+
+**Verification** (see `docs/LEARNINGS.md` §Design system): 44/44 Playwright
+interaction-audit checks pass, `go vet` clean, `go test ./web/...` pass, zero
+console errors across all 9 panels, body text 18.1:1 and muted text 6.25:1
+against the card surface, focus ring present on every input.

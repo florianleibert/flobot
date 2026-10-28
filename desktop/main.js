@@ -241,14 +241,31 @@ async function stopServer() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width: 1440,
+    height: 920,
+    minWidth: 960,
+    minHeight: 640,
     title: 'flobot',
+    // The UI is dark-first ("Obsidian Deck"). Tell macOS so the window
+    // chrome, title bar and traffic lights render in dark mode instead of
+    // flashing a light title bar over a near-black deck.
+    backgroundColor: '#08090c',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 18, y: 18 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  // The hidden-inset title bar overlaps the top bar, so reserve room for the
+  // traffic lights: pad the top bar's left edge and let the brand sit after
+  // them. The web layer handles the rest via a CSS class on <body>.
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.executeJavaScript(
+      'document.body.classList.add("desktop-chrome")',
+    ).catch(() => {});
   });
 
   // Open external links in the default browser, not the app window.

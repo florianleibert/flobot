@@ -2,6 +2,57 @@
 
 Recorded during the "make it insane" push (research → implementation). Add new entries at the top.
 
+## Design system (Obsidian Deck, 2026-10-26)
+
+15. **Glass is the environment, opaque is the data.** The decisive rule of the
+    redesign: the aurora/ambient layer lives *behind* the shell, and every
+    surface that carries information (cards, log, editor, tree, inputs, rows)
+    is fully opaque. The previous build used translucent glass for *content*,
+    which the research pass had already flagged ("glass-on-glass for content
+    reads as a demo; glass behind + solid cards reads as a product"). Verified
+    by computed style: every data surface now resolves to `alpha=1`.
+16. **Depth from surface VALUE, not shadows.** Four opaque steps
+    (`--surface-1..4`) carry elevation; shadows are reserved for things that
+    float (toast, palette, quick-open). The old `--shadow` on every card was
+    the single biggest "dated template" tell.
+17. **Saturated verdict pills beat translucent tints.** Status chips now use a
+    solid semantic fill with near-black ink (`--ok-ink`, `--err-ink`,
+    `--warn-ink`, `--acc-ink`). A 10px uppercase pill in a saturated fill is
+    legible at a glance; the old 10%-alpha tint was not.
+18. **Amber is "attention", magenta was a misread.** `--warn` moved from
+    `#e879f9` (magenta = alarm) to `#ffb454` (amber = attention). Magenta was
+    doing double duty for thinking phase and warnings; thinking now owns
+    `--violet` alone.
+19. **One accent, two blues.** `--acc` `#6366f1` = structure (selection, focus,
+    active nav); `--acc-2` `#7c9bff` = live content (cursor, active stream).
+    The old build sprayed `--grad` across headings, stat hairlines, nav rails,
+    sparklines and avatars at once, which flattened the hierarchy. The only
+    remaining gradient is `--grad`, used solely by the inline avatar glyphs in
+    main.js.
+20. **A stylesheet rewrite needs a class contract.** Before touching
+    `styles.css`, dump every class/id/data-attribute the HTML and JS use
+    (including `classList.add` call sites and template-literal class
+    expressions) and diff that set against the new sheet. A rewrite that drops
+    one class name breaks a behavior silently — no test fails, the element just
+    renders wrong. The old sheet had 211 classes; all 211 survived.
+21. **Tokens referenced from JS must survive a token rewrite.** `main.js`
+    renders avatars with an inline `style="background:var(--grad)"`. Removing
+    `--grad` from `:root` left every avatar transparent with no error anywhere.
+    Grep the JS for `var(--` before pruning tokens, not just the CSS for
+    `var(--`.
+22. **Screenshots can lie about which server you are testing.** The installed
+    `/Applications/flobot.app` already owned port 4120, so an early screenshot
+    pass silently captured the OLD embedded UI even though the new binary was
+    built. Always assert on served content (e.g. `curl .../styles.css | grep
+    <marker>`) and run the verification server on a free port.
+23. **Computed-style assertions beat pixel review.** Verifying the redesign
+    meant asserting: exactly one visible panel, nav/panel panes do not overlap,
+    the three Code Studio panes are ordered, every data surface is opaque, the
+    focus ring is present, body text clears 4.5:1, KPI numbers are
+    `tabular-nums` in a mono face, and only the expected elements carry a
+    gradient. Screenshot review catches "looks wrong"; assertions catch "is
+    actually correct".
+
 ## Judge loop (this cycle)
 
 10. **Advisory, fail-open judging.** The judge (internal/server/judge.go) runs after `capturePostRun` in the spawn goroutine, never blocks run completion, and treats every failure (no assistant text, model error, unparseable reply) as "not judged" — zero values in RunSummary mean unjudged, never score 0. A judge that could fail a run would be worse than no judge.
