@@ -1593,3 +1593,165 @@ button .kbd,
   padding: 3px 7px;
   font-size: 11px;
 }
+
+/* ---- open editors (tabs) -------------------------------------------------- */
+
+.ed-opentabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding-bottom: var(--sp-1);
+  margin-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--line-soft);
+  min-height: 22px;
+}
+
+.ed-opentab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.ed-opentab.sel {
+  border-color: var(--acc);
+  background: var(--acc-soft);
+}
+
+.ed-opentab-name {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ed-opentab.sel .ed-opentab-name {
+  color: var(--fg);
+}
+
+.ed-opentab-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.ed-opentab-close {
+  background: none;
+  border: 0;
+  color: var(--faint);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.ed-opentab-close:hover {
+  color: var(--err);
+}
+
+/* ---- find & replace -------------------------------------------------------- */
+
+.ed-find {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0;
+  margin-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--line-soft);
+  flex-wrap: wrap;
+}
+
+.ed-find input {
+  background: var(--bg-raise);
+  border: 1px solid var(--line-soft);
+  color: var(--fg);
+  border-radius: var(--r-sm);
+  padding: 2px 7px;
+  font-size: 11px;
+  min-width: 9ch;
+  flex: 1 1 9ch;
+}
+
+.ed-find #edFindCount {
+  white-space: nowrap;
+}
+
+/* ---- workspace search ------------------------------------------------------ */
+
+.ed-search-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding-bottom: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ed-search-block input {
+  background: var(--bg-raise);
+  border: 1px solid var(--line-soft);
+  color: var(--fg);
+  border-radius: var(--r-sm);
+  padding: 3px 7px;
+  font-size: 11px;
+}
+
+.ed-search-results {
+  display: flex;
+  flex-direction: column;
+  max-height: 26vh;
+  overflow-y: auto;
+}
+
+.ed-search-head {
+  font-size: 10px;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 2px 0;
+}
+
+.ed-search-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: none;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  padding: 2px 4px;
+  width: 100%;
+}
+
+.ed-search-item:hover {
+  background: var(--surface-2);
+  border-left-color: var(--acc);
+  color: var(--fg);
+}
+
+.ed-search-where {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--acc-2);
+}
+
+.ed-search-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}

@@ -297,6 +297,10 @@
     tree: null,
     openPath: null,
     openSha: null,
+    // tabs are the open editors: each keeps its own buffer, file handle and
+    // dirty state, so switching files never loses an edit.
+    tabs: [],
+    activeTab: null,
     // descId is the server-side file descriptor for the open file.
     descId: null,
     dirty: false,
@@ -472,22 +476,29 @@
       toast("type a path first", "err");
       return;
     }
-    const prev = ed.descId;
+    const existing = ed.tabs.find((t) => t.path === path);
+    if (existing) {
+      await activateTab(path, true);
+      return;
+    }
     try {
       const id = await openDescriptor(path);
       if (!id) throw new Error("could not open " + path);
-      ed.descId = id;
-      await closeDescriptor(prev);
       const f = await edApi("GET", "/api/v1/workspace/descriptors/" + id);
+      ed.descId = id;
       ed.openPath = f.path;
       ed.openSha = f.sha256;
       ed.dirty = false;
       $2("edPath").value = f.path;
       $2("edContent").value = f.content || "";
       $2("edDirty").textContent = "";
+      ed.tabs.push({ path: f.path, sha: f.sha256, descId: id, content: f.content || "", saved: f.content || "", dirty: false });
+      ed.activeTab = f.path;
       markOpen(f.path);
       ctx?.renderBreadcrumbs(f.path);
       ctx?.renderOutline(f.content || "", f.path);
+      renderOpenTabs();
+      persistTabs();
     } catch (e) {
       ed.descId = null;
       if (/not found|does not exist/i.test(e.message)) {
@@ -504,6 +515,10 @@
               ed.descId = await openDescriptor(f.path);
             } catch {
             }
+            ed.tabs.push({ path: f.path, sha: f.sha256, descId: ed.descId, content: "", saved: "", dirty: false });
+            ed.activeTab = f.path;
+            renderOpenTabs();
+            persistTabs();
             await loadTree();
             ctx?.renderBreadcrumbs(f.path);
             ctx?.renderOutline("", f.path);
@@ -538,6 +553,10 @@
           ed.descId = await openDescriptor(f.path);
         } catch {
         }
+        ed.tabs.push({ path: f.path, sha: f.sha256, descId: ed.descId, content: "", saved: "", dirty: false });
+        ed.activeTab = f.path;
+        renderOpenTabs();
+        persistTabs();
         await loadTree();
         toast("created " + f.path, "ok");
       } catch (e) {
@@ -560,6 +579,15 @@
       ed.openSha = f.sha256;
       ed.dirty = false;
       $2("edDirty").textContent = "";
+      const tab = ed.tabs.find((t) => t.path === ed.openPath);
+      if (tab) {
+        tab.saved = $2("edContent").value;
+        tab.content = tab.saved;
+        tab.sha = f.sha256;
+        tab.dirty = false;
+      }
+      renderOpenTabs();
+      persistTabs();
       toast("saved " + ed.openPath, "ok");
     } catch (e) {
       const msg = String(e.message || "");
@@ -569,6 +597,138 @@
       }
       toast(safe(e.message), "err");
     }
+  }
+  function snapshotActive() {
+    const tab = ed.tabs.find((t) => t.path === ed.activeTab);
+    if (!tab) return;
+    tab.content = $2("edContent").value;
+    tab.dirty = tab.content !== tab.saved;
+    ed.dirty = tab.dirty;
+  }
+  async function activateTab(path, reload) {
+    const tab = ed.tabs.find((t) => t.path === path);
+    if (!tab) return;
+    snapshotActive();
+    if (reload && tab.descId) {
+      try {
+        const f = await edApi("GET", "/api/v1/workspace/descriptors/" + tab.descId);
+        tab.content = f.content || "";
+        tab.saved = f.content || "";
+        tab.sha = f.sha256;
+        tab.dirty = false;
+      } catch {
+      }
+    }
+    ed.activeTab = tab.path;
+    ed.openPath = tab.path;
+    ed.openSha = tab.sha;
+    ed.descId = tab.descId;
+    ed.dirty = tab.dirty;
+    $2("edPath").value = tab.path;
+    $2("edContent").value = tab.content;
+    $2("edDirty").textContent = tab.dirty ? "\u25CF unsaved" : "";
+    markOpen(tab.path);
+    ctx?.renderBreadcrumbs(tab.path);
+    ctx?.renderOutline(tab.content, tab.path);
+    renderOpenTabs();
+    persistTabs();
+  }
+  async function closeTab(path) {
+    const idx = ed.tabs.findIndex((t) => t.path === path);
+    if (idx < 0) return;
+    const tab = ed.tabs[idx];
+    if (tab.dirty && !confirm("Close " + tab.path + " without saving?")) return;
+    if (tab.descId) await closeDescriptor(tab.descId);
+    ed.tabs.splice(idx, 1);
+    if (ed.activeTab === path) {
+      ed.activeTab = null;
+      const next = ed.tabs[Math.min(idx, ed.tabs.length - 1)];
+      if (next) {
+        await activateTab(next.path, false);
+        return;
+      }
+      ed.openPath = null;
+      ed.openSha = null;
+      ed.descId = null;
+      ed.dirty = false;
+      $2("edPath").value = "";
+      $2("edContent").value = "";
+      $2("edDirty").textContent = "";
+      ctx?.renderBreadcrumbs("");
+      ctx?.renderOutline("", "");
+    }
+    renderOpenTabs();
+    persistTabs();
+  }
+  function renderOpenTabs() {
+    const host = $2("edOpenTabs");
+    if (!host) return;
+    host.replaceChildren();
+    ed.tabs.forEach((tab) => {
+      const el2 = document.createElement("div");
+      el2.className = "ed-opentab" + (tab.path === ed.activeTab ? " sel" : "");
+      const name = document.createElement("button");
+      name.type = "button";
+      name.className = "ed-opentab-name";
+      name.textContent = tab.path.split("/").pop() || tab.path;
+      name.title = tab.path;
+      name.onclick = () => activateTab(tab.path, false);
+      el2.appendChild(name);
+      if (tab.dirty) {
+        const dot = document.createElement("span");
+        dot.className = "ed-opentab-dirty";
+        dot.title = "unsaved changes";
+        el2.appendChild(dot);
+      }
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "ed-opentab-close";
+      x.textContent = "\xD7";
+      x.title = "close " + tab.path;
+      x.onclick = (ev) => {
+        ev.stopPropagation();
+        closeTab(tab.path);
+      };
+      el2.appendChild(x);
+      host.appendChild(el2);
+    });
+  }
+  function persistTabs() {
+    try {
+      localStorage.setItem("edTabs", JSON.stringify(ed.tabs.map((t) => ({
+        path: t.path,
+        content: t.content,
+        saved: t.saved,
+        dirty: t.dirty
+      }))));
+    } catch {
+    }
+  }
+  async function restoreTabs() {
+    let saved = [];
+    try {
+      saved = JSON.parse(localStorage.getItem("edTabs") || "[]");
+    } catch {
+      saved = [];
+    }
+    if (!Array.isArray(saved) || !saved.length) return;
+    for (const t of saved.slice(0, 12)) {
+      try {
+        const id = await openDescriptor(t.path);
+        if (!id) continue;
+        const f = await edApi("GET", "/api/v1/workspace/descriptors/" + id);
+        ed.tabs.push({
+          path: f.path,
+          sha: f.sha256,
+          descId: id,
+          content: t.dirty ? t.content : f.content || "",
+          saved: f.content || "",
+          dirty: !!t.dirty
+        });
+      } catch {
+      }
+    }
+    if (ed.tabs.length) await activateTab(ed.tabs[0].path, false);
   }
   function markOpen(path) {
     $2("edTree").querySelectorAll(".ed-node.file").forEach((n) => n.classList.remove("active"));
@@ -1287,6 +1447,10 @@
       $2("edPath").value = "";
       $2("edContent").value = "";
       $2("edDirty").textContent = "";
+      ed.tabs = [];
+      ed.activeTab = null;
+      renderOpenTabs();
+      persistTabs();
       ctx?.clearContext();
       ctx?.renderBreadcrumbs("");
       ctx?.renderOutline("", "");
@@ -1342,6 +1506,23 @@
       ed.dirty = true;
       $2("edDirty").textContent = "\u25CF unsaved";
       ctx?.renderOutline($2("edContent").value, ed.openPath);
+      snapshotActive();
+      renderOpenTabs();
+      persistTabs();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && (ev.key === "w" || ev.key === "W")) {
+        ev.preventDefault();
+        if (ed.activeTab) closeTab(ed.activeTab);
+        return;
+      }
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === "Tab") {
+        ev.preventDefault();
+        if (!ed.tabs.length) return;
+        const i = ed.tabs.findIndex((t) => t.path === ed.activeTab);
+        const next = ed.tabs[(i + (ev.shiftKey ? -1 : 1) + ed.tabs.length) % ed.tabs.length];
+        activateTab(next.path, false);
+      }
     });
     $2("edRunBtn").onclick = edRun;
     $2("edStopBtn").onclick = edStop;
@@ -1397,6 +1578,7 @@
     });
     wireEditorKeys();
     loadTree();
+    restoreTabs();
     loadLatestDiff();
     loadCheckpoints();
     loadRuns();
@@ -1759,6 +1941,286 @@
     document.addEventListener("DOMContentLoaded", pInitProjects);
   } else {
     pInitProjects();
+  }
+  window.codeStudioProjects = {
+    activeTag: () => pFilter,
+    projects: () => pProjects
+  };
+
+  // src/find.js
+  var $f = (id) => document.getElementById(id);
+  var fMatches = [];
+  var fIndex = 0;
+  var fOpen = false;
+  function fBuffer() {
+    return $f("edContent");
+  }
+  function fFind(query) {
+    const ta = fBuffer();
+    if (!ta) return [];
+    const q = String(query || "");
+    if (!q) return [];
+    const hay = ta.value.toLowerCase();
+    const needle = q.toLowerCase();
+    const out = [];
+    let from = 0;
+    while (out.length < 5e3) {
+      const i = hay.indexOf(needle, from);
+      if (i < 0) break;
+      out.push(i);
+      from = i + Math.max(1, q.length);
+    }
+    return out;
+  }
+  function fRender(select) {
+    const ta = fBuffer();
+    const count = $f("edFindCount");
+    if (!ta || !count) return;
+    const q = $f("edFindInput").value;
+    fMatches = fFind(q);
+    if (!q) {
+      count.textContent = "";
+      return;
+    }
+    if (!fMatches.length) {
+      count.textContent = "no match";
+      return;
+    }
+    if (fIndex >= fMatches.length) fIndex = 0;
+    const pos = fMatches[fIndex];
+    const line = ta.value.slice(0, pos).split("\n").length;
+    count.textContent = fIndex + 1 + " of " + fMatches.length + " \xB7 line " + line;
+    if (!select) return;
+    ta.focus();
+    ta.setSelectionRange(pos, pos + q.length);
+    const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+    ta.scrollTop = Math.max(0, (line - 4) * lineHeight);
+  }
+  function fStep(delta) {
+    if (!fMatches.length) {
+      fRender(false);
+      return;
+    }
+    fIndex = (fIndex + delta + fMatches.length) % fMatches.length;
+    fRender(true);
+  }
+  function fReplaceCurrent() {
+    const ta = fBuffer();
+    if (!ta) return;
+    const q = $f("edFindInput").value;
+    const rep = $f("edReplaceInput").value;
+    if (!q || !fMatches.length) return;
+    const pos = fMatches[fIndex];
+    ta.value = ta.value.slice(0, pos) + rep + ta.value.slice(pos + q.length);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    fIndex = 0;
+    fRender(true);
+  }
+  function fReplaceAll() {
+    const ta = fBuffer();
+    if (!ta) return;
+    const q = $f("edFindInput").value;
+    const rep = $f("edReplaceInput").value;
+    if (!q || !fMatches.length) return;
+    const n = fMatches.length;
+    let out = "";
+    let from = 0;
+    for (const pos of fMatches) {
+      out += ta.value.slice(from, pos) + rep;
+      from = pos + q.length;
+    }
+    out += ta.value.slice(from);
+    ta.value = out;
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    fIndex = 0;
+    fRender(false);
+    fToast(n + (n === 1 ? " replacement" : " replacements"), "ok");
+  }
+  function fToast(msg, cls) {
+    const host = $f("toasts");
+    if (!host) return;
+    const t = document.createElement("div");
+    t.className = "toast" + (cls ? " " + cls : "");
+    t.textContent = msg;
+    host.appendChild(t);
+    setTimeout(() => t.remove(), 2200);
+  }
+  function fOpenBar() {
+    const bar = $f("edFind");
+    const input = $f("edFindInput");
+    if (!bar || !input) return;
+    const ta = fBuffer();
+    if (ta && !input.value) {
+      const sel = ta.value.slice(ta.selectionStart ?? 0, ta.selectionEnd ?? 0);
+      if (sel && sel.length < 120 && !sel.includes("\n")) input.value = sel;
+    }
+    bar.hidden = false;
+    fOpen = true;
+    input.focus();
+    input.select();
+    fRender(false);
+  }
+  function fCloseBar() {
+    const bar = $f("edFind");
+    if (!bar) return;
+    bar.hidden = true;
+    fOpen = false;
+    fBuffer()?.focus();
+  }
+  function fInitFind() {
+    const input = $f("edFindInput");
+    if (!input) return;
+    input.addEventListener("input", () => {
+      fIndex = 0;
+      fRender(false);
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        fStep(ev.shiftKey ? -1 : 1);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        fCloseBar();
+      }
+    });
+    const rep = $f("edReplaceInput");
+    rep?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        fReplaceCurrent();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        fCloseBar();
+      }
+    });
+    $f("edFindPrev")?.addEventListener("click", () => fStep(-1));
+    $f("edFindNext")?.addEventListener("click", () => fStep(1));
+    $f("edFindReplace")?.addEventListener("click", fReplaceCurrent);
+    $f("edFindReplaceAll")?.addEventListener("click", fReplaceAll);
+    $f("edFindClose")?.addEventListener("click", fCloseBar);
+  }
+  document.addEventListener("keydown", (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && (ev.key === "f" || ev.key === "F")) {
+      ev.preventDefault();
+      fOpenBar();
+      return;
+    }
+    if (ev.key === "Escape" && fOpen) {
+      ev.preventDefault();
+      fCloseBar();
+    }
+  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", fInitFind);
+  } else {
+    fInitFind();
+  }
+
+  // src/search.js
+  var $s = (id) => document.getElementById(id);
+  var sMatches = [];
+  var sQuery = "";
+  var sTruncated = false;
+  function sScope() {
+    const tag = window.codeStudioProjects?.activeTag?.() || "";
+    return tag;
+  }
+  async function sSearch(query) {
+    sQuery = String(query || "");
+    const host = $s("edSearchResults");
+    if (!host) return;
+    if (!sQuery.trim()) {
+      sMatches = [];
+      host.replaceChildren();
+      const note = document.createElement("div");
+      note.className = "ed-empty";
+      note.textContent = "search the workspace by text";
+      host.appendChild(note);
+      return;
+    }
+    const tag = sScope();
+    try {
+      const url = "/api/v1/workspace/search?q=" + encodeURIComponent(sQuery) + (tag ? "&tag=" + encodeURIComponent(tag) : "");
+      const res = await fetch(url);
+      const body = await res.json();
+      sMatches = body.matches || [];
+      sTruncated = !!body.truncated;
+    } catch (e) {
+      sMatches = [];
+      host.replaceChildren();
+      const note = document.createElement("div");
+      note.className = "ed-empty";
+      note.textContent = "search failed";
+      host.appendChild(note);
+      return;
+    }
+    host.replaceChildren();
+    const scopeTag = sScope();
+    const head = document.createElement("div");
+    head.className = "ed-search-head";
+    head.textContent = sMatches.length + (sMatches.length === 1 ? " hit" : " hits") + (scopeTag ? " in #" + scopeTag : "") + (sTruncated ? " \xB7 showing the first 200" : "");
+    host.appendChild(head);
+    if (!sMatches.length) {
+      const note = document.createElement("div");
+      note.className = "ed-empty";
+      note.textContent = "no match for \u201C" + sQuery + "\u201D";
+      host.appendChild(note);
+      return;
+    }
+    sMatches.forEach((m) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "ed-search-item";
+      const where = document.createElement("span");
+      where.className = "ed-search-where";
+      where.textContent = m.path + ":" + m.line;
+      const text = document.createElement("span");
+      text.className = "ed-search-text";
+      text.textContent = m.text.trim();
+      row.appendChild(where);
+      row.appendChild(text);
+      row.onclick = async () => {
+        if (window.codeStudio?.openFile) await window.codeStudio.openFile(m.path);
+        if (m.line > 0 && window.codeStudio?.gotoLine) window.codeStudio.gotoLine(m.line);
+      };
+      host.appendChild(row);
+    });
+  }
+  function sInitSearch() {
+    const input = $s("edSearchInput");
+    if (!input) return;
+    let timer = null;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => sSearch(input.value), 180);
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        clearTimeout(timer);
+        sSearch(input.value);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        input.value = "";
+        sSearch("");
+        input.blur();
+      }
+    });
+  }
+  document.addEventListener("keydown", (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && (ev.key === "f" || ev.key === "F")) {
+      ev.preventDefault();
+      const input = $s("edSearchInput");
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }
+  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", sInitSearch);
+  } else {
+    sInitSearch();
   }
 
   // src/examples.js

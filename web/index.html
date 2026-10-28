@@ -207,6 +207,10 @@
         <div class="ed-projects" id="edProjects"></div>
         <div class="ed-project-form" id="edProjectForm" hidden></div>
       </div>
+      <div class="ed-search-block">
+        <input id="edSearchInput" placeholder="search text in workspace (⌘⇧F)" spellcheck="false">
+        <div class="ed-search-results" id="edSearchResults"></div>
+      </div>
       <div class="row">
         <span class="tag" id="edRoot" title="workspace folder">…</span>
         <span class="spacer"></span>
@@ -221,6 +225,7 @@
       <div class="ed-tree" id="edTree"></div>
     </div>
     <div class="card ed-main-card">
+      <div class="ed-opentabs" id="edOpenTabs"></div>
       <div class="row">
         <input id="edPath" placeholder="path (e.g. internal/server/server.go)" spellcheck="false">
         <button type="button" id="edOpen">Open</button>
@@ -229,6 +234,16 @@
         <span class="tag" id="edDirty"></span>
       </div>
       <div class="ed-crumbs" id="edCrumbs"></div>
+      <div class="ed-find" id="edFind" hidden>
+        <input id="edFindInput" placeholder="find" spellcheck="false">
+        <span class="tag" id="edFindCount"></span>
+        <button type="button" class="ghost" id="edFindPrev" title="previous match">↑</button>
+        <button type="button" class="ghost" id="edFindNext" title="next match">↓</button>
+        <input id="edReplaceInput" placeholder="replace with" spellcheck="false">
+        <button type="button" class="ghost" id="edFindReplace" title="replace this match">replace</button>
+        <button type="button" class="ghost" id="edFindReplaceAll" title="replace every match">all</button>
+        <button type="button" class="ghost" id="edFindClose" title="close">×</button>
+      </div>
       <div class="ed-buffer">
         <textarea id="edContent" spellcheck="false" placeholder="open a file to edit it"></textarea>
         <div class="ed-outline" id="edOutline"></div>
@@ -236,6 +251,9 @@
       <div class="row ed-keys">
         <span><b>⌘P</b> open file</span>
         <span><b>⌘S</b> save</span>
+        <span><b>⌘F</b> find</span>
+        <span><b>⌘W</b> close tab</span>
+        <span><b>⌘⇧F</b> search</span>
       </div>
     </div>
     <div class="card ed-rail-card">

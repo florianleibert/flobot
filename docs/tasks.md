@@ -18,6 +18,7 @@ review machinery) and are therefore **sequential**, not parallel.
 | T-5 | R-QUEUE | `internal/queue/queue.go`, `internal/queue/queue_test.go`, `internal/server/queue.go`, `internal/server/diffreview.go` | T-2 | false | **done** |
 | T-6 | R-LIVEDIFF | `internal/server/livediff.go`, `internal/server/diffreview.go` | T-4 | false | **done** |
 | T-7 | frontend thread, queue and symbol surfaces | `flobot-ui-redesign/src/supervision.js`, `flobot-ui-redesign/src/main.js`, `web/app.js` (generated) | T-1, T-4, T-5, T-6 | false | **done** |
+| T-8 | R-EDITOR: open editors, find & replace, workspace text search | `internal/workspace/search.go`, `internal/workspace/search_test.go`, `internal/server/search.go`, `internal/server/server.go`, `flobot-ui-redesign/src/editor.js`, `flobot-ui-redesign/src/find.js`, `flobot-ui-redesign/src/search.js`, `flobot-ui-redesign/index.html`, `web/*` (generated) | T-7 | false | **done** |
 
 ## T-1 — workspace-wide symbol search (R-EDIT-a)
 
@@ -104,3 +105,34 @@ its own styles, so it depends on the editor only through the `openFile` bridge t
 exposes. It adds a supervision card (threads plus the review-queue badge), a symbol palette on
 `⌘⇧O` that queries `GET /api/v1/workspace/symbols` and opens a file at the matching line, and a
 4-second poll that pauses while the tab is hidden.
+
+## T-8 — editor core: open editors, find & replace, workspace text search
+
+files: `internal/workspace/search.go`, `internal/workspace/search_test.go`,
+`internal/server/search.go`, `internal/server/server.go`,
+`flobot-ui-redesign/src/editor.js`, `flobot-ui-redesign/src/find.js`,
+`flobot-ui-redesign/src/search.js`, `flobot-ui-redesign/index.html`,
+`web/app.js` (generated)
+depends_on: T-7
+parallel: false
+acceptance: The PRD's Codex-parity gaps are closed; what was left was the editor
+itself — one buffer, one file, no way to search. Three additions:
+
+- **Open editors.** `editor.js` keeps a tab per open file, each with its own
+  buffer, file handle and dirty state. Switching tabs snapshots the outgoing
+  buffer, so an edit is never lost; a dirty buffer asks before it is closed.
+  The open editors — unsaved buffers included — are persisted in
+  `localStorage` and restored on reload, so a restart does not cost an edit.
+  `⌘W` closes the active editor, `⌘Tab` cycles.
+- **Find & replace.** `⌘F` opens a find bar that selects each match and
+  reports its position ("3 of 17 · line 42"); replace and replace-all work on
+  the buffer and keep the dirty state honest.
+- **Workspace text search.** `GET /api/v1/workspace/search?q=…` returns
+  `{query, matches[{path,line,col,text}], truncated, scope}`. The search is
+  bounded (2000 files, 512 KiB per file, 200 hits) and skips artifact
+  directories, dot-directories and symlinks, so it cannot walk out of the
+  workspace. `scope` narrows it to a project's files or to the projects behind
+  a tag, which is what makes "search inside #frontend" one click.
+
+Verified: `go build`, `go vet`, `gofmt`, the workspace and server tests, and a
+12-check Playwright audit (`docs/audit/verify-editor-overhaul.mjs`).
