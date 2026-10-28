@@ -26,7 +26,9 @@ import (
 	"github.com/florianleibert/flobot/internal/routes"
 	"github.com/florianleibert/flobot/internal/schedule"
 	"github.com/florianleibert/flobot/internal/store"
+	"github.com/florianleibert/flobot/internal/queue"
 	"github.com/florianleibert/flobot/internal/taskclient"
+	"github.com/florianleibert/flobot/internal/threads"
 	"github.com/florianleibert/flobot/internal/workspace"
 	"github.com/florianleibert/flobot/web"
 )
@@ -84,6 +86,17 @@ type Server struct {
 	// event stream) before capturePostRun writes the run summary.
 	contracts   map[string]contractPayload
 	contractsMu sync.Mutex
+	// threads owns the thread worktrees, queue serves the review queue,
+	// and live holds the in-flight diff of running runs. The thread store
+	// lives in its own file so state.json's "never persists runs" contract
+	// stays true.
+	threads *threads.Manager
+	queue   *queue.Queue
+	live    *liveStore
+	// cpRoots caches one checkpoint store per git root, so a run in a
+	// worktree snapshots its own tree while the user's tree stays the
+	// default.
+	cpRoots map[string]*checkpoint.Store
 }
 
 // contractPayload is the parsed result_contract event payload.
@@ -152,6 +165,24 @@ func New(st *store.Store, opts ...Option) *Server {
 	s.hubOnce.Do(func() { s.hub = newHub() })
 	s.snaps = newRunSnapshots()
 	s.contracts = map[string]contractPayload{}
+	// Supervision surfaces. The thread store is its own file
+	// (~/.flobot/threads.json) so state.json's "never persists runs"
+	// contract stays true.
+	home := s.home
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	ts := store.NewThreadStore()
+	if home != "" {
+		ts.SetPath(filepath.Join(home, ".flobot", "threads.json"))
+	}
+	if err := ts.Load(); err != nil {
+		log.Printf("flobot: load threads: %v", err)
+	}
+	s.threads = threads.New(ts)
+	s.queue = queue.New(ts)
+	s.live = newLiveStore()
+	s.cpRoots = map[string]*checkpoint.Store{}
 	// Restore the roster from disk. A missing state file is not an error.
 	if err := s.store.Load(); err != nil {
 		log.Printf("flobot: load state: %v", err)
@@ -240,6 +271,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/diff/apply", s.applyDiff)
 	mux.HandleFunc("POST /api/v1/runs/{id}/diff/reject", s.rejectDiff)
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
+	mux.HandleFunc("GET /api/v1/runs/{id}/diff/live", s.runDiffLive)
+	mux.HandleFunc("POST /api/v1/runs/{id}/diff/merge", s.mergeThreadDiff)
+	mux.HandleFunc("POST /api/v1/threads", s.createThread)
+	mux.HandleFunc("GET /api/v1/threads", s.listThreads)
+	mux.HandleFunc("GET /api/v1/threads/{id}", s.getThread)
+	mux.HandleFunc("DELETE /api/v1/threads/{id}", s.deleteThread)
+	mux.HandleFunc("GET /api/v1/queue", s.listQueue)
+	mux.HandleFunc("POST /api/v1/queue/{id}/state", s.setQueueState)
+	mux.HandleFunc("DELETE /api/v1/queue/{id}", s.resolveQueueEntry)
 	mux.HandleFunc("GET /api/v1/checkpoints", s.listCheckpoints)
 	mux.HandleFunc("POST /api/v1/checkpoints/{id}/restore", s.restoreCheckpoint)
 	mux.HandleFunc("GET /api/stream", s.stream)
@@ -1000,6 +1040,9 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 	}
 	s.cancels[run.ID] = cancel
 	s.cancelsMu.Unlock()
+	// Live diff: poll this run's tree so the review pane fills while the
+	// agent is still working. The poller stops with the run's context.
+	s.startLiveDiff(ctx, run.ID)
 	// Pre-run git snapshot (single choke point: createRun, handoff,
 	// testRun, fireRoutine). Fail-closed: snapshot errors never block
 	// the run, they only disable diff review for it. Runs in its own

@@ -44,6 +44,10 @@ type Thread struct {
 	// WorktreePath is the isolated tree the thread writes into. Empty when
 	// the thread runs in the user's own working tree.
 	WorktreePath string `json:"worktree_path,omitempty"`
+	// UserTree is the user's tree at thread creation. The merge-back
+	// compares against it, so merging a thread's work cannot silently
+	// overwrite an edit the human made while the agent was working.
+	UserTree string `json:"user_tree,omitempty"`
 	// Status is one of ThreadRunning, ThreadDone, ThreadFailed,
 	// ThreadCancelled.
 	Status    string `json:"status"`

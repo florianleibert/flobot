@@ -1,6 +1,6 @@
 /* Code Studio redesign — esbuild bundle of src/*.js, embedded via web/embed.go. Edit flobot-ui-redesign/src and run sync-to-flobot.mjs. */
 (() => {
-  // ../../../../flobot-ui-redesign/src/ctx.js
+  // src/ctx.js
   var $ = (id) => document.getElementById(id);
   var OUTLINE_RULES = {
     go: [
@@ -48,8 +48,8 @@
   function splitPath(path) {
     return String(path || "").split("/").filter(Boolean);
   }
-  function createCtx(api2) {
-    const { ed: ed2, edApi: edApi2, safe: safe3, toast: toast3, getQuickIndex, ensureQuickIndex, renderTree: renderTree2, edExpanded: edExpanded2 } = api2;
+  function createCtx(api3) {
+    const { ed: ed2, edApi: edApi2, safe: safe3, toast: toast3, getQuickIndex, ensureQuickIndex, renderTree: renderTree2, edExpanded: edExpanded2 } = api3;
     function renderBreadcrumbs(path) {
       const host = $("edCrumbs");
       if (!host) return;
@@ -232,7 +232,7 @@
         chip.appendChild(x);
         chip.onclick = (ev) => {
           if (ev.target === x) return;
-          api2.openFile(p);
+          api3.openFile(p);
         };
         host.appendChild(chip);
       }
@@ -271,7 +271,7 @@
     };
   }
 
-  // ../../../../flobot-ui-redesign/src/editor.js
+  // src/editor.js
   var $2 = (id) => document.getElementById(id);
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -565,24 +565,24 @@
   }
   function markOpen(path) {
     $2("edTree").querySelectorAll(".ed-node.file").forEach((n) => n.classList.remove("active"));
-    const el = $2("edTree").querySelector(`.ed-node[title="${CSS.escape(path)}"]`);
-    if (el) el.classList.add("active");
+    const el2 = $2("edTree").querySelector(`.ed-node[title="${CSS.escape(path)}"]`);
+    if (el2) el2.classList.add("active");
   }
   function renderReviewState() {
-    const el = $2("edReviewState");
-    if (!el) return;
+    const el2 = $2("edReviewState");
+    if (!el2) return;
     const st = ed.review?.reviewState || ed.review?.review_state || "";
-    el.textContent = st ? st : "";
-    el.className = "tag " + st;
+    el2.textContent = st ? st : "";
+    el2.className = "tag " + st;
     const j = ed.review?.judgeScore;
-    const existing = el.parentElement?.querySelector(".tag.judge");
+    const existing = el2.parentElement?.querySelector(".tag.judge");
     if (existing) existing.remove();
     if (typeof j === "number" && j > 0) {
       const jt = document.createElement("span");
       jt.className = "tag judge";
       jt.textContent = Number(j).toFixed(1) + "/10";
       jt.title = ed.review?.judgeRationale || "";
-      el.after(jt);
+      el2.after(jt);
     }
   }
   function renderDiff() {
@@ -915,21 +915,21 @@
     });
   }
   function setRunStatus(text, cls) {
-    const el = $2("edRunStatus");
-    if (!el) return;
-    el.textContent = text;
-    el.classList.remove("live", "working", "err");
-    if (cls) el.classList.add(cls);
+    const el2 = $2("edRunStatus");
+    if (!el2) return;
+    el2.textContent = text;
+    el2.classList.remove("live", "working", "err");
+    if (cls) el2.classList.add(cls);
     const dot = $2("edLiveDot");
     if (dot) dot.hidden = cls !== "live";
   }
   function fillRunBot(bots) {
-    const el = $2("edRunBot");
-    if (!el) return;
-    const cur = el.value;
+    const el2 = $2("edRunBot");
+    if (!el2) return;
+    const cur = el2.value;
     const opts = (bots || []).map((b) => `<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.route)})</option>`).join("");
-    el.innerHTML = opts ? opts : `<option value="">no teammate deployed</option>`;
-    if ([...el.options].some((o) => o.value === cur)) el.value = cur;
+    el2.innerHTML = opts ? opts : `<option value="">no teammate deployed</option>`;
+    if ([...el2.options].some((o) => o.value === cur)) el2.value = cur;
     const runBtn = $2("edRunBtn");
     if (runBtn) runBtn.disabled = !(bots || []).length;
   }
@@ -1326,7 +1326,7 @@
     initEditor();
   }
 
-  // ../../../../flobot-ui-redesign/src/examples.js
+  // src/examples.js
   var MISSIONS = [
     {
       icon: "\u{1F41B}",
@@ -1477,7 +1477,7 @@ When a release is cut:
     };
   }
 
-  // ../../../../flobot-ui-redesign/src/power.js
+  // src/power.js
   function fuzzy(needle, hay) {
     needle = needle.toLowerCase();
     hay = String(hay).toLowerCase();
@@ -1594,8 +1594,8 @@ When a release is cut:
   function boot() {
     if (localStorage.getItem("flobot-booted")) return;
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const el = document.createElement("div");
-    el.className = "boot";
+    const el2 = document.createElement("div");
+    el2.className = "boot";
     const lines = [
       "flobot v1 \xB7 standalone \xB7 loopback only",
       "loading roster \u2026",
@@ -1604,9 +1604,9 @@ When a release is cut:
       "probing model routes \u2026",
       "crew online."
     ];
-    el.innerHTML = `<div class="boot-in"><pre class="boot-lines"></pre></div>`;
-    document.body.appendChild(el);
-    const pre = el.querySelector(".boot-lines");
+    el2.innerHTML = `<div class="boot-in"><pre class="boot-lines"></pre></div>`;
+    document.body.appendChild(el2);
+    const pre = el2.querySelector(".boot-lines");
     let i = 0;
     const step = () => {
       if (i < lines.length) {
@@ -1614,9 +1614,9 @@ When a release is cut:
         setTimeout(step, 160);
       } else {
         setTimeout(() => {
-          el.classList.add("out");
+          el2.classList.add("out");
           localStorage.setItem("flobot-booted", "1");
-          setTimeout(() => el.remove(), 500);
+          setTimeout(() => el2.remove(), 500);
         }, 350);
       }
     };
@@ -1663,7 +1663,7 @@ When a release is cut:
     requestAnimationFrame(frame);
   }
 
-  // ../../../../flobot-ui-redesign/src/telemetry.js
+  // src/telemetry.js
   var Stats = class {
     constructor() {
       this.t0 = Date.now();
@@ -1826,7 +1826,7 @@ When a release is cut:
     return L.join("\n");
   }
 
-  // ../../../../flobot-ui-redesign/src/vibe.js
+  // src/vibe.js
   function vibe() {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const cv = document.createElement("canvas");
@@ -1880,8 +1880,296 @@ When a release is cut:
     requestAnimationFrame(frame);
   }
 
-  // ../../../../flobot-ui-redesign/src/main.js
+  // src/supervision.js
   var $3 = (id) => document.getElementById(id);
+  async function api(method, path, body) {
+    const opt = { method, headers: {} };
+    if (body !== void 0) {
+      opt.headers["Content-Type"] = "application/json";
+      opt.body = JSON.stringify(body);
+    }
+    const r = await fetch(path, opt);
+    const text = await r.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    if (!r.ok) throw new Error(data && data.error || r.statusText || "request failed");
+    return data;
+  }
+  var CSS2 = `
+.sv-card{position:fixed;right:18px;bottom:18px;z-index:60;width:290px;
+  background:var(--panel,#16181d);border:1px solid var(--line,#2a2e36);border-radius:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.45);color:var(--fg,#e7e9ee);font-size:12px;
+  display:flex;flex-direction:column;max-height:60vh;overflow:hidden}
+.sv-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line,#2a2e36);
+  font-weight:600;letter-spacing:.02em;cursor:pointer;user-select:none}
+.sv-badge{margin-left:auto;min-width:18px;height:18px;border-radius:9px;background:#e0603a;color:#fff;
+  font-size:11px;line-height:18px;text-align:center;font-weight:700}
+.sv-badge[hidden]{display:none}
+.sv-body{padding:6px 10px 10px;overflow:auto}
+.sv-body[hidden]{display:none}
+.sv-empty{opacity:.55;padding:4px 0}
+.sv-row{display:flex;align-items:baseline;gap:6px;padding:3px 0;cursor:pointer;border-radius:4px}
+.sv-row:hover{background:rgba(255,255,255,.05)}
+.sv-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#6b7280}
+.sv-dot.running{background:#e0a83a}.sv-dot.done{background:#3aa76d}.sv-dot.failed{background:#d4483b}
+.sv-goal{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.sv-kind{opacity:.5;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.sv-ln{opacity:.5;font-size:10px}
+.sv-pal{position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.45);display:flex;
+  align-items:flex-start;justify-content:center;padding-top:12vh}
+.sv-pal[hidden]{display:none}
+.sv-pal-box{width:min(640px,92vw);background:var(--panel,#16181d);border:1px solid var(--line,#2a2e36);
+  border-radius:12px;box-shadow:0 18px 48px rgba(0,0,0,.55);overflow:hidden;color:var(--fg,#e7e9ee)}
+.sv-pal-in{width:100%;box-sizing:border-box;padding:12px 14px;border:0;border-bottom:1px solid var(--line,#2a2e36);
+  background:transparent;color:inherit;font:inherit;font-size:14px;outline:none}
+.sv-pal-list{max-height:46vh;overflow:auto;padding:4px}
+.sv-pal-item{display:flex;align-items:baseline;gap:8px;padding:6px 10px;border-radius:6px;cursor:pointer}
+.sv-pal-item:hover,.sv-pal-item.sel{background:rgba(255,255,255,.07)}
+.sv-pal-path{opacity:.6;font-size:11px;margin-left:auto}
+.sv-note{opacity:.55;padding:8px 10px;font-size:11px}
+`;
+  function injectStyles() {
+    if (document.getElementById("sv-styles")) return;
+    const s = document.createElement("style");
+    s.id = "sv-styles";
+    s.textContent = CSS2;
+    document.head.appendChild(s);
+  }
+  var state = { threads: [], queue: [], pending: 0, open: false };
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== void 0) n.textContent = text;
+    return n;
+  }
+  function render() {
+    const body = document.querySelector("#sv-card .sv-body");
+    if (!body) return;
+    body.textContent = "";
+    const q = el("div", "sv-row");
+    q.appendChild(el("span", "sv-dot", ""));
+    q.appendChild(el("span", "sv-goal", `Review queue \u2014 ${state.pending} pending`));
+    body.appendChild(q);
+    if (state.pending === 0) {
+      body.appendChild(el("div", "sv-empty", "Nothing waiting for review."));
+    } else {
+      for (const e of state.queue) {
+        if (e.state === "resolved") continue;
+        const row = el("div", "sv-row");
+        row.appendChild(el("span", "sv-dot", ""));
+        const goal = el("span", "sv-goal", e.goal || e.run_id || "run");
+        row.appendChild(goal);
+        row.appendChild(el("span", "sv-kind", `${e.files_changed ? e.files_changed.length : 0} files`));
+        row.title = e.run_id || "";
+        body.appendChild(row);
+      }
+    }
+    body.appendChild(el("div", "sv-empty", ""));
+    body.appendChild(el("div", "sv-kind", "threads"));
+    if (!state.threads.length) {
+      body.appendChild(el("div", "sv-empty", "No threads yet."));
+    }
+    for (const t of state.threads) {
+      const row = el("div", "sv-row");
+      const dot = el("span", "sv-dot", "");
+      dot.className = "sv-dot " + (t.status || "");
+      row.appendChild(dot);
+      row.appendChild(el("span", "sv-goal", t.goal || t.id));
+      row.title = t.worktree_path || t.id || "";
+      body.appendChild(row);
+    }
+    const badge = document.querySelector("#sv-card .sv-badge");
+    if (badge) {
+      badge.textContent = String(state.pending);
+      badge.hidden = state.pending === 0;
+    }
+  }
+  async function refresh() {
+    try {
+      const [t, q] = await Promise.all([
+        api("GET", "/api/v1/threads"),
+        api("GET", "/api/v1/queue")
+      ]);
+      state.threads = t && t.threads || [];
+      state.queue = q && q.entries || [];
+      state.pending = q && q.pending || 0;
+      render();
+    } catch {
+    }
+  }
+  function buildCard() {
+    if (document.getElementById("sv-card")) return;
+    const card = el("div", "sv-card");
+    card.id = "sv-card";
+    const head = el("div", "sv-head");
+    head.appendChild(el("span", "", "Supervision"));
+    const badge = el("span", "sv-badge", "0");
+    badge.hidden = true;
+    head.appendChild(badge);
+    const body = el("div", "sv-body");
+    body.hidden = true;
+    head.onclick = () => {
+      state.open = !state.open;
+      body.hidden = !state.open;
+    };
+    card.appendChild(head);
+    card.appendChild(body);
+    document.body.appendChild(card);
+  }
+  var pal = { open: false, items: [], sel: 0, seq: 0 };
+  function buildPalette() {
+    if (document.getElementById("sv-pal")) return;
+    const wrap = el("div", "sv-pal");
+    wrap.id = "sv-pal";
+    wrap.hidden = true;
+    const box = el("div", "sv-pal-box");
+    const input = document.createElement("input");
+    input.className = "sv-pal-in";
+    input.placeholder = "Go to symbol\u2026  (name of a function, type or class)";
+    input.id = "sv-pal-input";
+    const list = el("div", "sv-pal-list");
+    list.id = "sv-pal-list";
+    box.appendChild(input);
+    box.appendChild(list);
+    wrap.appendChild(box);
+    wrap.onclick = (ev) => {
+      if (ev.target === wrap) closePalette();
+    };
+    document.body.appendChild(wrap);
+    let timer = null;
+    input.oninput = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => searchSymbols(input.value), 120);
+    };
+    input.onkeydown = (ev) => {
+      if (ev.key === "Escape") {
+        closePalette();
+      } else if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        pal.sel = Math.min(pal.sel + 1, pal.items.length - 1);
+        paintPalette();
+      } else if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        pal.sel = Math.max(pal.sel - 1, 0);
+        paintPalette();
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        pickSymbol(pal.sel);
+      }
+    };
+  }
+  function paintPalette(message) {
+    const list = document.getElementById("sv-pal-list");
+    if (!list) return;
+    list.textContent = "";
+    if (message) {
+      list.appendChild(el("div", "sv-note", message));
+      return;
+    }
+    if (!pal.items.length) {
+      list.appendChild(el("div", "sv-note", "No symbols match."));
+      return;
+    }
+    pal.items.forEach((s, i) => {
+      const row = el("div", "sv-pal-item" + (i === pal.sel ? " sel" : ""));
+      row.appendChild(el("span", "sv-kind", s.kind || ""));
+      row.appendChild(el("span", "sv-goal", s.name || ""));
+      row.appendChild(el("span", "sv-pal-path", `${s.path}:${s.line}`));
+      row.onclick = () => pickSymbol(i);
+      list.appendChild(row);
+    });
+  }
+  async function searchSymbols(q) {
+    const list = document.getElementById("sv-pal-list");
+    const term = String(q || "").trim();
+    if (!term) {
+      pal.items = [];
+      pal.sel = 0;
+      paintPalette("Type a symbol name.");
+      return;
+    }
+    const seq = ++pal.seq;
+    try {
+      const r = await api("GET", "/api/v1/workspace/symbols?q=" + encodeURIComponent(term));
+      if (seq !== pal.seq) return;
+      pal.items = r && r.symbols || [];
+      pal.sel = 0;
+      if (r && r.truncated) {
+        paintPalette(`Showing the first ${pal.items.length} matches (the search was cut short).`);
+        return;
+      }
+      paintPalette();
+    } catch (e) {
+      if (seq !== pal.seq) return;
+      pal.items = [];
+      paintPalette("Symbol search failed: " + (e && e.message ? e.message : "unknown error"));
+    }
+  }
+  async function pickSymbol(i) {
+    const s = pal.items[i];
+    if (!s) return;
+    closePalette();
+    try {
+      await window.codeStudio?.openFile?.(s.path);
+      const f = await api("GET", "/api/v1/workspace/file?path=" + encodeURIComponent(s.path));
+      const ta = $3("edContent");
+      if (ta && f && typeof f.content === "string") {
+        const lines = f.content.split("\n");
+        let offset = 0;
+        for (let n = 0; n < Math.min(s.line - 1, lines.length); n++) offset += lines[n].length + 1;
+        ta.focus();
+        ta.setSelectionRange(offset, offset);
+        const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+        ta.scrollTop = Math.max(0, (s.line - 4) * lh);
+      }
+    } catch {
+    }
+  }
+  function openPalette() {
+    injectStyles();
+    buildPalette();
+    const wrap = document.getElementById("sv-pal");
+    const input = document.getElementById("sv-pal-input");
+    if (!wrap || !input) return;
+    wrap.hidden = false;
+    pal.open = true;
+    pal.items = [];
+    pal.sel = 0;
+    input.value = "";
+    paintPalette("Type a symbol name.");
+    input.focus();
+  }
+  function closePalette() {
+    const wrap = document.getElementById("sv-pal");
+    if (wrap) wrap.hidden = true;
+    pal.open = false;
+  }
+  function bootSupervision() {
+    injectStyles();
+    buildCard();
+    buildPalette();
+    refresh();
+    setInterval(() => {
+      if (!document.hidden) refresh();
+    }, 4e3);
+    document.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && (ev.key === "O" || ev.key === "o")) {
+        ev.preventDefault();
+        if (pal.open) closePalette();
+        else openPalette();
+      } else if (ev.key === "Escape" && pal.open) {
+        closePalette();
+      }
+    });
+    window.supervision = { openPalette, closePalette, refresh };
+  }
+
+  // src/main.js
+  var $4 = (id) => document.getElementById(id);
   var roster = { bots: [], skills: [], routines: [], messages: [], routes: [], runs: [] };
   var activeRun = null;
   var pollTimer = null;
@@ -1916,7 +2204,7 @@ When a release is cut:
     const t = document.createElement("div");
     t.className = "toast" + (cls ? " " + cls : "");
     t.textContent = msg;
-    $3("toasts").appendChild(t);
+    $4("toasts").appendChild(t);
     setTimeout(() => {
       t.style.opacity = "0";
       t.style.transition = "opacity .3s";
@@ -1927,7 +2215,7 @@ When a release is cut:
     if (!e) return;
     toast2(e, "err");
   }
-  async function api(method, path, body) {
+  async function api2(method, path, body) {
     const opt = { method, headers: {} };
     if (body !== void 0) {
       opt.headers["Content-Type"] = "application/json";
@@ -1943,25 +2231,25 @@ When a release is cut:
       return text;
     }
   }
-  function fillSelect(el, items, label) {
-    const cur = el.value;
-    el.innerHTML = items.map((b) => `<option value="${esc3(b.id)}">${esc3(label(b))}</option>`).join("");
-    if ([...el.options].some((o) => o.value === cur)) el.value = cur;
+  function fillSelect(el2, items, label) {
+    const cur = el2.value;
+    el2.innerHTML = items.map((b) => `<option value="${esc3(b.id)}">${esc3(label(b))}</option>`).join("");
+    if ([...el2.options].some((o) => o.value === cur)) el2.value = cur;
   }
-  function fillRouteSelect(el, mesh) {
-    const cur = el.value;
+  function fillRouteSelect(el2, mesh) {
+    const cur = el2.value;
     const opts = ["glm", "qwen", "muse", "local"].map((id) => `<option value="${id}">${id}</option>`).join("");
     const meshOpts = (mesh || []).map((m) => `<option value="${esc3(m.route)}">${esc3(m.route)}${m.display ? " \xB7 " + esc3(m.display) : ""}</option>`).join("");
-    el.innerHTML = opts + meshOpts;
-    if ([...el.options].some((o) => o.value === cur)) el.value = cur;
+    el2.innerHTML = opts + meshOpts;
+    if ([...el2.options].some((o) => o.value === cur)) el2.value = cur;
   }
-  var nav = $3("nav");
+  var nav = $4("nav");
   nav.querySelectorAll("button[data-panel]").forEach((btn) => {
     btn.onclick = () => {
       nav.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       document.querySelectorAll(".panel").forEach((p2) => p2.classList.remove("active"));
-      const p = $3("panel-" + btn.dataset.panel);
+      const p = $4("panel-" + btn.dataset.panel);
       if (p) p.classList.add("active");
     };
   });
@@ -1983,16 +2271,16 @@ When a release is cut:
   function empty(icon, text) {
     return `<li class="empty"><span class="ico">${icon}</span>${esc3(text)}</li>`;
   }
-  function render() {
-    $3("navBots").textContent = roster.bots.length;
-    $3("navRuns").textContent = (roster.runs || []).length;
-    $3("navRtn").textContent = roster.routines.length;
-    $3("navSkills").textContent = roster.skills.length;
-    $3("statBots").textContent = roster.bots.length;
-    $3("statRoutines").textContent = roster.routines.length;
-    $3("statRuns").textContent = (roster.runs || []).length;
-    $3("statMesh").textContent = meshModels.length;
-    $3("bots").innerHTML = roster.bots.map(
+  function render2() {
+    $4("navBots").textContent = roster.bots.length;
+    $4("navRuns").textContent = (roster.runs || []).length;
+    $4("navRtn").textContent = roster.routines.length;
+    $4("navSkills").textContent = roster.skills.length;
+    $4("statBots").textContent = roster.bots.length;
+    $4("statRoutines").textContent = roster.routines.length;
+    $4("statRuns").textContent = (roster.runs || []).length;
+    $4("statMesh").textContent = meshModels.length;
+    $4("bots").innerHTML = roster.bots.map(
       (b) => `<li>${avatar(b.name)}
       <div class="body">
         <div class="title">${esc3(b.name)} <span class="chip acc">${esc3(b.role)}</span></div>
@@ -2000,33 +2288,33 @@ When a release is cut:
       </div>
       <div class="actions">${presenceHTML(b)}<span class="tag">${esc3(b.id)}</span></div></li>`
     ).join("") || empty("\u25CD", "No teammates yet \u2014 deploy one above.");
-    fillSelect($3("runBot"), roster.bots, (b) => `${b.name} (${b.route})`);
+    fillSelect($4("runBot"), roster.bots, (b) => `${b.name} (${b.route})`);
     window.codeStudio?.fillRunBot?.(roster.bots);
-    fillSelect($3("rtnBot"), roster.bots, (b) => b.name);
-    fillSelect($3("fromBot"), roster.bots, (b) => b.name);
-    fillSelect($3("toBot"), roster.bots, (b) => b.name);
-    fillSelect($3("rtnSkill"), roster.skills, (s) => s.name);
-    fillSelect($3("memBot"), roster.bots, (b) => b.name);
-    fillRouteSelect($3("botRoute"), meshModels);
-    $3("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
+    fillSelect($4("rtnBot"), roster.bots, (b) => b.name);
+    fillSelect($4("fromBot"), roster.bots, (b) => b.name);
+    fillSelect($4("toBot"), roster.bots, (b) => b.name);
+    fillSelect($4("rtnSkill"), roster.skills, (s) => s.name);
+    fillSelect($4("memBot"), roster.bots, (b) => b.name);
+    fillRouteSelect($4("botRoute"), meshModels);
+    $4("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
     const botName = {};
     for (const b of roster.bots) botName[b.id] = b.name;
-    $3("msgs").innerHTML = (roster.messages || []).map(
+    $4("msgs").innerHTML = (roster.messages || []).map(
       (m) => `<li>${avatar(m.from)}
       <div class="body">
         <div class="title">${esc3(botName[m.from] || m.from)} \u2192 ${esc3(botName[m.to] || m.to)} <span class="tag">owner ${esc3(botName[m.owner_bot] || m.owner_bot)}</span></div>
         <div class="clip">${safe2(m.body)}</div>
       </div></li>`
     ).join("") || empty("\u21C4", "No handoffs yet.");
-    $3("skills").innerHTML = roster.skills.map(
+    $4("skills").innerHTML = roster.skills.map(
       (s) => `<li><span class="avatar" style="background:var(--grad)">\u2726</span>
       <div class="body"><div class="title">${esc3(s.name)}</div><div class="clip">${esc3(s.id)}</div></div></li>`
     ).join("") || empty("\u2726", "The library is empty \u2014 write a playbook above.");
-    $3("routines").innerHTML = roster.routines.map((rt) => {
-      const state = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
+    $4("routines").innerHTML = roster.routines.map((rt) => {
+      const state2 = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
       return `<li><span class="avatar" style="background:var(--grad)">\u21BB</span>
       <div class="body">
-        <div class="title">${esc3(rt.trigger)} ${state}</div>
+        <div class="title">${esc3(rt.trigger)} ${state2}</div>
         <div class="clip">${esc3(rt.id)} \xB7 ${esc3(rt.last_note || "no test-run")}</div>
       </div>
       <div class="actions">
@@ -2035,10 +2323,10 @@ When a release is cut:
         <button class="ghost" data-pause="${esc3(rt.id)}" data-paused="${rt.paused ? "0" : "1"}">${rt.paused ? "resume" : "pause"}</button>
       </div></li>`;
     }).join("") || empty("\u21BB", "Nothing on the clock \u2014 arm a routine above.");
-    $3("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
-    $3("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
-    $3("routines").querySelectorAll("[data-pause]").forEach((btn) => btn.onclick = () => pauseRtn(btn.dataset.pause, btn.dataset.paused === "1"));
-    const tb = $3("routes").querySelector("tbody");
+    $4("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
+    $4("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
+    $4("routines").querySelectorAll("[data-pause]").forEach((btn) => btn.onclick = () => pauseRtn(btn.dataset.pause, btn.dataset.paused === "1"));
+    const tb = $4("routes").querySelector("tbody");
     tb.innerHTML = (roster.routes || []).map(
       (r) => `<tr><td>${esc3(r.id)}</td><td>${esc3(r.role)}</td><td>${esc3(r.model)}</td><td class="tag">${esc3(r.purpose)}</td></tr>`
     ).join("");
@@ -2047,7 +2335,7 @@ When a release is cut:
       const d = new Date(ts);
       return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     };
-    $3("runHistory").innerHTML = (roster.runs || []).slice(0, 20).map((r) => {
+    $4("runHistory").innerHTML = (roster.runs || []).slice(0, 20).map((r) => {
       const chip = r.status === "done" ? "ok" : r.status === "running" ? "acc" : "err";
       return `<li>
       <div class="body">
@@ -2055,46 +2343,46 @@ When a release is cut:
         <div class="clip">${esc3(botName[r.bot_id] || r.bot_id || "\u2014")} \xB7 ${esc3(r.intent)}${r.error ? " \xB7 " + esc3(r.error) : ""}</div>
       </div></li>`;
     }).join("") || empty("\u25B6", "Nothing has run yet. Give it a mission.");
-    $3("runHistory").querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
+    $4("runHistory").querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
       clearLog();
       stopPoll();
       activeRun = null;
       startStream(btn.dataset.run);
     });
   }
-  async function refresh() {
-    roster = await api("GET", "/api/v1/roster");
-    render();
+  async function refresh2() {
+    roster = await api2("GET", "/api/v1/roster");
+    render2();
     renderSpark();
     renderHero();
   }
   async function loadMesh() {
     try {
-      const res = await api("GET", "/api/v1/mesh/models");
+      const res = await api2("GET", "/api/v1/mesh/models");
       meshModels = res.ok ? res.models || [] : [];
-      $3("meshCount").textContent = res.ok ? `${meshModels.length} ready` : `unavailable (${res.reason || "amesh-web unreachable"})`;
+      $4("meshCount").textContent = res.ok ? `${meshModels.length} ready` : `unavailable (${res.reason || "amesh-web unreachable"})`;
     } catch (e) {
       meshModels = [];
-      $3("meshCount").textContent = `unavailable (${e.message})`;
+      $4("meshCount").textContent = `unavailable (${e.message})`;
     }
-    $3("meshModels").innerHTML = meshModels.map(
+    $4("meshModels").innerHTML = meshModels.map(
       (m) => `<li><span class="avatar" style="background:var(--grad)">\u25C8</span>
       <div class="body">
         <div class="title">${esc3(m.route)}</div>
         <div class="clip">${esc3(m.display || m.model)}${m.context_tokens ? " \xB7 " + m.context_tokens + " ctx" : ""}</div>
       </div></li>`
     ).join("") || empty("\u25C8", "No mesh models ready \u2014 the rack is dark.");
-    render();
+    render2();
   }
   var hubData = { hubs: [], models: [] };
   async function loadHubs() {
-    const statusEl = $3("hubsStatus");
-    const listEl = $3("hubList");
-    const modelsEl = $3("hubModels");
-    const countEl = $3("modelCount");
-    const navEl = $3("navHubs");
+    const statusEl = $4("hubsStatus");
+    const listEl = $4("hubList");
+    const modelsEl = $4("hubModels");
+    const countEl = $4("modelCount");
+    const navEl = $4("navHubs");
     try {
-      const res = await api("GET", "/api/v1/hubs");
+      const res = await api2("GET", "/api/v1/hubs");
       hubData.hubs = res.hubs || [];
       hubData.models = res.models || [];
       if (statusEl) statusEl.textContent = res.ok ? `${hubData.hubs.length} hub${hubData.hubs.length === 1 ? "" : "s"} joined` : `unavailable (${res.hub_error || res.model_error || "amesh unreachable"})`;
@@ -2149,7 +2437,7 @@ When a release is cut:
     const row = btn && btn.closest(".hub-model");
     if (row) row.dataset.state = "starting";
     try {
-      await api("POST", "/api/v1/models/" + encodeURIComponent(id) + "/start");
+      await api2("POST", "/api/v1/models/" + encodeURIComponent(id) + "/start");
       toast2("start accepted \u2014 model warming up", "ok");
       setTimeout(() => loadHubs(), 4e3);
     } catch (e) {
@@ -2162,12 +2450,12 @@ When a release is cut:
     }
   }
   async function runDoctor() {
-    const bar = $3("hubDoctor");
+    const bar = $4("hubDoctor");
     if (!bar) return;
     bar.hidden = false;
     bar.innerHTML = `<span class="tag">running amesh doctor\u2026</span>`;
     try {
-      const d = await api("GET", "/api/v1/hubs/doctor");
+      const d = await api2("GET", "/api/v1/hubs/doctor");
       const checks = d.checks || [];
       const byStatus = (s) => checks.filter((c) => c.status === s).length;
       const ok = byStatus("ok"), warn = byStatus("warning") + byStatus("advisory"), err = byStatus("error");
@@ -2187,18 +2475,18 @@ When a release is cut:
     }
   }
   async function openHubDetail(name) {
-    const el = $3("hubDetail");
-    if (!el) return;
-    el.hidden = false;
-    $3("hubDetailName").textContent = name;
-    $3("hubDetailBody").innerHTML = `<span class="tag">inspecting ${esc3(name)}\u2026</span>`;
+    const el2 = $4("hubDetail");
+    if (!el2) return;
+    el2.hidden = false;
+    $4("hubDetailName").textContent = name;
+    $4("hubDetailBody").innerHTML = `<span class="tag">inspecting ${esc3(name)}\u2026</span>`;
     try {
-      const d = await api("GET", "/api/v1/hubs/" + encodeURIComponent(name));
+      const d = await api2("GET", "/api/v1/hubs/" + encodeURIComponent(name));
       const h = d.hub || {};
       const checks = d.checks || [];
       const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
       const def = h.default ? `<span class="chip acc">default</span>` : "";
-      $3("hubDetailBody").innerHTML = `
+      $4("hubDetailBody").innerHTML = `
       <div class="hub-detail-row"><span class="tag">url</span><code>${esc3(h.url || "")}</code></div>
       ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc3(h.controller_url)}</code></div>` : ""}
       ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc3(h.fingerprint)}</code></div>` : ""}
@@ -2208,12 +2496,12 @@ When a release is cut:
       ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
     `;
     } catch (e) {
-      $3("hubDetailBody").innerHTML = `<span class="tag err">${safe2(e.message)}</span>`;
+      $4("hubDetailBody").innerHTML = `<span class="tag err">${safe2(e.message)}</span>`;
     }
   }
   var openTools = /* @__PURE__ */ new Map();
   function logEl() {
-    return $3("log");
+    return $4("log");
   }
   function appendEvent(e) {
     const log = logEl();
@@ -2400,7 +2688,7 @@ When a release is cut:
   }
   function onRunEnd() {
     stopElapsed();
-    refresh().catch(() => {
+    refresh2().catch(() => {
     });
   }
   function clearLog() {
@@ -2409,7 +2697,7 @@ When a release is cut:
     evCount = 0;
     updateStats();
     planSteps = null;
-    $3("timeline").hidden = true;
+    $4("timeline").hidden = true;
   }
   function startElapsed() {
     runStart = Date.now();
@@ -2417,8 +2705,8 @@ When a release is cut:
     const tick = () => {
       if (!runStart) return;
       const s = Math.floor((Date.now() - runStart) / 1e3);
-      const el = $3("elapsed");
-      if (el) el.textContent = s < 60 ? s + "s" : Math.floor(s / 60) + "m " + s % 60 + "s";
+      const el2 = $4("elapsed");
+      if (el2) el2.textContent = s < 60 ? s + "s" : Math.floor(s / 60) + "m " + s % 60 + "s";
     };
     tick();
     elapsedTimer = setInterval(tick, 1e3);
@@ -2494,13 +2782,13 @@ When a release is cut:
       streamTimer = setTimeout(connectStream, delay);
     });
   }
-  function setStreamState(state) {
-    const el = $3("streamState");
-    const pill = $3("streamPill");
-    if (el) el.textContent = state;
+  function setStreamState(state2) {
+    const el2 = $4("streamState");
+    const pill = $4("streamPill");
+    if (el2) el2.textContent = state2;
     if (pill) {
       pill.classList.remove("live", "reconnecting");
-      if (state === "live" || state === "reconnecting") pill.classList.add(state);
+      if (state2 === "live" || state2 === "reconnecting") pill.classList.add(state2);
     }
   }
   function startStream(runId) {
@@ -2540,41 +2828,41 @@ When a release is cut:
     }
   }
   function renderMissions() {
-    $3("missionGrid").innerHTML = MISSIONS.map((m, i) => `<button type="button" class="mission" data-mission="${i}">
+    $4("missionGrid").innerHTML = MISSIONS.map((m, i) => `<button type="button" class="mission" data-mission="${i}">
        <span class="m-ico">${m.icon}</span>
        <span class="m-title">${esc3(m.title)}</span>
        <span class="m-desc">${esc3(m.prompt)}</span>
      </button>`).join("");
-    $3("missionGrid").querySelectorAll("[data-mission]").forEach((btn) => {
+    $4("missionGrid").querySelectorAll("[data-mission]").forEach((btn) => {
       btn.onclick = () => {
         const m = MISSIONS[+btn.dataset.mission];
-        $3("prompt").value = m.prompt;
-        $3("intent").value = m.intent;
-        $3("prompt").focus();
+        $4("prompt").value = m.prompt;
+        $4("intent").value = m.intent;
+        $4("prompt").focus();
         toast2(`mission loaded: ${m.title}`, "ok");
       };
     });
   }
   function renderSkillTemplates() {
-    $3("skillTemplates").innerHTML = SKILL_TEMPLATES.map((t, i) => `<button type="button" class="mission" data-tpl="${i}">
+    $4("skillTemplates").innerHTML = SKILL_TEMPLATES.map((t, i) => `<button type="button" class="mission" data-tpl="${i}">
        <span class="m-ico">\u2726</span>
        <span class="m-title">${esc3(t.name)}</span>
        <span class="m-desc">${esc3(t.body.split("\n").slice(1).join(" ").trim().slice(0, 120))}\u2026</span>
      </button>`).join("");
-    $3("skillTemplates").querySelectorAll("[data-tpl]").forEach((btn) => {
+    $4("skillTemplates").querySelectorAll("[data-tpl]").forEach((btn) => {
       btn.onclick = () => {
         const t = SKILL_TEMPLATES[+btn.dataset.tpl];
-        $3("skillName").value = t.name;
-        $3("skillBody").value = t.body;
+        $4("skillName").value = t.name;
+        $4("skillBody").value = t.body;
         toast2(`template loaded: ${t.name}`, "ok");
       };
     });
   }
   function renderRtnTriggers() {
-    $3("rtnTriggers").innerHTML = ROUTINE_TRIGGERS.map((t) => `<button type="button" class="chip ghost-chip" data-trig="${esc3(t.value)}">${esc3(t.label)}</button>`).join("");
-    $3("rtnTriggers").querySelectorAll("[data-trig]").forEach((btn) => {
+    $4("rtnTriggers").innerHTML = ROUTINE_TRIGGERS.map((t) => `<button type="button" class="chip ghost-chip" data-trig="${esc3(t.value)}">${esc3(t.label)}</button>`).join("");
+    $4("rtnTriggers").querySelectorAll("[data-trig]").forEach((btn) => {
       btn.onclick = () => {
-        $3("rtnTrigger").value = btn.dataset.trig;
+        $4("rtnTrigger").value = btn.dataset.trig;
       };
     });
   }
@@ -2586,15 +2874,15 @@ When a release is cut:
     return t.content.firstElementChild;
   }
   setInterval(() => {
-    $3("tsEpm").textContent = stats.perMin();
-    $3("tsTools").textContent = stats.tools();
-    $3("tsErrs").textContent = stats.errs();
-    $3("tsTotal").textContent = stats.total();
+    $4("tsEpm").textContent = stats.perMin();
+    $4("tsTools").textContent = stats.tools();
+    $4("tsErrs").textContent = stats.errs();
+    $4("tsTotal").textContent = stats.total();
   }, 1e3);
   function renderTimeline() {
     const events = [...logEl().querySelectorAll(".ev")].map((r) => ({ kind: r.dataset.kind }));
     const segs = timeline(events);
-    const tl = $3("timeline");
+    const tl = $4("timeline");
     if (!segs.length) {
       tl.hidden = true;
       return;
@@ -2602,13 +2890,13 @@ When a release is cut:
     tl.hidden = false;
     tl.innerHTML = segs.map((s) => `<div class="tl-seg tl-${s.p}" style="flex:${Math.max(s.frac * 100, 4)}" title="${Math.round(s.frac * 100)}% ${s.p}"></div>`).join("");
   }
-  $3("sfxToggle").onclick = () => {
+  $4("sfxToggle").onclick = () => {
     sfx.on = !sfx.on;
-    $3("sfxToggle").textContent = sfx.on ? "\u266A on" : "\u266A off";
-    $3("sfxToggle").classList.toggle("sel", sfx.on);
+    $4("sfxToggle").textContent = sfx.on ? "\u266A on" : "\u266A off";
+    $4("sfxToggle").classList.toggle("sel", sfx.on);
     if (sfx.on) sfx.tick();
   };
-  $3("shareRun").onclick = async () => {
+  $4("shareRun").onclick = async () => {
     const events = [...logEl().querySelectorAll(".ev")].map((r) => {
       const ev = { kind: r.dataset.kind };
       const k = r.querySelector(".k");
@@ -2648,27 +2936,27 @@ When a release is cut:
   function updateStats() {
     const log = logEl();
     const visible = [...log.querySelectorAll(".ev")].filter((r) => r.style.display !== "none").length;
-    $3("logStats").textContent = `${visible} events`;
+    $4("logStats").textContent = `${visible} events`;
   }
-  $3("logFilters").querySelectorAll("[data-f]").forEach((btn) => {
+  $4("logFilters").querySelectorAll("[data-f]").forEach((btn) => {
     btn.onclick = () => {
-      $3("logFilters").querySelectorAll("[data-f]").forEach((b) => b.classList.remove("sel"));
+      $4("logFilters").querySelectorAll("[data-f]").forEach((b) => b.classList.remove("sel"));
       btn.classList.add("sel");
       logFilter = btn.dataset.f;
       applyFilter();
     };
   });
-  $3("tsToggle").onclick = () => {
+  $4("tsToggle").onclick = () => {
     showTs = !showTs;
-    $3("tsToggle").classList.toggle("sel", showTs);
+    $4("tsToggle").classList.toggle("sel", showTs);
     applyFilter();
   };
-  $3("autoScroll").onclick = () => {
+  $4("autoScroll").onclick = () => {
     autoScroll = !autoScroll;
-    $3("autoScroll").classList.toggle("sel", autoScroll);
+    $4("autoScroll").classList.toggle("sel", autoScroll);
     if (autoScroll) logEl().scrollTop = logEl().scrollHeight;
   };
-  $3("copyLog").onclick = async () => {
+  $4("copyLog").onclick = async () => {
     const lines = [...logEl().querySelectorAll(".ev")].map((r) => r.textContent.trim()).join("\n");
     try {
       await navigator.clipboard.writeText(lines);
@@ -2688,7 +2976,7 @@ When a release is cut:
   }
   function renderSpark() {
     const runs = roster.runs || [];
-    $3("sparkCard").hidden = runs.length === 0;
+    $4("sparkCard").hidden = runs.length === 0;
     if (!runs.length) return;
     const now = Date.now();
     const buckets = new Array(24).fill(0);
@@ -2699,17 +2987,17 @@ When a release is cut:
       if (h >= 0 && h < 24) buckets[23 - h]++;
     }
     const max = Math.max(...buckets, 1);
-    $3("spark").innerHTML = buckets.map((n, i) => `<div class="spark-col" title="${n} run${n === 1 ? "" : "s"}">
+    $4("spark").innerHTML = buckets.map((n, i) => `<div class="spark-col" title="${n} run${n === 1 ? "" : "s"}">
        <div class="spark-bar" style="height:${Math.max(4, n / max * 100)}%"></div>
        <div class="spark-lbl">${i === 23 ? "now" : i === 0 ? "-24h" : ""}</div>
      </div>`).join("");
   }
   function renderHero() {
     const empty2 = roster.bots.length === 0;
-    $3("heroCard").hidden = !empty2;
+    $4("heroCard").hidden = !empty2;
     if (!empty2) return;
-    $3("heroDeploy").onclick = () => gotoPanel("bots");
-    $3("heroDemo").onclick = playDemoRun;
+    $4("heroDeploy").onclick = () => gotoPanel("bots");
+    $4("heroDemo").onclick = playDemoRun;
   }
   var palette = null;
   function paletteCommands() {
@@ -2729,25 +3017,25 @@ When a release is cut:
       { label: "Watch a demo run", icon: "\u25B6", hint: "demo", run: playDemoRun },
       { label: "Run the pulse check", icon: "\u2665", hint: "health", run: () => {
         gotoPanel("health");
-        $3("probeBtn").click();
+        $4("probeBtn").click();
       } },
-      { label: "Copy the console", icon: "\u29C9", hint: "log", run: () => $3("copyLog").click() }
+      { label: "Copy the console", icon: "\u29C9", hint: "log", run: () => $4("copyLog").click() }
     ];
     for (const m of MISSIONS) {
       cmds.push({ label: `Mission: ${m.title}`, icon: m.icon, hint: m.intent, run: () => {
         gotoPanel("run");
-        $3("prompt").value = m.prompt;
-        $3("intent").value = m.intent;
-        $3("prompt").focus();
+        $4("prompt").value = m.prompt;
+        $4("intent").value = m.intent;
+        $4("prompt").focus();
         toast2(`mission loaded: ${m.title}`, "ok");
       } });
     }
     for (const b of roster.bots) {
       cmds.push({ label: `Run with ${b.name}`, icon: "\u25B6", hint: b.role, run: () => {
         gotoPanel("run");
-        fillSelect($3("runBot"), roster.bots, (x) => `${x.name} (${x.route})`);
-        $3("runBot").value = b.id;
-        $3("prompt").focus();
+        fillSelect($4("runBot"), roster.bots, (x) => `${x.name} (${x.route})`);
+        $4("runBot").value = b.id;
+        $4("prompt").focus();
       } });
     }
     for (const s of roster.skills) {
@@ -2755,7 +3043,7 @@ When a release is cut:
     }
     return cmds;
   }
-  function openPalette() {
+  function openPalette2() {
     if (palette) {
       palette.close();
       return;
@@ -2770,7 +3058,7 @@ When a release is cut:
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
-      openPalette();
+      openPalette2();
       return;
     }
     if (typing) return;
@@ -2802,7 +3090,7 @@ When a release is cut:
     stopStream();
     clearLog();
     gotoPanel("run");
-    $3("runWho").textContent = "demo \xB7 scripted replay";
+    $4("runWho").textContent = "demo \xB7 scripted replay";
     startElapsed();
     demoCancel = playDemo(appendEvent, () => {
       demoCancel = null;
@@ -2811,75 +3099,75 @@ When a release is cut:
       startStream(null);
     });
   }
-  $3("demoBtn").onclick = playDemoRun;
+  $4("demoBtn").onclick = playDemoRun;
   function require2(id, msg) {
-    const el = $3(id);
-    const v = String(el ? el.value : "").trim();
+    const el2 = $4(id);
+    const v = String(el2 ? el2.value : "").trim();
     if (!v) throw new Error(msg);
     return v;
   }
   function markField(id) {
-    const el = $3(id);
-    if (!el) return;
-    el.classList.add("invalid");
-    setTimeout(() => el.classList.remove("invalid"), 1200);
+    const el2 = $4(id);
+    if (!el2) return;
+    el2.classList.add("invalid");
+    setTimeout(() => el2.classList.remove("invalid"), 1200);
   }
-  $3("createBot").onclick = async () => {
+  $4("createBot").onclick = async () => {
     try {
       const name = require2("botName", "give the teammate a name");
-      await api("POST", "/api/v1/bots", { name, role: $3("botRole").value.trim() || "coder", route: $3("botRoute").value });
+      await api2("POST", "/api/v1/bots", { name, role: $4("botRole").value.trim() || "coder", route: $4("botRoute").value });
       toast2("teammate deployed", "ok");
-      await refresh();
+      await refresh2();
     } catch (e) {
       showErr(e.message);
       markField("botName");
     }
   };
-  $3("memBtn").onclick = async () => {
+  $4("memBtn").onclick = async () => {
     try {
       const bot = require2("memBot", "deploy a teammate first");
       const note = require2("memNote", "what should it remember?");
-      await api("POST", "/api/v1/bots/" + bot + "/remember", { note });
-      $3("memNote").value = "";
+      await api2("POST", "/api/v1/bots/" + bot + "/remember", { note });
+      $4("memNote").value = "";
       toast2("burned into memory", "ok");
-      await refresh();
+      await refresh2();
     } catch (e) {
       showErr(e.message);
       markField("memNote");
     }
   };
-  $3("createSkill").onclick = async () => {
+  $4("createSkill").onclick = async () => {
     try {
       const name = require2("skillName", "give the playbook a name");
       const body = require2("skillBody", "write the playbook body");
-      await api("POST", "/api/v1/skills", { name, body });
+      await api2("POST", "/api/v1/skills", { name, body });
       toast2("playbook added to the library", "ok");
-      await refresh();
+      await refresh2();
     } catch (e) {
       showErr(e.message);
       markField("skillName");
     }
   };
-  $3("createRtn").onclick = async () => {
+  $4("createRtn").onclick = async () => {
     try {
       const bot = require2("rtnBot", "deploy a teammate first");
       const skill = require2("rtnSkill", "add a playbook first");
-      await api("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $3("rtnTrigger").value.trim() || "manual" });
+      await api2("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $4("rtnTrigger").value.trim() || "manual" });
       toast2("routine armed", "ok");
-      await refresh();
+      await refresh2();
     } catch (e) {
       showErr(e.message);
     }
   };
-  $3("sendHandoff").onclick = async () => {
+  $4("sendHandoff").onclick = async () => {
     try {
       const from = require2("fromBot", "deploy a teammate first");
       const to = require2("toBot", "deploy a recipient teammate first");
       if (from === to) throw new Error("pick two different teammates");
       const body = require2("handoffBody", "what is the work item?");
-      const out = await api("POST", "/api/v1/handoff", { from, to, body, run: $3("handoffRun").checked });
+      const out = await api2("POST", "/api/v1/handoff", { from, to, body, run: $4("handoffRun").checked });
       toast2("handoff away", "ok");
-      await refresh();
+      await refresh2();
       if (out.run && out.run.id) {
         clearLog();
         stopPoll();
@@ -2892,17 +3180,17 @@ When a release is cut:
       markField("handoffBody");
     }
   };
-  $3("runBtn").onclick = async () => {
+  $4("runBtn").onclick = async () => {
     try {
       const bot = require2("runBot", "deploy a teammate first");
       const prompt = require2("prompt", "type a prompt for the run");
-      const run = await api("POST", "/api/v1/runs", {
+      const run = await api2("POST", "/api/v1/runs", {
         bot_id: bot,
         prompt,
-        intent: $3("intent").value,
-        yolo: $3("yolo").checked,
-        verify: $3("verify").checked,
-        worktree: $3("worktree").value
+        intent: $4("intent").value,
+        yolo: $4("yolo").checked,
+        verify: $4("verify").checked,
+        worktree: $4("worktree").value
       });
       clearLog();
       stopPoll();
@@ -2915,16 +3203,16 @@ When a release is cut:
       markField("prompt");
     }
   };
-  $3("prompt").addEventListener("keydown", (ev) => {
+  $4("prompt").addEventListener("keydown", (ev) => {
     if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
       ev.preventDefault();
-      $3("runBtn").click();
+      $4("runBtn").click();
     }
   });
   async function testRun(id) {
     try {
-      const rt = await api("POST", "/api/v1/routines/" + id + "/test-run");
-      await refresh();
+      const rt = await api2("POST", "/api/v1/routines/" + id + "/test-run");
+      await refresh2();
       if (rt.run_id) {
         clearLog();
         stopPoll();
@@ -2938,26 +3226,26 @@ When a release is cut:
   }
   async function enableRtn(id) {
     try {
-      await api("POST", "/api/v1/routines/" + id + "/enable");
+      await api2("POST", "/api/v1/routines/" + id + "/enable");
       toast2("routine enabled \u2014 it's live", "ok");
-      await refresh();
+      await refresh2();
     } catch (e) {
       showErr(e.message);
     }
   }
   async function pauseRtn(id, paused) {
     try {
-      await api("POST", "/api/v1/routines/" + id + "/pause", { paused });
+      await api2("POST", "/api/v1/routines/" + id + "/pause", { paused });
       toast2(paused ? "routine paused \u2014 it won't fire" : "routine resumed \u2014 it's live", "ok");
-      await refresh();
+      await refresh2();
     } catch (e) {
       showErr(e.message);
     }
   }
-  $3("probeBtn").onclick = async () => {
+  $4("probeBtn").onclick = async () => {
     try {
-      const h = await api("GET", "/api/v1/health/models");
-      const tb = $3("health").querySelector("tbody");
+      const h = await api2("GET", "/api/v1/health/models");
+      const tb = $4("health").querySelector("tbody");
       tb.innerHTML = (h.probes || []).map((p) => {
         const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
         return `<tr><td>${esc3(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc3((p.ids || []).join(", "))}</td><td class="tag">${esc3(p.error || "")}${mm}</td></tr>`;
@@ -2966,7 +3254,7 @@ When a release is cut:
       showErr(e.message);
     }
   };
-  refresh().catch((e) => showErr(e.message));
+  refresh2().catch((e) => showErr(e.message));
   loadMesh().catch((e) => showErr(e.message));
   loadHubs().catch((e) => showErr(e.message));
   renderMissions();
@@ -2975,16 +3263,17 @@ When a release is cut:
   boot();
   vibe();
   startStream(null);
-  var meshRefreshBtn = $3("meshRefresh");
+  bootSupervision();
+  var meshRefreshBtn = $4("meshRefresh");
   if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch((e) => showErr(e.message));
-  var hubsRefreshBtn = $3("hubsRefresh");
+  var hubsRefreshBtn = $4("hubsRefresh");
   if (hubsRefreshBtn) hubsRefreshBtn.onclick = () => loadHubs().catch((e) => showErr(e.message));
-  var hubsDoctorBtn = $3("hubsDoctor");
+  var hubsDoctorBtn = $4("hubsDoctor");
   if (hubsDoctorBtn) hubsDoctorBtn.onclick = () => runDoctor().catch((e) => showErr(e.message));
-  var hubDetailCloseBtn = $3("hubDetailClose");
+  var hubDetailCloseBtn = $4("hubDetailClose");
   if (hubDetailCloseBtn) hubDetailCloseBtn.onclick = () => {
-    const el = $3("hubDetail");
-    if (el) el.hidden = true;
+    const el2 = $4("hubDetail");
+    if (el2) el2.hidden = true;
   };
   (function() {
     "use strict";
@@ -3001,16 +3290,16 @@ When a release is cut:
       hudTimer = setTimeout(() => hud.classList.remove("show"), 1600);
       return msg;
     };
-    document.querySelectorAll('[data-num="1"]').forEach((el) => {
-      el.classList.add("num");
+    document.querySelectorAll('[data-num="1"]').forEach((el2) => {
+      el2.classList.add("num");
     });
-    document.querySelectorAll("[data-shortcut]").forEach((el) => {
-      if (el.querySelector(".kbd")) return;
+    document.querySelectorAll("[data-shortcut]").forEach((el2) => {
+      if (el2.querySelector(".kbd")) return;
       const k = document.createElement("kbd");
       k.className = "kbd";
-      k.textContent = el.getAttribute("data-shortcut").trim();
+      k.textContent = el2.getAttribute("data-shortcut").trim();
       k.setAttribute("aria-hidden", "true");
-      el.appendChild(k);
+      el2.appendChild(k);
     });
   })();
 })();

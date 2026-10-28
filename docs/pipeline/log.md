@@ -24,3 +24,7 @@
 | 2026-10-28T03:20:00Z | C | implement-T-1-symbols | MiniMax-M3.1 | ok | workspace symbol search |
 | 2026-10-28T03:40:00Z | C | implement-T-3-sched | MiniMax-M3.1 | ok | next-fire preview, editable trigger |
 | 2026-10-28T03:52:00Z | C | implement-T-2-durable | MiniMax-M3.1 | ok | threads + review queue store |
+| 2026-10-28T04:25:00Z | C | implement-T-4-threads | MiniMax-M3.1 | ok | threads with worktree isolation + merge-back |
+| 2026-10-28T04:30:00Z | C | implement-T-5-queue | MiniMax-M3.1 | ok | review queue |
+| 2026-10-28T04:35:00Z | C | implement-T-6-livediff | MiniMax-M3.1 | ok | live diff while a run is in flight |
+| 2026-10-28T04:45:00Z | C | implement-T-7-frontend | MiniMax-M3.1 | ok | supervision card + symbol palette |

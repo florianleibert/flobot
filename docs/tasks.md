@@ -3,20 +3,21 @@
 Epic: [`docs/epic.md`](./epic.md) · PRD: [`docs/prd-codex-desktop-editor.md`](./prd-codex-desktop-editor.md)
 
 Ordering is by dependency. Tasks marked `parallel: true` own disjoint files and may run
-concurrently. **No two tasks edit the same file** — with one deliberate exception: the route
-table in `internal/server/server.go` is shared, and each server-side task adds exactly one
-additive line to it. Those lines never touch the same context, so they merge cleanly; every
-other file is owned by exactly one task.
+concurrently. **No two tasks edit the same file** — with two deliberate exceptions: the route
+table and the Server struct in `internal/server/server.go` are shared, and each server-side task
+adds exactly one additive line to each. Those lines never touch the same context, so they merge
+cleanly. T-4, T-5 and T-6 additionally share `internal/server/diffreview.go` (the snapshot and
+review machinery) and are therefore **sequential**, not parallel.
 
 | id | requirement | files owned | depends_on | parallel | status |
 |---|---|---|---|---|---|
 | T-1 | R-EDIT-a | `internal/workspace/symbols.go`, `internal/workspace/symbols_test.go`, `internal/server/symbols.go`, `internal/server/symbols_test.go`, `internal/server/server.go` | none | true | **done** |
 | T-2 | R-DURABLE | `internal/store/threads.go`, `internal/store/threads_test.go` | none | true | **done** |
 | T-3 | R-SCHED | `internal/schedule/next.go`, `internal/schedule/next_test.go`, `internal/server/routines.go`, `internal/server/routines_test.go`, `internal/store/store.go` | none | true | **done** |
-| T-4 | R-THREAD | `internal/threads/threads.go`, `internal/threads/threads_test.go`, `internal/server/threads.go`, `internal/server/threads_test.go` | T-2 | false | pending |
-| T-5 | R-QUEUE | `internal/queue/queue.go`, `internal/queue/queue_test.go`, `internal/server/queue.go`, `internal/server/queue_test.go` | T-2 | false | pending |
-| T-6 | R-LIVEDIFF | `internal/server/livediff.go`, `internal/server/livediff_test.go` | T-4 | false | pending |
-| T-7 | frontend thread, queue and symbol surfaces | `web/app.js`, `web/index.html`, `web/styles.css` | T-1, T-4, T-5, T-6 | false | pending |
+| T-4 | R-THREAD | `internal/threads/threads.go`, `internal/threads/threads_test.go`, `internal/server/threads.go`, `internal/server/supervision.go`, `internal/server/merge.go`, `internal/server/diffreview.go` | T-2 | false | **done** |
+| T-5 | R-QUEUE | `internal/queue/queue.go`, `internal/queue/queue_test.go`, `internal/server/queue.go`, `internal/server/diffreview.go` | T-2 | false | **done** |
+| T-6 | R-LIVEDIFF | `internal/server/livediff.go`, `internal/server/diffreview.go` | T-4 | false | **done** |
+| T-7 | frontend thread, queue and symbol surfaces | `flobot-ui-redesign/src/supervision.js`, `flobot-ui-redesign/src/main.js`, `web/app.js` (generated) | T-1, T-4, T-5, T-6 | false | **done** |
 
 ## T-1 — workspace-wide symbol search (R-EDIT-a)
 
@@ -59,39 +60,47 @@ routine's other fields untouched. The roster now carries each routine's `next_fi
 ## T-4 — threads with worktree isolation (R-THREAD)
 
 files: `internal/threads/threads.go`, `internal/threads/threads_test.go`, `internal/server/threads.go`,
-`internal/server/threads_test.go`
+`internal/server/supervision.go`, `internal/server/merge.go`, `internal/server/diffreview.go`
 depends_on: T-2
 parallel: false
-acceptance: `POST /api/v1/threads` creates a thread with its own git worktree and returns its path. Two threads
-for the same bot can be active simultaneously. Every path a thread touches is rooted at that thread's worktree,
-so no agent writes into the user's working tree. The executor's existing `Worktree` flag is reused, not
-replaced. Thread state persists through the T-2 store.
+acceptance: `POST /api/v1/threads` creates a thread with its own git worktree and returns its path. The
+worktree is created at `.flocode/worktrees/<name>` on branch `flocode/worktree/<name>` — flocode's own
+convention — so the child attaches to the worktree flobot made instead of creating a second one. A run
+started in a thread works inside that worktree, and the review surface shows **the agent's changes**:
+the snapshot is taken in the run's own root, not the user's tree. Two threads for the same bot can be
+active at once and neither writes into the user's tree. `POST /api/v1/runs/{id}/diff/merge` merges the
+approved hunks back into the user's tree, and refuses with 409 if the user's tree changed since the
+thread started.
 
 ## T-5 — review queue (R-QUEUE)
 
 files: `internal/queue/queue.go`, `internal/queue/queue_test.go`, `internal/server/queue.go`,
-`internal/server/queue_test.go`
+`internal/server/diffreview.go`
 depends_on: T-2
 parallel: false
-acceptance: A finished run with a non-empty diff enqueues a `pending` entry without user action. Entries move
-`pending → in_review → resolved`; resolving removes the entry from the pending count. The badge count equals
-the number of pending entries. Queue state persists through the T-2 store.
+acceptance: A finished run with a non-empty diff enqueues a `pending` entry without user action — the
+hook is in `capturePostRun`, the one place that knows the diff. Entries move `pending → in_review →
+resolved`; resolving removes the entry from the pending count. The badge count equals the number of
+pending entries. Queue state persists through the T-2 store.
 
 ## T-6 — live diff (R-LIVEDIFF)
 
-files: `internal/server/livediff.go`, `internal/server/livediff_test.go`
+files: `internal/server/livediff.go`, `internal/server/diffreview.go`
 depends_on: T-4
 parallel: false
-acceptance: While a run is in flight, a bounded interval publishes a `diff_ready` event through the existing
-hub whenever the run's diff changes, and the pane renders hunks before the run ends. Exactly one goroutine
-per run polls; it stops on the terminal event. A hunk whose content changes after the human accepted it is
-re-opened as `pending` rather than dropped.
+acceptance: While a run is in flight, a bounded interval recomputes the run's diff and publishes a
+`diff_ready` event through the existing hub whenever it changes. Exactly one poller runs per run and it
+stops with the run's context. `GET /api/v1/runs/{id}/diff/live` serves the in-flight diff in the same
+payload shape as the settled diff, so one renderer serves both.
 
 ## T-7 — frontend surfaces
 
-files: `web/app.js`, `web/index.html`, `web/styles.css`
+files: `flobot-ui-redesign/src/supervision.js`, `flobot-ui-redesign/src/main.js`, `web/app.js` (generated)
 depends_on: T-1, T-4, T-5, T-6
 parallel: false
-acceptance: The thread sidebar lists threads with status and a pending-hunk badge; the review queue opens a diff
-from the badge; a symbol palette queries `GET /api/v1/workspace/symbols` and opens a file at the matching line.
-The frontend bundle in `web/` is generated from `flobot-ui-redesign/src` — edit the source and re-sync.
+acceptance: The frontend bundle in `web/` is generated from `flobot-ui-redesign/src` — edit the source and
+re-sync with `node sync-to-flobot.mjs`. The new module is self-contained: it creates its own DOM and
+its own styles, so it depends on the editor only through the `openFile` bridge the editor already
+exposes. It adds a supervision card (threads plus the review-queue badge), a symbol palette on
+`⌘⇧O` that queries `GET /api/v1/workspace/symbols` and opens a file at the matching line, and a
+4-second poll that pauses while the tab is hidden.
