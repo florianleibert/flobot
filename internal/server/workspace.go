@@ -41,15 +41,28 @@ func (s *Server) openWorkspaceLocked(dir string) (*workspace.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Descriptors point into the previous tree. They must not outlive it:
+	// a stale descriptor would let a save land in the old workspace.
+	if s.ws != nil {
+		s.ws.CloseAllDescriptors()
+	}
 	s.ws = ws
 	return ws, nil
 }
 
 // wsError maps workspace errors to HTTP responses.
 func wsError(w http.ResponseWriter, err error) {
-	switch {
-	case err == nil:
+	if err == nil {
 		return
+	}
+	// Descriptor errors have their own status codes; they are checked first
+	// because they wrap filesystem errors that would otherwise match a
+	// generic case below. descriptorError reports whether it handled the
+	// error: when it did, the response is already written.
+	if descriptorError(w, err) {
+		return
+	}
+	switch {
 	case errors.Is(err, workspace.ErrNotInWorkspace),
 		errors.Is(err, workspace.ErrProtected):
 		http.Error(w, `{"error":`+quoteJSON(err.Error())+"}", http.StatusBadRequest)

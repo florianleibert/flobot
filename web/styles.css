@@ -1375,5 +1375,9 @@ button .kbd,
 .ed-mention-item:hover { background: var(--acc-soft); color: var(--fg); }
 .ed-mention .ed-ico { color: var(--faint); }
 
-/* The run bar anchors the mention popup. */
-.ed-runbar { position: relative; }
+/* The run bar anchors the mention popup.
+   The run bar and the cards both use backdrop-filter, which makes each of them
+   a stacking context. Without a z-index the two are painted in DOM order, so
+   the cards (later in the DOM) would cover the popup that drops out of the
+   run bar. A positive z-index puts the run bar's whole subtree above them. */
+.ed-runbar { position: relative; z-index: 30; }

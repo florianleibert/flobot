@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const (
@@ -40,6 +41,9 @@ var ErrProtected = errors.New("path is protected")
 // Workspace is a rooted file view.
 type Workspace struct {
 	root string
+	// desc is the registry of open file descriptors (see descriptor.go).
+	desc   descriptors
+	descMu sync.Mutex
 }
 
 // New returns a Workspace rooted at dir (resolved to an absolute path).
