@@ -49,7 +49,7 @@
     return String(path || "").split("/").filter(Boolean);
   }
   function createCtx(api3) {
-    const { ed: ed2, edApi: edApi2, safe: safe3, toast: toast3, getQuickIndex, ensureQuickIndex, renderTree: renderTree2, edExpanded: edExpanded2 } = api3;
+    const { ed: ed2, edApi: edApi2, safe: safe3, toast: toast4, getQuickIndex, ensureQuickIndex, renderTree: renderTree2, edExpanded: edExpanded2 } = api3;
     function renderBreadcrumbs(path) {
       const host = $("edCrumbs");
       if (!host) return;
@@ -70,7 +70,7 @@
         b.textContent = seg;
         b.title = segs.slice(0, i + 1).join("/");
         if (isLast) {
-          b.onclick = () => toast3(safe3(segs.join("/")), "");
+          b.onclick = () => toast4(safe3(segs.join("/")), "");
         } else {
           const dir = segs.slice(0, i + 1).join("/");
           b.onclick = () => {
@@ -308,8 +308,15 @@
     // { runId, files, totals, checkpoint, reviewState }
     sel: {},
     // { [path]: { accepted:Set, rejected:Set } }
-    focus: null
+    focus: null,
     // [path, hunkIndex]
+    // liveTimer polls the in-flight diff while a mission is working.
+    liveTimer: null,
+    // hunkPrints fingerprints each accepted hunk, so a hunk the agent
+    // rewrote after the human accepted it is re-opened instead of silently
+    // staying accepted.
+    hunkPrints: {}
+    // { [path]: { [hunkIndex]: fingerprint } }
   };
   var ctx = null;
   function edApi(method, path, body) {
@@ -588,6 +595,7 @@
   function renderDiff() {
     const box = $2("edDiff");
     const files = ed.review?.files || [];
+    reconcileHunks(files);
     const badge = $2("edDiffBadge");
     if (badge) {
       const pending = files.reduce((n, fd) => {
@@ -640,11 +648,37 @@
     </div>`;
     }).join("");
   }
+  function hunkFingerprint(h) {
+    return (h.header || "") + "\n" + (h.lines || []).map((l) => (l.type || "") + (l.text || "")).join("\n");
+  }
+  function reconcileHunks(files) {
+    for (const fd of files || []) {
+      const sel = ed.sel[fd.path];
+      const prints = ed.hunkPrints[fd.path];
+      if (!sel || !prints) continue;
+      for (const hi of [...sel.accepted]) {
+        const h = fd.hunks[hi];
+        if (!h) {
+          sel.accepted.delete(hi);
+          continue;
+        }
+        if (prints[hi] !== void 0 && prints[hi] !== hunkFingerprint(h)) {
+          sel.accepted.delete(hi);
+          sel.rejected.delete(hi);
+        }
+      }
+    }
+  }
   function toggleHunk(fdPath, hi, v) {
     const sel = ed.sel[fdPath] || (ed.sel[fdPath] = { accepted: /* @__PURE__ */ new Set(), rejected: /* @__PURE__ */ new Set() });
     if (v === true) {
       sel.accepted.add(hi);
       sel.rejected.delete(hi);
+      const h = ed.review?.files?.find((f) => f.path === fdPath)?.hunks?.[hi];
+      if (h) {
+        const prints = ed.hunkPrints[fdPath] || (ed.hunkPrints[fdPath] = {});
+        prints[hi] = hunkFingerprint(h);
+      }
     } else if (v === false) {
       sel.rejected.add(hi);
       sel.accepted.delete(hi);
@@ -665,12 +699,16 @@
       toast("nothing selected to apply", "err");
       return;
     }
+    const inWorktree = !!ed.review.worktree;
+    const endpoint = inWorktree ? `/api/v1/runs/${ed.review.runId}/diff/merge` : `/api/v1/runs/${ed.review.runId}/diff/apply`;
     try {
-      const res = await edApi("POST", `/api/v1/runs/${ed.review.runId}/diff/apply`, { selections });
-      toast("applied \u2014 review state: " + (res.reviewState || "accepted"), "ok");
+      const res = await edApi("POST", endpoint, { selections });
+      toast(inWorktree ? "merged into your tree \u2014 " + (res.applied || []).length + " file(s)" : "applied \u2014 review state: " + (res.reviewState || "accepted"), "ok");
       ed.sel = {};
+      ed.hunkPrints = {};
       await loadLatestDiff();
       await loadTree();
+      if (inWorktree) await window.supervision?.refresh?.();
     } catch (e) {
       toast(safe(e.message), "err");
     }
@@ -707,6 +745,7 @@
       const d = await edApi("GET", "/api/v1/runs/" + latest.id + "/diff");
       d.judgeScore = latest.judgeScore;
       d.judgeRationale = latest.judgeRationale;
+      d.worktree = latest.worktree || latest.worktreePath || "";
       ed.review = d;
       ed.sel = {};
       ed.focus = d.files?.length ? [d.files[0].path, 0] : null;
@@ -962,6 +1001,7 @@
       renderBrief(prompt, run.id);
       switchTab("stream");
       edConnectStream(run.id);
+      pollLiveDiff(run.id);
     } catch (e) {
       toast(safe(e.message), "err");
       setRunStatus("error", "err");
@@ -975,6 +1015,57 @@
     } catch (e) {
       toast(safe(e.message), "err");
     }
+  }
+  function stopLiveDiff() {
+    if (ed.liveTimer) {
+      clearInterval(ed.liveTimer);
+      ed.liveTimer = null;
+    }
+  }
+  function pollLiveDiff(runId) {
+    stopLiveDiff();
+    ed.liveTimer = setInterval(async () => {
+      try {
+        const d = await edApi("GET", `/api/v1/runs/${runId}/diff/live`);
+        const st = d?.status;
+        if (st !== "running" && st !== "queued") {
+          stopLiveDiff();
+          await loadLatestDiff();
+          return;
+        }
+        if (!d?.files?.length) return;
+        const prevSel = ed.sel;
+        const prevFocus = ed.focus;
+        const prevWorktree = ed.review?.worktree || "";
+        ed.review = { ...d, worktree: prevWorktree };
+        ed.sel = prevSel;
+        ed.focus = prevFocus;
+        reconcileHunks(d.files);
+        renderDiff();
+      } catch {
+      }
+    }, 2e3);
+  }
+  async function loadDiffForRun(runId) {
+    const d = await edApi("GET", "/api/v1/runs/" + runId + "/diff");
+    let meta = {};
+    try {
+      const runs = await edApi("GET", "/api/v1/runs");
+      meta = (runs.runs || runs || []).find((r) => r.id === runId) || {};
+    } catch {
+    }
+    d.judgeScore = meta.judgeScore;
+    d.judgeRationale = meta.judgeRationale;
+    d.worktree = meta.worktree || meta.worktreePath || "";
+    ed.review = d;
+    ed.sel = {};
+    ed.hunkPrints = {};
+    ed.focus = d.files?.length ? [d.files[0].path, 0] : null;
+    renderDiff();
+    renderReviewState();
+    document.querySelector('.nav button[data-panel="editor"]')?.click();
+    switchTab("diff");
+    return d;
   }
   function edConnectStream(runId) {
     if (edStreamES) {
@@ -1311,6 +1402,9 @@
     openQuick: () => window.dispatchEvent(new CustomEvent("code-studio:quick-open")),
     openFile,
     fillRunBot,
+    // loadDiffForRun opens one run's diff in the review pane. The review
+    // queue calls it so a queue entry leads to the changes it names.
+    loadDiffForRun,
     // gotoLine jumps the buffer to a 1-based line (used by the outline).
     gotoLine: (n) => ctx?.gotoLine(n),
     refresh: async () => {
@@ -1930,7 +2024,14 @@ When a release is cut:
 .sv-pal-item{display:flex;align-items:baseline;gap:8px;padding:6px 10px;border-radius:6px;cursor:pointer}
 .sv-pal-item:hover,.sv-pal-item.sel{background:rgba(255,255,255,.07)}
 .sv-pal-path{opacity:.6;font-size:11px;margin-left:auto}
+.sv-act{margin-left:4px;border:0;background:transparent;color:inherit;cursor:pointer;font-size:11px;opacity:.6;padding:0 3px;border-radius:3px}
+.sv-act:hover{opacity:1;background:rgba(255,255,255,.1)}
 .sv-note{opacity:.55;padding:8px 10px;font-size:11px}
+.rtn-edit{margin-top:6px;display:flex;gap:6px;align-items:center}
+.rtn-edit[hidden]{display:none}
+.rtn-edit-in{flex:1;min-width:120px;background:rgba(0,0,0,.25);border:1px solid var(--line,#2a2e36);
+  border-radius:6px;color:inherit;font:inherit;font-size:12px;padding:4px 7px;outline:none}
+.rtn-edit-in:focus{border-color:#4b5563}
 `;
   function injectStyles() {
     if (document.getElementById("sv-styles")) return;
@@ -1945,6 +2046,20 @@ When a release is cut:
     if (cls) n.className = cls;
     if (text !== void 0) n.textContent = text;
     return n;
+  }
+  function toast2(msg, cls) {
+    let box = document.getElementById("sv-toasts");
+    if (!box) {
+      box = el("div");
+      box.id = "sv-toasts";
+      box.style.cssText = "position:fixed;right:18px;bottom:120px;z-index:95;display:flex;flex-direction:column;gap:6px;pointer-events:none";
+      document.body.appendChild(box);
+    }
+    const t = el("div", "", msg);
+    t.style.cssText = "background:#22262e;color:#e7e9ee;border:1px solid #343a44;border-radius:8px;padding:7px 11px;font-size:12px;max-width:280px";
+    if (cls === "err") t.style.borderColor = "#d4483b";
+    box.appendChild(t);
+    setTimeout(() => t.remove(), 2600);
   }
   function render() {
     const body = document.querySelector("#sv-card .sv-body");
@@ -1964,6 +2079,32 @@ When a release is cut:
         const goal = el("span", "sv-goal", e.goal || e.run_id || "run");
         row.appendChild(goal);
         row.appendChild(el("span", "sv-kind", `${e.files_changed ? e.files_changed.length : 0} files`));
+        const open = el("button", "sv-act", "open");
+        open.title = "open this run's diff";
+        open.onclick = async (ev) => {
+          ev.stopPropagation();
+          try {
+            await window.codeStudio?.loadDiffForRun?.(e.run_id);
+            await api("POST", `/api/v1/queue/${encodeURIComponent(e.run_id)}/state`, { state: "in_review" });
+            await refresh();
+          } catch (err) {
+            toast2("could not open the diff: " + (err && err.message ? err.message : "unknown error"), "err");
+          }
+        };
+        row.appendChild(open);
+        const done = el("button", "sv-act", "\u2713");
+        done.title = "mark reviewed";
+        done.onclick = async (ev) => {
+          ev.stopPropagation();
+          try {
+            await api("DELETE", `/api/v1/queue/${encodeURIComponent(e.run_id)}`);
+            toast2("resolved");
+            await refresh();
+          } catch (err) {
+            toast2("could not resolve: " + (err && err.message ? err.message : "unknown error"), "err");
+          }
+        };
+        row.appendChild(done);
         row.title = e.run_id || "";
         body.appendChild(row);
       }
@@ -1979,6 +2120,20 @@ When a release is cut:
       dot.className = "sv-dot " + (t.status || "");
       row.appendChild(dot);
       row.appendChild(el("span", "sv-goal", t.goal || t.id));
+      const kill = el("button", "sv-act", "\u2715");
+      kill.title = "remove this thread and its worktree";
+      kill.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (!confirm("Remove thread " + (t.id || "") + " and delete its worktree?\n\nAnything in the worktree that was not merged into your tree is lost.")) return;
+        try {
+          await api("DELETE", `/api/v1/threads/${encodeURIComponent(t.id)}`);
+          toast2("thread removed");
+          await refresh();
+        } catch (err) {
+          toast2("could not remove: " + (err && err.message ? err.message : "unknown error"), "err");
+        }
+      };
+      row.appendChild(kill);
       row.title = t.worktree_path || t.id || "";
       body.appendChild(row);
     }
@@ -2200,7 +2355,7 @@ When a release is cut:
   function safe2(s) {
     return esc3(sanitize2(s));
   }
-  function toast2(msg, cls) {
+  function toast3(msg, cls) {
     const t = document.createElement("div");
     t.className = "toast" + (cls ? " " + cls : "");
     t.textContent = msg;
@@ -2213,7 +2368,7 @@ When a release is cut:
   }
   function showErr(e) {
     if (!e) return;
-    toast2(e, "err");
+    toast3(e, "err");
   }
   async function api2(method, path, body) {
     const opt = { method, headers: {} };
@@ -2312,20 +2467,34 @@ When a release is cut:
     ).join("") || empty("\u2726", "The library is empty \u2014 write a playbook above.");
     $4("routines").innerHTML = roster.routines.map((rt) => {
       const state2 = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
+      const next = rt.next_fire ? ` \xB7 next ${esc3(rt.next_fire)}` : "";
       return `<li><span class="avatar" style="background:var(--grad)">\u21BB</span>
       <div class="body">
         <div class="title">${esc3(rt.trigger)} ${state2}</div>
-        <div class="clip">${esc3(rt.id)} \xB7 ${esc3(rt.last_note || "no test-run")}</div>
+        <div class="clip">${esc3(rt.id)} \xB7 ${esc3(rt.last_note || "no test-run")}${next}</div>
+        <div class="rtn-edit" data-rtn-edit="${esc3(rt.id)}" hidden>
+          <input class="rtn-edit-in" value="${esc3(rt.trigger)}" aria-label="trigger" spellcheck="false">
+          <button class="ghost mini" data-rtn-save="${esc3(rt.id)}">save trigger</button>
+        </div>
       </div>
       <div class="actions">
         <button class="ghost" data-test="${esc3(rt.id)}">test-run</button>
         <button class="ghost" data-en="${esc3(rt.id)}">enable</button>
         <button class="ghost" data-pause="${esc3(rt.id)}" data-paused="${rt.paused ? "0" : "1"}">${rt.paused ? "resume" : "pause"}</button>
+        <button class="ghost" data-rtn-edit-btn="${esc3(rt.id)}">trigger</button>
       </div></li>`;
     }).join("") || empty("\u21BB", "Nothing on the clock \u2014 arm a routine above.");
     $4("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
     $4("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
     $4("routines").querySelectorAll("[data-pause]").forEach((btn) => btn.onclick = () => pauseRtn(btn.dataset.pause, btn.dataset.paused === "1"));
+    $4("routines").querySelectorAll("[data-rtn-edit-btn]").forEach((btn) => btn.onclick = () => {
+      const box = $4("routines").querySelector(`[data-rtn-edit="${btn.dataset.rtnEditBtn}"]`);
+      if (box) {
+        box.hidden = !box.hidden;
+        box.querySelector("input")?.focus();
+      }
+    });
+    $4("routines").querySelectorAll("[data-rtn-save]").forEach((btn) => btn.onclick = () => saveRtnTrigger(btn.dataset.rtnSave));
     const tb = $4("routes").querySelector("tbody");
     tb.innerHTML = (roster.routes || []).map(
       (r) => `<tr><td>${esc3(r.id)}</td><td>${esc3(r.role)}</td><td>${esc3(r.model)}</td><td class="tag">${esc3(r.purpose)}</td></tr>`
@@ -2355,6 +2524,23 @@ When a release is cut:
     render2();
     renderSpark();
     renderHero();
+  }
+  async function saveRtnTrigger(id) {
+    const box = $4("routines").querySelector(`[data-rtn-edit="${id}"]`);
+    const input = box?.querySelector(".rtn-edit-in");
+    const trigger = (input?.value || "").trim();
+    if (!trigger) {
+      toast3("a trigger is required", "err");
+      return;
+    }
+    try {
+      const res = await api2("PATCH", `/api/v1/routines/${encodeURIComponent(id)}`, { trigger });
+      toast3("trigger updated \u2014 next fire " + (res?.next_fire || "not scheduled"), "ok");
+      if (box) box.hidden = true;
+      await refresh2();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
   }
   async function loadMesh() {
     try {
@@ -2438,10 +2624,10 @@ When a release is cut:
     if (row) row.dataset.state = "starting";
     try {
       await api2("POST", "/api/v1/models/" + encodeURIComponent(id) + "/start");
-      toast2("start accepted \u2014 model warming up", "ok");
+      toast3("start accepted \u2014 model warming up", "ok");
       setTimeout(() => loadHubs(), 4e3);
     } catch (e) {
-      toast2(safe2(e.message), "err");
+      toast3(safe2(e.message), "err");
       if (btn) {
         btn.disabled = false;
         btn.textContent = "\u25B6 start";
@@ -2839,7 +3025,7 @@ When a release is cut:
         $4("prompt").value = m.prompt;
         $4("intent").value = m.intent;
         $4("prompt").focus();
-        toast2(`mission loaded: ${m.title}`, "ok");
+        toast3(`mission loaded: ${m.title}`, "ok");
       };
     });
   }
@@ -2854,7 +3040,7 @@ When a release is cut:
         const t = SKILL_TEMPLATES[+btn.dataset.tpl];
         $4("skillName").value = t.name;
         $4("skillBody").value = t.body;
-        toast2(`template loaded: ${t.name}`, "ok");
+        toast3(`template loaded: ${t.name}`, "ok");
       };
     });
   }
@@ -2909,9 +3095,9 @@ When a release is cut:
     const botName = (roster.bots.find((b) => b.id === run.bot_id) || {}).name;
     try {
       await navigator.clipboard.writeText(toMarkdown(run, events, botName));
-      toast2("transcript copied as markdown", "ok");
+      toast3("transcript copied as markdown", "ok");
     } catch {
-      toast2("clipboard blocked", "err");
+      toast3("clipboard blocked", "err");
     }
   };
   var logFilter = "all";
@@ -2960,9 +3146,9 @@ When a release is cut:
     const lines = [...logEl().querySelectorAll(".ev")].map((r) => r.textContent.trim()).join("\n");
     try {
       await navigator.clipboard.writeText(lines);
-      toast2("console copied", "ok");
+      toast3("console copied", "ok");
     } catch {
-      toast2("clipboard blocked", "err");
+      toast3("clipboard blocked", "err");
     }
   };
   function stampEvent(node, kind) {
@@ -3027,7 +3213,7 @@ When a release is cut:
         $4("prompt").value = m.prompt;
         $4("intent").value = m.intent;
         $4("prompt").focus();
-        toast2(`mission loaded: ${m.title}`, "ok");
+        toast3(`mission loaded: ${m.title}`, "ok");
       } });
     }
     for (const b of roster.bots) {
@@ -3095,7 +3281,7 @@ When a release is cut:
     demoCancel = playDemo(appendEvent, () => {
       demoCancel = null;
       stopElapsed();
-      toast2("demo finished \u2014 now run a real one", "ok");
+      toast3("demo finished \u2014 now run a real one", "ok");
       startStream(null);
     });
   }
@@ -3116,7 +3302,7 @@ When a release is cut:
     try {
       const name = require2("botName", "give the teammate a name");
       await api2("POST", "/api/v1/bots", { name, role: $4("botRole").value.trim() || "coder", route: $4("botRoute").value });
-      toast2("teammate deployed", "ok");
+      toast3("teammate deployed", "ok");
       await refresh2();
     } catch (e) {
       showErr(e.message);
@@ -3129,7 +3315,7 @@ When a release is cut:
       const note = require2("memNote", "what should it remember?");
       await api2("POST", "/api/v1/bots/" + bot + "/remember", { note });
       $4("memNote").value = "";
-      toast2("burned into memory", "ok");
+      toast3("burned into memory", "ok");
       await refresh2();
     } catch (e) {
       showErr(e.message);
@@ -3141,7 +3327,7 @@ When a release is cut:
       const name = require2("skillName", "give the playbook a name");
       const body = require2("skillBody", "write the playbook body");
       await api2("POST", "/api/v1/skills", { name, body });
-      toast2("playbook added to the library", "ok");
+      toast3("playbook added to the library", "ok");
       await refresh2();
     } catch (e) {
       showErr(e.message);
@@ -3153,7 +3339,7 @@ When a release is cut:
       const bot = require2("rtnBot", "deploy a teammate first");
       const skill = require2("rtnSkill", "add a playbook first");
       await api2("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $4("rtnTrigger").value.trim() || "manual" });
-      toast2("routine armed", "ok");
+      toast3("routine armed", "ok");
       await refresh2();
     } catch (e) {
       showErr(e.message);
@@ -3166,7 +3352,7 @@ When a release is cut:
       if (from === to) throw new Error("pick two different teammates");
       const body = require2("handoffBody", "what is the work item?");
       const out = await api2("POST", "/api/v1/handoff", { from, to, body, run: $4("handoffRun").checked });
-      toast2("handoff away", "ok");
+      toast3("handoff away", "ok");
       await refresh2();
       if (out.run && out.run.id) {
         clearLog();
@@ -3227,7 +3413,7 @@ When a release is cut:
   async function enableRtn(id) {
     try {
       await api2("POST", "/api/v1/routines/" + id + "/enable");
-      toast2("routine enabled \u2014 it's live", "ok");
+      toast3("routine enabled \u2014 it's live", "ok");
       await refresh2();
     } catch (e) {
       showErr(e.message);
@@ -3236,7 +3422,7 @@ When a release is cut:
   async function pauseRtn(id, paused) {
     try {
       await api2("POST", "/api/v1/routines/" + id + "/pause", { paused });
-      toast2(paused ? "routine paused \u2014 it won't fire" : "routine resumed \u2014 it's live", "ok");
+      toast3(paused ? "routine paused \u2014 it won't fire" : "routine resumed \u2014 it's live", "ok");
       await refresh2();
     } catch (e) {
       showErr(e.message);
