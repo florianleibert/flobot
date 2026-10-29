@@ -65,6 +65,12 @@ type Routine struct {
 	LastRun  string `json:"last_run,omitempty"`
 	LastNote string `json:"last_note,omitempty"`
 	Owner    string `json:"-"`
+	// IntegrationID, when set, binds the routine to an external-service
+	// integration (Gmail, webhook): the routine fires when the integration
+	// receives an event, in addition to any schedule trigger. The store
+	// does not validate the id — the server checks it against the
+	// IntegrationStore before binding.
+	IntegrationID string `json:"integration_id,omitempty"`
 }
 
 // Message is a bus item. OwnerBot encodes single-owner-per-stage.
@@ -363,7 +369,7 @@ func (s *Store) ListSkills(actor string) []Skill {
 	return out
 }
 
-func (s *Store) CreateRoutine(owner, botID, skillID, trigger string) (Routine, error) {
+func (s *Store) CreateRoutine(owner, botID, skillID, trigger, integrationID string) (Routine, error) {
 	if _, err := s.ownedBot(botID, owner); err != nil {
 		return Routine{}, err
 	}
@@ -378,12 +384,13 @@ func (s *Store) CreateRoutine(owner, botID, skillID, trigger string) (Routine, e
 		return Routine{}, fmt.Errorf("trigger required")
 	}
 	rt := Routine{
-		ID:      newID("rtn"),
-		BotID:   botID,
-		SkillID: skillID,
-		Trigger: trigger,
-		Paused:  true,
-		Owner:   owner,
+		ID:            newID("rtn"),
+		BotID:         botID,
+		SkillID:       skillID,
+		Trigger:       trigger,
+		IntegrationID: strings.TrimSpace(integrationID),
+		Paused:        true,
+		Owner:         owner,
 	}
 	s.mu.Lock()
 	s.routines[rt.ID] = rt
@@ -422,6 +429,37 @@ func (s *Store) UpdateRoutine(id, actor string, trigger *string, paused *bool) (
 	s.mu.Unlock()
 	s.Save()
 	return rt, nil
+}
+
+// BindRoutine sets (or clears, with "") the integration a routine fires on.
+// The store does not validate the integration id; the server checks it
+// against the IntegrationStore before binding.
+func (s *Store) BindRoutine(id, actor, integrationID string) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok || rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	rt.IntegrationID = strings.TrimSpace(integrationID)
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
+// RoutinesForIntegration lists the routines bound to an integration.
+func (s *Store) RoutinesForIntegration(integrationID string) []Routine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Routine, 0, len(s.routines))
+	for _, rt := range s.routines {
+		if rt.IntegrationID == integrationID {
+			out = append(out, rt)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // DeleteRoutine removes a routine.

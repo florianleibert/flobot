@@ -3129,6 +3129,7 @@ When a release is cut:
   // src/main.js
   var $4 = (id) => document.getElementById(id);
   var roster = { bots: [], skills: [], routines: [], messages: [], routes: [], runs: [] };
+  var integrations = [];
   var activeRun = null;
   var pollTimer = null;
   var elapsedTimer = null;
@@ -3209,12 +3210,20 @@ When a release is cut:
       document.querySelectorAll(".panel").forEach((p2) => p2.classList.remove("active"));
       const p = $4("panel-" + btn.dataset.panel);
       if (p) p.classList.add("active");
+      // The panel lives in the URL: a link to a panel is shareable, and a
+      // reload lands on the same panel.
+      if (location.hash.slice(1) !== btn.dataset.panel) {
+        history.replaceState(null, "", "#" + btn.dataset.panel);
+      }
     };
   });
   function gotoPanel(name) {
     const btn = nav.querySelector(`button[data-panel="${name}"]`);
     if (btn) btn.click();
   }
+  // Deep link: /#integrations opens straight into that panel.
+  const deepPanel = (location.hash || "").replace(/^#/, "");
+  if (deepPanel && nav.querySelector(`button[data-panel="${deepPanel}"]`)) gotoPanel(deepPanel);
   var meshModels = [];
   function avatarGrad(s) {
     let h = 0;
@@ -3234,6 +3243,7 @@ When a release is cut:
     $4("navRuns").textContent = (roster.runs || []).length;
     $4("navRtn").textContent = roster.routines.length;
     $4("navSkills").textContent = roster.skills.length;
+    $4("navInt").textContent = integrations.length;
     $4("statBots").textContent = roster.bots.length;
     $4("statRoutines").textContent = roster.routines.length;
     $4("statRuns").textContent = (roster.runs || []).length;
@@ -3321,6 +3331,438 @@ When a release is cut:
       activeRun = null;
       startStream(btn.dataset.run);
     });
+    renderIntegrations();
+  }
+  // ---- integrations -------------------------------------------------------
+  var intProviders = [];
+  var intAuthModes = [];
+  var intFilter = "all";
+  var intSheetKind = "";
+  function intProvider(kind) {
+    return intProviders.find((p) => p.kind === kind) || {
+      kind: kind, label: kind, blurb: "", glyph: "∞",
+      default_auth: "bearer", auth_modes: ["bearer"], steps: []
+    };
+  }
+  function ago(ts) {
+    if (!ts) return "never";
+    const t = Date.parse(ts);
+    if (isNaN(t)) return "never";
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return Math.floor(s) + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  }
+  function intStatusChip(st) {
+    const map = {
+      ok: ["ok", "live"],
+      idle: ["ghost-chip", "idle"],
+      error: ["err", "rejected"],
+      unbound: ["warn", "no routine"]
+    };
+    const m = map[st] || ["ghost-chip", st || "idle"];
+    return `<span class="chip ${m[0]}">${esc3(m[1])}</span>`;
+  }
+  function renderIntGallery() {
+    const host = $4("intGallery");
+    if (!host) return;
+    host.innerHTML = intProviders.map((p) => `
+      <button type="button" class="int-tile" data-int-connect="${esc3(p.kind)}">
+        <span class="int-glyph">${esc3(p.glyph || "∞")}</span>
+        <span class="int-tile-text">
+          <span class="int-tile-name">${esc3(p.label)}</span>
+          <span class="int-tile-blurb">${esc3(p.blurb || "")}</span>
+        </span>
+        <span class="int-tile-go">Connect →</span>
+      </button>`).join("");
+    host.querySelectorAll("[data-int-connect]").forEach((b) => (b.onclick = () => openIntSheet(b.dataset.intConnect)));
+  }
+  function renderIntegrations() {
+    const host = $4("integrations");
+    if (!host) return;
+    const cnt = $4("intCount");
+    if (cnt) cnt.textContent = integrations.length + " connected";
+    const picks = (roster.routines || [])
+      .map((rt) => `<option value="${esc3(rt.id)}">${esc3(rt.id.slice(0, 8))} — ${esc3(rt.trigger || "manual")}</option>`)
+      .join("");
+    host.innerHTML = integrations.map((in2) => {
+      const p = in2.provider || intProvider(in2.kind);
+      const bound = (in2.routines || []).map((rt) => `
+        <span class="int-chip" title="trigger: ${esc3(rt.trigger || "manual")}">
+          ${esc3(rt.id.slice(0, 8))}
+          <button type="button" class="int-x" data-int-unbind="${esc3(rt.id)}" title="unbind">×</button>
+        </span>`).join("");
+      const last = (in2.events || [])[0];
+      return `
+      <div class="int-card">
+        <div class="int-card-head">
+          <span class="int-glyph">${esc3(p.glyph || "∞")}</span>
+          <div class="int-card-id">
+            <div class="int-card-name">${esc3(in2.name)}<span class="chip ghost-chip">${esc3(in2.auth_mode || "bearer")}</span> ${intStatusChip(in2.status)}</div>
+            <div class="int-card-sub">${esc3(in2.detail || p.blurb || "")}</div>
+          </div>
+          <span class="spacer"></span>
+          <div class="int-actions">
+            <button type="button" class="ghost" data-int-copyurl="${esc3(in2.id)}">copy URL</button>
+            <button type="button" class="ghost" data-int-test="${esc3(in2.id)}">test</button>
+            <button type="button" class="ghost" data-int-rotate="${esc3(in2.id)}">rotate</button>
+            <button type="button" class="ghost danger" data-int-del="${esc3(in2.id)}">remove</button>
+          </div>
+        </div>
+        <div class="int-grid">
+          <div class="int-kv"><span class="int-k">URL</span><span class="int-v int-mono int-url" title="${esc3(in2.url || "")}" id="intUrl-${esc3(in2.id)}">${esc3(in2.url || "")}</span></div>
+          <div class="int-kv"><span class="int-k">secret</span><span class="int-v int-mono">${esc3(in2.secret_hint || "")}</span></div>
+          <div class="int-kv"><span class="int-k">fires</span><span class="int-v num">${in2.fire_count || 0}</span></div>
+          <div class="int-kv"><span class="int-k">last</span><span class="int-v">${esc3(ago(in2.last_fired_at))}</span></div>
+        </div>
+        <div class="int-routines">
+          <span class="int-k">routines</span>
+          ${bound || `<span class="tag">none — a fired event would have nothing to run</span>`}
+          <span class="spacer"></span>
+          <select class="int-pick" data-int-bind="${esc3(in2.id)}">
+            <option value="">bind a routine…</option>
+            ${picks}
+          </select>
+        </div>
+        ${last ? `<div class="int-last"><span class="int-mono">${esc3(last.note || "")}</span><span class="tag">${esc3(ago(last.created_at))}</span></div>` : ""}
+      </div>`;
+    }).join("") || `
+      <div class="int-empty">
+        <span class="int-glyph">⚡</span>
+        <p>No service connected yet.</p>
+        <p class="sub">Pick one above — Gmail, Slack, GitHub, or your own script.</p>
+      </div>`;
+    host.querySelectorAll("[data-int-copyurl]").forEach((b) => (b.onclick = () => copyInt(b.dataset.intCopyurl)));
+    host.querySelectorAll("[data-int-test]").forEach((b) => (b.onclick = () => testInt(b.dataset.intTest)));
+    host.querySelectorAll("[data-int-rotate]").forEach((b) => (b.onclick = () => rotateInt(b.dataset.intRotate)));
+    host.querySelectorAll("[data-int-del]").forEach((b) => (b.onclick = () => deleteInt(b.dataset.intDel, b)));
+    host.querySelectorAll("[data-int-unbind]").forEach((b) => (b.onclick = () => unbindRoutine(b.dataset.intUnbind)));
+    host.querySelectorAll("[data-int-bind]").forEach((sel) => (sel.onchange = () => bindRoutineToInt(sel.dataset.intBind, sel.value)));
+    renderIntEvents();
+  }
+  function renderIntEvents() {
+    const host = $4("intEvents");
+    if (!host) return;
+    const rows = [];
+    integrations.forEach((in2) => (in2.events || []).forEach((ev) => rows.push({ ev: ev, name: in2.name })));
+    rows.sort((a, b) => String(b.ev.created_at || "").localeCompare(String(a.ev.created_at || "")));
+    const filters = ["all", "fired", "rejected", "ignored", "error"];
+    const fhost = $4("intEvFilters");
+    if (fhost) {
+      fhost.innerHTML = filters
+        .map((f) => `<button type="button" class="chip ghost-chip ${intFilter === f ? "sel" : ""}" data-int-filter="${esc3(f)}">${esc3(f)}</button>`)
+        .join("");
+      fhost.querySelectorAll("[data-int-filter]").forEach((b) => (b.onclick = () => {
+        intFilter = b.dataset.intFilter;
+        renderIntEvents();
+      }));
+    }
+    const shown = rows.filter((r) => intFilter === "all" || (r.ev.status || "fired") === intFilter).slice(0, 60);
+    host.innerHTML = shown.map((r) => {
+      const st = r.ev.status || "fired";
+      const cls = st === "fired" ? "ok" : st === "rejected" ? "err" : "warn";
+      return `
+      <div class="int-ev">
+        <span class="int-ev-dot ${cls}"></span>
+        <span class="int-ev-name">${esc3(r.name)}</span>
+        <span class="chip ${cls}">${esc3(st)}</span>
+        <span class="int-ev-note">${esc3(r.ev.note || "")}</span>
+        <span class="spacer"></span>
+        ${r.ev.run_id ? `<button type="button" class="linklike" data-run="${esc3(r.ev.run_id)}">${esc3(r.ev.run_id.slice(0, 8))}</button>` : ""}
+        <span class="tag">${esc3(ago(r.ev.created_at))}</span>
+      </div>`;
+    }).join("") || `
+      <div class="int-empty">
+        <span class="int-glyph">◷</span>
+        <p>No events yet.</p>
+        <p class="sub">Send a test event from a connected service — the log lands here.</p>
+      </div>`;
+    host.querySelectorAll("[data-run]").forEach((btn) => (btn.onclick = () => {
+      clearLog();
+      stopPoll();
+      activeRun = null;
+      startStream(btn.dataset.run);
+    }));
+  }
+  async function copyInt(idOrText) {
+    const el = idOrText && idOrText.charAt(0) === "#" ? null : document.getElementById("intUrl-" + idOrText);
+    const text = el ? el.textContent : idOrText;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast3("copied to clipboard", "ok");
+    } catch (e) {
+      toast3("copy failed — select the text and copy it by hand", "err");
+    }
+  }
+  async function testInt(id) {
+    try {
+      const res = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/test`, {});
+      const fired = res && res.fired ? res.fired : 0;
+      if (fired > 0) {
+        toast3(`test event fired ${fired} routine${fired === 1 ? "" : "s"}`, "ok");
+      } else {
+        toast3("nothing fired — bind and enable a routine first", "err");
+      }
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function rotateInt(id) {
+    try {
+      const res = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/rotate`, {});
+      const in2 = (res && res.integration) || {};
+      toast3("secret rotated — the old one stops working now", "ok");
+      renderIntSheetReady(in2, (res && res.url) || "", true);
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function bindRoutineToInt(id, routineId) {
+    const rid = (routineId || "").trim();
+    if (!rid) return;
+    try {
+      await api2("POST", `/api/v1/routines/${encodeURIComponent(rid)}/integration`, { integration_id: id });
+      toast3("routine bound — events fire it now", "ok");
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function unbindRoutine(routineId) {
+    try {
+      await api2("POST", `/api/v1/routines/${encodeURIComponent(routineId)}/integration`, { integration_id: "" });
+      toast3("routine unbound", "ok");
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function deleteInt(id, btn) {
+    if (btn && btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.textContent = "confirm remove";
+      btn.classList.add("danger-armed");
+      setTimeout(() => {
+        if (!btn.isConnected) return;
+        btn.dataset.armed = "";
+        btn.textContent = "remove";
+        btn.classList.remove("danger-armed");
+      }, 4000);
+      return;
+    }
+    try {
+      await api2("DELETE", `/api/v1/integrations/${encodeURIComponent(id)}`);
+      toast3("integration removed — its secret stops working", "ok");
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  function openIntSheet(kind) {
+    intSheetKind = kind;
+    const p = intProvider(kind);
+    $4("intSheetGlyph").textContent = p.glyph || "∞";
+    $4("intSheetTitle").textContent = "Connect " + (p.label || kind);
+    $4("intSheetBlurb").textContent = p.blurb || "";
+    renderIntSheetForm(p);
+    $4("intSheet").hidden = false;
+    setTimeout(() => {
+      const f = $4("intSheetName");
+      if (f) f.focus();
+    }, 30);
+  }
+  function closeIntSheet() {
+    $4("intSheet").hidden = true;
+    $4("intSheetBody").innerHTML = "";
+  }
+  function renderIntSheetForm(p) {
+    const modes = (p.auth_modes || ["bearer"]).map((id) => {
+      const m = intAuthModes.find((x) => x.id === id) || { id: id, label: id, hint: "" };
+      const sel = id === (p.default_auth || "bearer") ? " selected" : "";
+      return `<option value="${esc3(m.id)}"${sel}>${esc3(m.label)}</option>`;
+    }).join("");
+    $4("intSheetBody").innerHTML = `
+      <div class="int-form">
+        <label class="int-field"><span>name</span>
+          <input id="intSheetName" placeholder="work inbox" value="${esc3(p.kind === "webhook" ? "" : p.label || "")}">
+        </label>
+        <label class="int-field"><span>detail <em>optional</em></span>
+          <input id="intSheetDetail" placeholder="${esc3(p.kind === "gmail" ? "label: inbox" : "what this watches")}">
+        </label>
+        <label class="int-field"><span>authentication</span>
+          <select id="intSheetAuth">${modes}</select>
+          <small id="intSheetAuthHint"></small>
+        </label>
+        <ol class="int-steps">
+          ${(p.steps || []).map((s) => `<li>${esc3(s)}</li>`).join("")}
+        </ol>
+        <div class="int-form-actions">
+          <button type="button" class="ghost" data-int-close="1">cancel</button>
+          <button type="button" class="primary" id="createInt">Create integration</button>
+        </div>
+      </div>`;
+    const sel = $4("intSheetAuth");
+    const hint = () => {
+      const m = intAuthModes.find((x) => x.id === sel.value);
+      const h = $4("intSheetAuthHint");
+      if (h) h.textContent = m ? m.hint : "";
+    };
+    sel.onchange = hint;
+    hint();
+    $4("intSheetBody").querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
+    $4("createInt").onclick = async () => {
+      try {
+        const name = ($4("intSheetName").value || "").trim();
+        if (!name) throw new Error("give it a name");
+        const res = await api2("POST", "/api/v1/integrations", {
+          kind: intSheetKind,
+          name: name,
+          detail: ($4("intSheetDetail").value || "").trim(),
+          auth_mode: $4("intSheetAuth").value
+        });
+        const in2 = (res && res.integration) || {};
+        renderIntSheetReady(in2, (res && res.url) || "");
+        await refreshInt();
+      } catch (e) {
+        showErr(e.message);
+      }
+    };
+  }
+  function intSnippets(kind, url, secret, authMode) {
+    const out = {};
+    const auth = authMode === "query"
+      ? `?key=${secret}`
+      : "";
+    const target = url + auth;
+    if (authMode === "bearer" || authMode === "query") {
+      out.curl = [
+        `curl -X POST "${target}"`,
+        `  -H "Content-Type: application/json"`,
+        authMode === "query" ? "" : `  -H "Authorization: Bearer ${secret}"`,
+        `  -d '{"text":"hello from flobot"}'`
+      ].filter(Boolean).join(" \\\n");
+    } else {
+      out.curl = [
+        `curl -X POST "${url}"`,
+        `  -H "Content-Type: application/json"`,
+        authMode === "hmac" ? `  -H "X-Hub-Signature-256: sha256=<hmac of the body>"` : "",
+        authMode === "slack" ? `  -H "X-Slack-Signature: v0=<signature>"` : "",
+        authMode === "stripe" ? `  -H "Stripe-Signature: t=<ts>,v1=<signature>"` : "",
+        authMode === "standard" ? `  -H "webhook-signature: v1,<signature>"` : "",
+        `  -d '{"text":"hello from flobot"}'`
+      ].filter(Boolean).join(" \\\n");
+    }
+    out.javascript = [
+      `await fetch("${target}", {`,
+      `  method: "POST",`,
+      authMode === "query" ? `  headers: { "Content-Type": "application/json" },` : `  headers: { "Content-Type": "application/json", "Authorization": "Bearer ${secret}" },`,
+      `  body: JSON.stringify({ text: "hello from flobot" })`,
+      `});`
+    ].join("\n");
+    out.python = [
+      `import requests`,
+      ``,
+      `requests.post("${target}",`,
+      authMode === "query" ? `    headers={},` : `    headers={"Authorization": "Bearer ${secret}"},`,
+      `    json={"text": "hello from flobot"})`
+    ].join("\n");
+    if (kind === "gmail") {
+      out["apps script"] = [
+        `function doPost(e) {`,
+        `  const body = JSON.parse(e.postData.contents || "{}");`,
+        `  UrlFetchApp.fetch("${url}", {`,
+        `    method: "post",`,
+        `    contentType: "application/json",`,
+        `    headers: { Authorization: "Bearer ${secret}" },`,
+        `    payload: JSON.stringify({ text: body.subject + "\\n" + body.snippet })`,
+        `  });`,
+        `}`
+      ].join("\n");
+    }
+    if (kind === "telegram") {
+      out["set webhook"] = [
+        `curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook"`,
+        `  -H "Content-Type: application/json"`,
+        `  -d '{"url":"${url}?key=${secret}"}'`
+      ].join("\n");
+    }
+    if (kind === "github") {
+      out["repo config"] = [
+        `{`,
+        `  "url": "${url}",`,
+        `  "content_type": "json",`,
+        `  "secret": "${secret}",`,
+        `  "insecure_ssl": "0"`,
+        `}`
+      ].join("\n");
+    }
+    return out;
+  }
+  function renderIntSheetReady(in2, url, rotated) {
+    const p = intProvider(in2.kind);
+    const secret = in2.secret || "";
+    const target = in2.auth_mode === "query" ? url + "?key=" + secret : url;
+    const snippets = intSnippets(in2.kind, url, secret, in2.auth_mode || "bearer");
+    const keys = Object.keys(snippets);
+    $4("intSheetGlyph").textContent = p.glyph || "∞";
+    $4("intSheetTitle").textContent = (rotated ? "New secret for " : "") + (p.label || in2.kind);
+    $4("intSheetBlurb").textContent = rotated
+      ? "The old secret is dead. Paste the new one into " + (p.label || in2.kind) + "."
+      : "Copy the URL and the secret into " + (p.label || in2.kind) + ", then send a test event.";
+    $4("intSheetBody").innerHTML = `
+      <div class="int-ready">
+        <div class="int-secret-row">
+          <div class="int-kv"><span class="int-k">webhook URL</span><span class="int-v int-mono" id="intReadyUrl">${esc3(target)}</span></div>
+          <button type="button" class="ghost" data-int-copytext="url">copy URL</button>
+        </div>
+        <div class="int-secret-row">
+          <div class="int-kv"><span class="int-k">secret <em>shown once</em></span><span class="int-v int-mono" id="intReadySecret">${esc3(secret)}</span></div>
+          <button type="button" class="ghost" data-int-copytext="secret">copy secret</button>
+        </div>
+        <div class="int-tabs">
+          ${keys.map((k, i) => `<button type="button" class="int-tab ${i === 0 ? "sel" : ""}" data-int-snippet="${esc3(k)}">${esc3(k)}</button>`).join("")}
+        </div>
+        <pre class="int-snippet" id="intSnippet">${esc3(snippets[keys[0]])}</pre>
+        <div class="int-form-actions">
+          <button type="button" class="ghost" data-int-close="1">done</button>
+          <button type="button" class="primary" data-int-test="${esc3(in2.id)}">Send a test event</button>
+        </div>
+      </div>`;
+    const body = $4("intSheetBody");
+    body.querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
+    body.querySelectorAll("[data-int-test]").forEach((b) => (b.onclick = () => testInt(b.dataset.intTest)));
+    body.querySelectorAll("[data-int-copytext]").forEach((b) => (b.onclick = () => {
+      const el = document.getElementById(b.dataset.intCopytext === "url" ? "intReadyUrl" : "intReadySecret");
+      if (!el) return;
+      copyInt(el.textContent);
+    }));
+    body.querySelectorAll("[data-int-snippet]").forEach((b) => (b.onclick = () => {
+      body.querySelectorAll("[data-int-snippet]").forEach((x) => x.classList.remove("sel"));
+      b.classList.add("sel");
+      const pre = $4("intSnippet");
+      if (pre) pre.textContent = snippets[b.dataset.intSnippet] || "";
+    }));
+  }
+  async function refreshInt() {
+    try {
+      const [res, provs] = await Promise.all([
+        api2("GET", "/api/v1/integrations"),
+        api2("GET", "/api/v1/integrations/providers").catch(() => null)
+      ]);
+      integrations = (res && res.integrations) || [];
+      if (provs) {
+        intProviders = provs.providers || [];
+        intAuthModes = provs.auth_modes || [];
+        renderIntGallery();
+      }
+      renderIntegrations();
+      render2();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
   }
   async function refresh2() {
     roster = await api2("GET", "/api/v1/roster");
@@ -4001,6 +4443,7 @@ When a release is cut:
       } },
       { label: "Go to Routines", icon: "\u21BB", hint: "panel", run: () => gotoPanel("routines") },
       { label: "Go to Skills", icon: "\u2726", hint: "panel", run: () => gotoPanel("skills") },
+      { label: "Go to Integrations", icon: "\u221E", hint: "panel", run: () => gotoPanel("integrations") },
       { label: "Go to Routes", icon: "\u21C4", hint: "panel", run: () => gotoPanel("routes") },
       { label: "Go to Model health", icon: "\u2665", hint: "panel", run: () => gotoPanel("health") },
       { label: "Watch a demo run", icon: "\u25B6", hint: "demo", run: playDemoRun },
@@ -4148,6 +4591,17 @@ When a release is cut:
       showErr(e.message);
     }
   };
+  $4("intRefresh").onclick = () => {
+    refreshInt().catch((e) => showErr(e.message));
+  };
+  $4("intSheetClose").onclick = closeIntSheet;
+  document.querySelectorAll("[data-int-close]").forEach((el) => (el.onclick = closeIntSheet));
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      const sheet = $4("intSheet");
+      if (sheet && !sheet.hidden) closeIntSheet();
+    }
+  });
   $4("sendHandoff").onclick = async () => {
     try {
       const from = require2("fromBot", "deploy a teammate first");
@@ -4244,6 +4698,7 @@ When a release is cut:
     }
   };
   refresh2().catch((e) => showErr(e.message));
+  refreshInt().catch((e) => showErr(e.message));
   loadMesh().catch((e) => showErr(e.message));
   loadHubs().catch((e) => showErr(e.message));
   renderMissions();

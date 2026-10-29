@@ -38,7 +38,7 @@ func TestRosterOwnershipAndNoSecrets(t *testing.T) {
 	if !strings.HasPrefix(sk.ID, "skill-") {
 		t.Fatalf("skill id = %s", sk.ID)
 	}
-	rt, err := st.CreateRoutine("sess-a", coder.ID, sk.ID, "manual")
+	rt, err := st.CreateRoutine("sess-a", coder.ID, sk.ID, "manual", "")
 	if err != nil {
 		t.Fatal(err)
 	}

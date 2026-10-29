@@ -101,6 +101,11 @@ type Server struct {
 	threads *threads.Manager
 	queue   *queue.Queue
 	live    *liveStore
+	// integrations is the external-service integration store (Gmail,
+	// webhooks). It lives in its own file (~/.flobot/integrations.json)
+	// because it holds webhook secrets that state.json's leak guard would
+	// refuse to persist.
+	integrations *store.IntegrationStore
 	// cpRoots caches one checkpoint store per git root, so a run in a
 	// worktree snapshots its own tree while the user's tree stays the
 	// default.
@@ -130,6 +135,12 @@ func WithHTTPClient(c *http.Client) Option {
 func WithHome(home string) Option { return func(s *Server) { s.home = home } }
 func WithWorkDir(dir string) Option {
 	return func(s *Server) { s.workDir = dir }
+}
+
+// WithIntegrationStore overrides the integration store (tests). Without it
+// the server builds one rooted at its home / FLOBOT_TEST_STATE.
+func WithIntegrationStore(ist *store.IntegrationStore) Option {
+	return func(s *Server) { s.integrations = ist }
 }
 
 // workDirNow returns the current workspace directory (guarded by workMu so
@@ -203,6 +214,18 @@ func New(st *store.Store, opts ...Option) *Server {
 	s.threads = threads.New(ts)
 	s.queue = queue.New(ts)
 	s.live = newLiveStore()
+	// Integration store: same home-based path as the thread store, but its
+	// own file because it holds webhook secrets. WithIntegrationStore (tests)
+	// injects one; otherwise build and load the default.
+	if s.integrations == nil {
+		s.integrations = store.NewIntegrationStore()
+		if home != "" {
+			s.integrations.SetPath(filepath.Join(home, ".flobot", "integrations.json"))
+		}
+		if err := s.integrations.Load(); err != nil {
+			log.Printf("flobot: load integrations: %v", err)
+		}
+	}
 	s.cpRoots = map[string]*checkpoint.Store{}
 	// Restore the roster from disk. A missing state file is not an error.
 	if err := s.store.Load(); err != nil {
@@ -311,6 +334,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/queue/{id}", s.resolveQueueEntry)
 	mux.HandleFunc("GET /api/v1/checkpoints", s.listCheckpoints)
 	mux.HandleFunc("POST /api/v1/checkpoints/{id}/restore", s.restoreCheckpoint)
+	mux.HandleFunc("GET /api/v1/integrations", s.listIntegrations)
+	mux.HandleFunc("POST /api/v1/integrations", s.createIntegration)
+	mux.HandleFunc("GET /api/v1/integrations/providers", s.listIntegrationProviders)
+	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.deleteIntegration)
+	mux.HandleFunc("POST /api/v1/integrations/{id}/fire", s.fireIntegration)
+	mux.HandleFunc("POST /api/v1/integrations/{id}/test", s.testIntegration)
+	mux.HandleFunc("POST /api/v1/integrations/{id}/rotate", s.rotateIntegration)
+	mux.HandleFunc("GET /api/v1/integrations/{id}/events", s.integrationEventsHandler)
+	mux.HandleFunc("POST /api/v1/routines/{id}/integration", s.bindIntegration)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	return sameOrigin(mux)
 }
@@ -685,7 +717,7 @@ func (s *Server) createRoutine(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, err)
 		return
 	}
-	rt, err := s.store.CreateRoutine(Actor, body.BotID, body.SkillID, body.Trigger)
+	rt, err := s.store.CreateRoutine(Actor, body.BotID, body.SkillID, body.Trigger, "")
 	if err != nil {
 		s.httpError(w, err)
 		return
@@ -1412,6 +1444,17 @@ func (s *Server) scrubPaths(msg string) string {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+}
+
+// writeJSONStatus writes a JSON body with an explicit status code. It is
+// used where the status carries meaning (202 for an event that was accepted
+// but fired nothing, 401 for a rejected webhook credential).
+func writeJSONStatus(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)

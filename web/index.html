@@ -25,6 +25,7 @@
   <button data-panel="run"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4c0 .8.9 1.3 1.6.9l11.2-7.2c.6-.4.6-1.4 0-1.8L8.6 3.9c-.7-.4-1.6.1-1.6.9z"/></svg></span>Run<span class="count" id="navRuns">0</span></button>
   <button data-panel="routines"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 3v4h-4"/></svg></span>Routines<span class="count" id="navRtn">0</span></button>
   <button data-panel="skills"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.6 6.3 6.8.5-5.2 4.4 1.6 6.6L12 16.4l-5.8 3.4 1.6-6.6L2.6 8.8l6.8-.5z"/></svg></span>Skills<span class="count" id="navSkills">0</span></button>
+  <button data-panel="integrations"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></span>Integrations<span class="count" id="navInt">0</span></button>
   <div class="label">System</div>
   <button data-panel="routes"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="currentColor"/><circle cx="15" cy="17" r="2" fill="currentColor"/></svg></span>Routes</button>
   <button data-panel="hubs"><span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span>Hubs<span class="count" id="navHubs">0</span></button>
@@ -332,6 +333,53 @@
   <div class="card">
     <h3>The library</h3>
     <ul class="list" id="skills"></ul>
+  </div>
+</section>
+
+<!-- Integrations -->
+<section class="panel" id="panel-integrations">
+  <div class="panel-head"><h2>Integrations</h2><span class="desc">let an outside service fire your routines — mail, chat, issues, payments</span></div>
+
+  <div class="card">
+    <h3>Connect a service</h3>
+    <p class="tag">One service, one credential, one URL. Every routine you bind fires on each event.</p>
+    <div class="int-gallery" id="intGallery"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <h3>Connected</h3>
+      <span class="spacer"></span>
+      <span class="tag" id="intCount">0 connected</span>
+      <button type="button" class="ghost" id="intRefresh" title="reload integrations">↻</button>
+    </div>
+    <div class="int-list" id="integrations"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <h3>Activity</h3>
+      <span class="spacer"></span>
+      <div class="chip-row" id="intEvFilters"></div>
+    </div>
+    <div class="int-events" id="intEvents"></div>
+  </div>
+
+  <!-- connect sheet -->
+  <div class="int-sheet" id="intSheet" hidden>
+    <div class="int-sheet-scrim" data-int-close="1"></div>
+    <div class="int-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="intSheetTitle">
+      <div class="int-sheet-head">
+        <span class="int-glyph" id="intSheetGlyph">∞</span>
+        <div class="int-sheet-title">
+          <h3 id="intSheetTitle">Connect</h3>
+          <p class="tag" id="intSheetBlurb"></p>
+        </div>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" id="intSheetClose" title="close">✕</button>
+      </div>
+      <div class="int-sheet-body" id="intSheetBody"></div>
+    </div>
   </div>
 </section>
 
