@@ -3281,9 +3281,17 @@ When a release is cut:
     $4("routines").innerHTML = roster.routines.map((rt) => {
       const state2 = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
       const next = rt.next_fire ? ` \xB7 next ${esc3(rt.next_fire)}` : "";
+      // The tool policy belongs to the routine: "none" means the run can
+      // only answer in text, and that is what the kit ships.
+      const tools2 =
+        rt.tools === "none"
+          ? ` <span class="chip">text only</span>`
+          : rt.tools
+            ? ` <span class="chip">${esc3(rt.tools)}</span>`
+            : "";
       return `<li><span class="avatar" style="background:var(--grad)">\u21BB</span>
       <div class="body">
-        <div class="title">${esc3(rt.trigger)} ${state2}</div>
+        <div class="title">${esc3(rt.trigger)} ${state2}${tools2}</div>
         <div class="clip">${esc3(rt.id)} \xB7 ${esc3(rt.last_note || "no test-run")}${next}</div>
         <div class="rtn-edit" data-rtn-edit="${esc3(rt.id)}" hidden>
           <input class="rtn-edit-in" value="${esc3(rt.trigger)}" aria-label="trigger" spellcheck="false">

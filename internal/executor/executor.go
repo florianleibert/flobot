@@ -46,9 +46,13 @@ type Request struct {
 	SkillBody string
 	Pin       string
 	Intent    string
-	Yolo      bool
-	Verify    bool
-	Worktree  string
+	// Tools is the tool policy for this run: "" (the intent's default),
+	// "none" (no tools at all — the run can only answer in text) or a
+	// comma-separated allow-list such as "read,glob,grep".
+	Tools    string
+	Yolo     bool
+	Verify   bool
+	Worktree string
 	// ConfigOverride, when set, is written to a temp file and passed to the
 	// child as FLOCODE_CONFIG. Used for mesh routes: a generated config that
 	// pins the mesh model. It must never contain secrets.
@@ -131,6 +135,17 @@ func Argv(req Request) []string {
 	// keeps the defaults.
 	if strings.TrimSpace(req.Route) == "local" {
 		args = append(args, "--first-token-timeout", "6m", "--stall-timeout", "6m")
+	}
+	// The tool policy belongs to the run, not to the playbook's wording. A
+	// local model is tool-happy: asked to "answer in plain text" it
+	// sometimes returns a tool call instead of the answer, and the
+	// automation looks broken. "none" starts the child with no tools at
+	// all; a list narrows it to exactly those tools.
+	switch tools := strings.ToLower(strings.TrimSpace(req.Tools)); {
+	case tools == "none":
+		args = append(args, "--no-tools")
+	case tools != "":
+		args = append(args, "--tool-allow", tools)
 	}
 	return args
 }

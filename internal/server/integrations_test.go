@@ -586,8 +586,10 @@ func TestEventTextNormalization(t *testing.T) {
 		{store.IntegrationTelegram, `{"message":{"text":"ping"}}`, "Telegram: ping"},
 		{store.IntegrationDiscord, `{"content":"yo"}`, "Discord: yo"},
 		{store.IntegrationGitHub, `{"action":"opened","repository":{"full_name":"o/r"},"issue":{"number":3,"title":"Bug"},"sender":{"login":"me"}}`, "GitHub: opened o/r #3 Bug (by me)"},
+		{store.IntegrationGitHub, `{"action":"opened","repository":{"full_name":"o/r"},"issue":{"number":3,"title":"Bug","body":"it crashes\non save"},"sender":{"login":"me"}}`, "GitHub: opened o/r #3 Bug — it crashes on save (by me)"},
 		{store.IntegrationLinear, `{"type":"Issue","data":{"title":"Fix it"}}`, "Linear: Issue Fix it"},
 		{store.IntegrationStripe, `{"type":"charge.succeeded","data":{"object":{"description":"Pro plan"}}}`, "Stripe: charge.succeeded Pro plan"},
+		{store.IntegrationStripe, `{"type":"payment_intent.succeeded","data":{"object":{"description":"Pro plan - March","amount":4900,"currency":"usd"}}}`, "Stripe: payment_intent.succeeded Pro plan - March amount 4900 usd"},
 		{store.IntegrationWebhook, `{"text":"plain"}`, "plain"},
 	}
 	for _, c := range cases {

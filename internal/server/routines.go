@@ -59,11 +59,15 @@ func (s *Server) patchRoutine(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Trigger *string `json:"trigger"`
 		Paused  *bool   `json:"paused"`
+		// Tools is the tool policy for the routine's runs: "" (the
+		// default), "none" (no tools at all) or a comma-separated
+		// allow-list such as "read,glob,grep".
+		Tools *string `json:"tools"`
 	}
 	if !decodeJSON(w, r, smallBodyLimit, &body) {
 		return
 	}
-	if body.Trigger == nil && body.Paused == nil {
+	if body.Trigger == nil && body.Paused == nil && body.Tools == nil {
 		http.Error(w, `{"error":"nothing to update"}`, http.StatusBadRequest)
 		return
 	}
@@ -77,6 +81,13 @@ func (s *Server) patchRoutine(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.httpError(w, err)
 		return
+	}
+	if body.Tools != nil {
+		rt, err = s.store.SetRoutineTools(id, Actor, *body.Tools)
+		if err != nil {
+			s.httpError(w, err)
+			return
+		}
 	}
 	s.persist()
 	writeJSON(w, routineView{

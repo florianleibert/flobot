@@ -263,14 +263,30 @@ that points at an MLX server on this Mac. Two things must be true:
    ```
 
 If the endpoint is down the run fails with "endpoint unreachable" — the use
-case itself is fine, the model is not. A local model loads cold, so runs are
-given the full ten-minute budget instead of the sixty seconds a mesh model
-gets.
+case itself is fine, the model is not. A local model loads cold, so a local
+run gets the ten-minute run budget and six-minute first-token/stall
+watchdogs, where a mesh model keeps the sixty-second defaults.
+
+**The kit runs text-only.** Every use case's routine carries the tool policy
+`none`: the child is started with no tools at all. That is not caution, it is
+what the local route needs — flobot hands the playbook to flocode as prompt
+text, so the model's tool calls are never executed, and a tool-happy 30B model
+asked to "answer in plain text" sometimes answers with the tool call itself.
+With no tools advertised it answers with the answer. A routine can widen the
+policy (`tools: "read,glob,grep"`) when the route in front of it executes
+tool calls.
 
 **API**: `GET /api/v1/usecases` returns the kit;
 `POST /api/v1/usecases/{id}/activate` (body `{"create_integration":true}` or
 `{"integration_id":"int-…"}`) creates it and returns the routine, the run id
 of the warm-up and — for a new connection — the secret, once.
+
+**The workflow, step by step**, and a scripted demo of the whole chain, live
+in [`kit-workflow.md`](kit-workflow.md):
+
+```bash
+scripts/demo-kit.sh --webhook-demo
+```
 
 ---
 
@@ -287,6 +303,7 @@ of the warm-up and — for a new connection — the secret, once.
 | `GET` | `/api/v1/integrations/{id}/events` | the fire history, newest first |
 | `DELETE` | `/api/v1/integrations/{id}` | remove it; bound routines are unbound |
 | `POST` | `/api/v1/routines/{id}/integration` | bind (`integration_id`) or unbind (`""`) |
+| `PATCH` | `/api/v1/routines/{id}` | change `trigger`, `paused` or `tools` |
 
 Fire response:
 
@@ -325,6 +342,8 @@ recorded, so the Activity log shows exactly what happened.
 | `202` with `fired: 0` | the event arrived, the routine did not run | the routine is paused, busy, or its bot is already running |
 | The provider says the URL is unreachable | the provider runs on another machine | tunnel the port, or use a local script as the bridge |
 | The agent ignores the event | the payload had no recognisable text | send `{"text": "…"}`, or check the normalised line in the Activity log |
+| The answer is a JSON tool call (`{"name":"glob",…}`) | the model wanted a tool the route does not execute | set the routine's `tools` to `"none"` (`PATCH /api/v1/routines/{id}`); the kit ships that way |
+| The answer says "cannot tell" but the event had the fact | the normaliser dropped the field | check the normalised line in the Activity log — a payment event now carries the amount, a GitHub event the body |
 
 ## 9. Not yet (deliberately)
 

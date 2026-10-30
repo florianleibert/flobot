@@ -325,3 +325,24 @@ func TestLocalRouteGetsWideModelWatchdogs(t *testing.T) {
 		t.Fatalf("mesh argv must keep the default watchdogs: %v", mesh)
 	}
 }
+
+// TestToolPolicyInArgv proves the tool policy reaches the child: "none"
+// starts it with no tools at all, a list narrows it to exactly those tools,
+// and the default leaves the intent's tool set alone.
+func TestToolPolicyInArgv(t *testing.T) {
+	none := strings.Join(Argv(Request{Prompt: "p", Pin: "local", Intent: "ask", Tools: "none"}), " ")
+	if !strings.Contains(none, "--no-tools") {
+		t.Fatalf("argv missing --no-tools: %v", none)
+	}
+	list := strings.Join(Argv(Request{Prompt: "p", Pin: "local", Intent: "ask", Tools: "read,glob"}), " ")
+	if !strings.Contains(list, "--tool-allow read,glob") {
+		t.Fatalf("argv missing --tool-allow: %v", list)
+	}
+	if strings.Contains(list, "--no-tools") {
+		t.Fatalf("a tool list must not disable tools: %v", list)
+	}
+	def := strings.Join(Argv(Request{Prompt: "p", Pin: "local", Intent: "ask"}), " ")
+	if strings.Contains(def, "--no-tools") || strings.Contains(def, "--tool-allow") {
+		t.Fatalf("the default argv must not touch the tool set: %v", def)
+	}
+}

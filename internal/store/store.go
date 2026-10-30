@@ -55,6 +55,10 @@ type Skill struct {
 	Owner   string `json:"-"`
 }
 
+// ToolsNone is the tool policy that exposes no tools at all: the run can
+// only answer in text. It is what a text-only automation wants.
+const ToolsNone = "none"
+
 // Routine binds a skill to a bot and a trigger. Test-run before enable.
 type Routine struct {
 	ID       string `json:"id"`
@@ -76,6 +80,13 @@ type Routine struct {
 	// contending for the same checkout: flocode refuses to run two
 	// sessions in one checkout.
 	Worktree string `json:"worktree,omitempty"`
+	// Tools is the tool policy for this routine's runs: "" (the route's
+	// default), "none" (no tools at all — the run can only answer in
+	// text) or a comma-separated allow-list such as "read,glob,grep".
+	// A local model is tool-happy: an automation told to "answer in plain
+	// text" sometimes returns the tool call instead of the answer, so
+	// the policy belongs to the routine, not to the playbook's wording.
+	Tools string `json:"tools,omitempty"`
 }
 
 // Message is a bus item. OwnerBot encodes single-owner-per-stage.
@@ -455,6 +466,54 @@ func (s *Store) SetRoutineWorktree(id, actor, worktree string) (Routine, error) 
 	s.mu.Unlock()
 	s.Save()
 	return rt, nil
+}
+
+// SetRoutineTools sets the tool policy for a routine's runs: "" restores the
+// default, "none" exposes no tools at all, and a comma-separated list narrows
+// the run to exactly those tools.
+func (s *Store) SetRoutineTools(id, actor, tools string) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok {
+		s.mu.Unlock()
+		return Routine{}, ErrNotFound
+	}
+	if rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	rt.Tools = NormalizeTools(tools)
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
+// NormalizeTools canonicalises a tool policy: "" (the default), "none", or a
+// comma-separated allow-list of lower-case tool names without duplicates.
+func NormalizeTools(tools string) string {
+	t := strings.ToLower(strings.TrimSpace(tools))
+	if t == "" {
+		return ""
+	}
+	if t == ToolsNone {
+		return ToolsNone
+	}
+	parts := strings.Split(t, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return strings.Join(out, ",")
 }
 
 // BindRoutine sets (or clears, with "") the integration a routine fires on.

@@ -644,6 +644,7 @@ func (s *Server) fireRoutineFromIntegration(rt store.Routine, eventText string) 
 		SkillBody:      "",
 		Pin:            pin,
 		Intent:         "ask",
+		Tools:          rt.Tools,
 		Route:          bot.Route,
 		Worktree:       threads.WorktreeName(rt.Worktree),
 		Dir:            s.workDirNow(),
@@ -835,6 +836,12 @@ func clipNote(s string) string {
 	return s
 }
 
+// flattenText collapses a multi-line body into one line: the agent gets a
+// block of context, not a wall.
+func flattenText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // eventText turns a provider payload into the context the agent receives.
 // Provider payloads are machine-shaped; the agent needs one readable
 // sentence-ish block. The raw payload is never forwarded verbatim unless the
@@ -890,6 +897,7 @@ func eventText(kind string, raw []byte) string {
 			repo = str(r["full_name"])
 		}
 		title := ""
+		body := ""
 		number := ""
 		for _, key := range []string{"issue", "pull_request", "release", "discussion"} {
 			obj, ok := m[key].(map[string]any)
@@ -898,6 +906,11 @@ func eventText(kind string, raw []byte) string {
 			}
 			if t := firstNonEmpty(str(obj["title"]), str(obj["name"]), str(obj["body"])); t != "" {
 				title = t
+			}
+			// The body is where the report lives: without it the agent
+			// can only repeat the title.
+			if b := str(obj["body"]); b != "" && b != title {
+				body = clipNote(flattenText(b))
 			}
 			if n := obj["number"]; n != nil {
 				number = fmt.Sprintf("#%v", n)
@@ -909,6 +922,9 @@ func eventText(kind string, raw []byte) string {
 			sender = str(s["login"])
 		}
 		out := joinNonEmpty("GitHub: ", action, " ", repo, " ", number, " ", title)
+		if body != "" {
+			out = joinNonEmpty(out, " — ", body)
+		}
 		if sender != "" {
 			out += " (by " + sender + ")"
 		}
@@ -919,10 +935,15 @@ func eventText(kind string, raw []byte) string {
 	case store.IntegrationLinear:
 		typ := firstNonEmpty(str(m["type"]), str(m["action"]))
 		title := ""
+		desc := ""
 		if d, ok := m["data"].(map[string]any); ok {
 			title = firstNonEmpty(str(d["title"]), str(d["name"]), str(d["identifier"]))
+			desc = clipNote(flattenText(str(d["description"])))
 		}
 		out := joinNonEmpty("Linear: ", typ, " ", title)
+		if desc != "" {
+			out = joinNonEmpty(out, " — ", desc)
+		}
 		if out == "Linear: " {
 			out = "Linear: " + clipNote(compactJSON(m))
 		}
@@ -930,12 +951,24 @@ func eventText(kind string, raw []byte) string {
 	case store.IntegrationStripe:
 		typ := str(m["type"])
 		desc := ""
+		amount := ""
 		if d, ok := m["data"].(map[string]any); ok {
 			if obj, ok := d["object"].(map[string]any); ok {
 				desc = firstNonEmpty(str(obj["description"]), str(obj["statement_descriptor"]))
+				// The amount is the fact the billing playbook asks for.
+				// A payment event without it is not a payment event.
+				if v, ok := obj["amount"]; ok && v != nil {
+					amount = fmt.Sprintf("amount %v", v)
+					if cur := str(obj["currency"]); cur != "" {
+						amount = joinNonEmpty(amount, " ", cur)
+					}
+				}
 			}
 		}
 		out := joinNonEmpty("Stripe: ", typ, " ", desc)
+		if amount != "" {
+			out = joinNonEmpty(out, " ", amount)
+		}
 		if out == "Stripe: " {
 			out = "Stripe: " + clipNote(compactJSON(m))
 		}

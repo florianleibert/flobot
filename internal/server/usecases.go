@@ -34,6 +34,10 @@ type useCase struct {
 	// BotName and Role name the teammate that is created.
 	BotName string `json:"bot_name"`
 	Role    string `json:"role"`
+	// Tools is the tool policy the routine runs with: "none" for a
+	// text-only automation, or a comma-separated read-only allow-list
+	// for one that may read files.
+	Tools string `json:"tools"`
 	// Playbook is the skill body — the how-to the agent follows.
 	Playbook string `json:"playbook"`
 	// Event is a sample payload for the test fire.
@@ -55,6 +59,7 @@ var useCases = []useCase{
 		Route:    "local",
 		BotName:  "Triage",
 		Role:     "triage",
+		Tools:    "none",
 		Playbook: `You are a triage teammate running on this Mac.
 
 Answer in plain text. Do not call tools: the event below is all you need.
@@ -84,15 +89,18 @@ Never invent file paths, issue numbers or links that are not in the event.`,
 		Route:    "local",
 		BotName:  "Chatops",
 		Role:     "chatops",
+		Tools:    "none",
 		Playbook: `You are a chatops teammate running on this Mac. Every message from the operator arrives as an event.
 
+You have no tools: you cannot open files or run commands. Answer in plain text.
+
 1. Restate the request in one line.
-2. If it asks for a file or a fact, read it with the read-only tools and answer with the real content, not a description of it.
+2. Answer from the event. If it asks for a file or a fact you cannot see, name the exact command a human should run and what it would show.
 3. If it asks for a change to the workspace, do not change anything: write the exact command or patch you would run.
 4. Keep the whole answer under ten lines.
 
 Never claim you did something you did not do.`,
-		Event: `{"message":{"text":"status?","chat":{"id":1}}}`,
+		Event: `{"message":{"text":"the deploy step failed — what do I check first?","chat":{"id":1}}}`,
 		Steps: []string{
 			"Create a bot with @BotFather and keep the bot token.",
 			"Point setWebhook at flobot's URL with the secret as ?key=.",
@@ -109,6 +117,7 @@ Never claim you did something you did not do.`,
 		Route:    "local",
 		BotName:  "On-call",
 		Role:     "investigator",
+		Tools:    "none",
 		Playbook: `You are the on-call investigator running on this Mac.
 
 Answer in plain text. Do not call tools.
@@ -137,6 +146,7 @@ Do not restart services, do not write files, and do not name a root cause the al
 		Route:    "local",
 		BotName:  "Notes",
 		Role:     "writer",
+		Tools:    "none",
 		Playbook: `You write release notes from a release event.
 
 Answer in plain text. Do not call tools.
@@ -162,6 +172,7 @@ Use only what the event contains. If it carries no notes, say so instead of inve
 		Route:    "local",
 		BotName:  "Billing",
 		Role:     "bookkeeper",
+		Tools:    "none",
 		Playbook: `You are the billing check running on this Mac.
 
 Answer in plain text. Do not call tools.
@@ -191,6 +202,7 @@ Do not compute totals you cannot see and do not touch any billing system.`,
 		Route:    "local",
 		BotName:  "Inbox",
 		Role:     "reader",
+		Tools:    "none",
 		Playbook: `You extract facts from an email for a human.
 
 Answer in plain text. Do not call tools.
@@ -222,6 +234,7 @@ If a field is not in the email, write "not stated". Never infer a date or an amo
 		Route:    "local",
 		BotName:  "Home",
 		Role:     "watcher",
+		Tools:    "none",
 		Playbook: `You are a home-automation teammate running on this Mac.
 
 Given the sensor event:
@@ -247,6 +260,7 @@ Never claim to have changed anything: you cannot actuate devices from here.`,
 		Route:    "local",
 		BotName:  "CI",
 		Role:     "diagnostician",
+		Tools:    "none",
 		Playbook: `You diagnose a failed build on this Mac.
 
 Answer in plain text. Do not call tools.
@@ -273,6 +287,7 @@ If the event carries no log output, say "no log output in the event" and list wh
 		Route:    "local",
 		BotName:  "Flow",
 		Role:     "step",
+		Tools:    "none",
 		Playbook: `You are one step inside a larger automation. The event carries that step's input.
 
 Answer in plain text. Do not call tools.
@@ -298,12 +313,13 @@ Never add commentary around the result.`,
 		Route:    "local",
 		BotName:  "Task",
 		Role:     "runner",
-		Playbook: `You run one bounded local task per call. The event carries the task.
+		Tools:    "none",
+		Playbook: `You are the task runner behind a bookmarked URL on this Mac. The event carries one task.
 
-Answer in plain text unless the task is to read a file, and then read it and answer with what you found.
+You have no tools: you cannot run anything yourself. Answer in plain text.
 
 1. Name the task in one line.
-2. Do it with read-only tools and report the real output.
+2. Give the exact read-only command that does it, and say what its output would tell the reader.
 3. Stop. If the task would need a write or a network call, say "not allowed" and name the command a human should run instead.
 
 This URL is a capability: only someone holding the secret should be able to trigger it. Keep the answer short.`,
@@ -410,6 +426,11 @@ func (s *Server) activateUseCase(w http.ResponseWriter, r *http.Request) {
 		if armed, aerr := s.store.SetRoutineWorktree(rt.ID, Actor, threadID); aerr == nil {
 			rt = armed
 		}
+	}
+	// The tool policy: a text-only automation gets no tools at all, so a
+	// tool-happy local model answers instead of returning a tool call.
+	if armed, terr := s.store.SetRoutineTools(rt.ID, Actor, uc.Tools); terr == nil {
+		rt = armed
 	}
 	s.persist()
 

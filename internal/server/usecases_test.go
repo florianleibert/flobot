@@ -36,10 +36,16 @@ func TestUseCasesCatalogue(t *testing.T) {
 			t.Fatalf("duplicate use case id %q", id)
 		}
 		seen[id] = true
-		for _, field := range []string{"name", "category", "blurb", "provider", "auth_mode", "route", "bot_name", "role", "playbook", "event"} {
+		for _, field := range []string{"name", "category", "blurb", "provider", "auth_mode", "route", "bot_name", "role", "tools", "playbook", "event"} {
 			if v, _ := uc[field].(string); strings.TrimSpace(v) == "" {
 				t.Errorf("use case %q is missing %q", id, field)
 			}
+		}
+		// The kit is text-only on the local route: the model's tool calls
+		// are not executed there, so a tool-happy run would answer with a
+		// tool call instead of the answer.
+		if uc["tools"] != store.ToolsNone {
+			t.Errorf("use case %q tools = %v, want %q", id, uc["tools"], store.ToolsNone)
 		}
 		if uc["route"] != "local" {
 			t.Errorf("use case %q runs on %v, want local", id, uc["route"])
@@ -198,5 +204,75 @@ func TestTestFireAcceptsAnEventOverride(t *testing.T) {
 	}
 	if res["fired"] != float64(1) {
 		t.Fatalf("test fire = %v", res)
+	}
+}
+
+// TestActivateUseCaseSetsToolPolicy proves a text-only automation runs
+// without tools and a read-only one gets exactly the read tools. A local
+// model told to "answer in plain text" sometimes returns a tool call
+// instead of the answer, so the policy belongs to the routine.
+func TestActivateUseCaseSetsToolPolicy(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ist := store.NewIntegrationStore()
+	ist.SetPath(filepath.Join(dir, ".flobot", "integrations.json"))
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir), WithIntegrationStore(ist))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	res := postJSON(t, ts, "/api/v1/usecases/triage/activate", map[string]any{
+		"create_integration": true,
+	})
+	rt, _ := res["routine"].(map[string]any)
+	if rt["tools"] != store.ToolsNone {
+		t.Fatalf("triage routine tools = %v, want %q", rt["tools"], store.ToolsNone)
+	}
+
+	res = postJSON(t, ts, "/api/v1/usecases/chatops/activate", map[string]any{
+		"create_integration": true,
+	})
+	rt, _ = res["routine"].(map[string]any)
+	// The kit is text-only: the local route does not execute the model's
+	// tool calls, so an automation that may call one returns the call
+	// instead of the answer.
+	if rt["tools"] != store.ToolsNone {
+		t.Fatalf("chatops routine tools = %v, want %q", rt["tools"], store.ToolsNone)
+	}
+}
+
+// TestPatchRoutineToolPolicy proves the operator can close or widen a
+// routine's tool set without rewriting its playbook.
+func TestPatchRoutineToolPolicy(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := executor.WriteFakeBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ist := store.NewIntegrationStore()
+	ist.SetPath(filepath.Join(dir, ".flobot", "integrations.json"))
+	srv := New(store.New(), WithExec(&executor.Exec{Bin: bin}), WithWorkDir(dir), WithIntegrationStore(ist))
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	rtID := armRoutine(t, ts)
+	res := patchJSON(t, ts, "/api/v1/routines/"+rtID, map[string]any{"tools": "none"})
+	rt, _ := res["routine"].(map[string]any)
+	if rt == nil {
+		// The routine view embeds the routine; fall back to the flat view.
+		rt = res
+	}
+	if rt["tools"] != "none" {
+		t.Fatalf("routine tools = %v, want none", res["tools"])
+	}
+	res = patchJSON(t, ts, "/api/v1/routines/"+rtID, map[string]any{"tools": "read,glob"})
+	rt, _ = res["routine"].(map[string]any)
+	if rt == nil {
+		rt = res
+	}
+	if rt["tools"] != "read,glob" {
+		t.Fatalf("routine tools = %v, want read,glob", res["tools"])
 	}
 }
