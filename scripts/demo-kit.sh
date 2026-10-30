@@ -231,10 +231,12 @@ except Exception:
 rows=d if isinstance(d,list) else d.get('events',[]) or []
 kinds=[r.get('kind') for r in rows]
 if 'err' in kinds:
-    txt=' '.join(str(r.get('text','')) for r in rows if r.get('kind')=='err')
+    txt=''.join(str(r.get('text','')) for r in rows if r.get('kind')=='err')
     print('error\t'+' '.join(txt.split())[:300]); raise SystemExit(0)
 if 'done' in kinds:
-    txt=' '.join(str(r.get('text','')) for r in rows if r.get('kind') in ('content','done'))
+    # The content events are token fragments: join them without a separator
+    # or every token gets a space in the middle of it.
+    txt=''.join(str(r.get('text','')) for r in rows if r.get('kind') in ('content','done'))
     print('done\t'+' '.join(txt.split())); raise SystemExit(0)
 " 2>/dev/null)
     case "$RES" in
