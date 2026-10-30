@@ -216,6 +216,7 @@ AMOUNT: <amount and currency, or "none">
 DUE: <date, or "none">
 ACTION: <the one thing the reader has to do, or "none">
 
+Start with the SUBJECT line. Never repeat a line, and never repeat the block.
 If a field is not in the email, write "not stated". Never infer a date or an amount.`,
 		Event: `{"from":"ana@example.com","subject":"Invoice 2213 due Friday","snippet":"Please pay 49.00 EUR by 2026-04-03."}`,
 		Steps: []string{
@@ -243,6 +244,7 @@ Given the sensor event:
 2. Whether the value crosses a threshold you can read from the event — and say which threshold you used.
 3. The single command a human should run to act on it: read-only, no destructive flags.
 
+Start with line 1. No preamble, no repetition.
 Never claim to have changed anything: you cannot actuate devices from here.`,
 		Event: `{"device":"disk7","metric":"usage_percent","value":91,"unit":"%","threshold":85}`,
 		Steps: []string{
