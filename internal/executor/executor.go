@@ -124,6 +124,14 @@ func Argv(req Request) []string {
 	if req.ContinueUntil {
 		args = append(args, "--continue-until")
 	}
+	// A local model on this Mac loads cold and streams slowly. flocode's
+	// first-token and stall watchdogs (one minute by default) kill it
+	// mid-answer, and the run dies with "provider timeout" while the model
+	// was still thinking. A local route gets a wider window; a mesh route
+	// keeps the defaults.
+	if strings.TrimSpace(req.Route) == "local" {
+		args = append(args, "--first-token-timeout", "6m", "--stall-timeout", "6m")
+	}
 	return args
 }
 

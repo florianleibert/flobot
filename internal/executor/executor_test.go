@@ -307,3 +307,21 @@ func TestCancelKillsProcess(t *testing.T) {
 		t.Fatal("expected cancel error")
 	}
 }
+
+// TestLocalRouteGetsWideModelWatchdogs proves a local run gets the model
+// room it needs: a 30B model on this Mac streams slower than flocode's
+// default first-token and stall watchdogs allow, and the run dies with
+// "provider timeout" while the model is still thinking. A mesh route keeps
+// the defaults.
+func TestLocalRouteGetsWideModelWatchdogs(t *testing.T) {
+	local := strings.Join(Argv(Request{Prompt: "p", Pin: "local-qwen3-coder-30b-a3b-mlx", Route: "local"}), " ")
+	for _, want := range []string{"--first-token-timeout 6m", "--stall-timeout 6m"} {
+		if !strings.Contains(local, want) {
+			t.Fatalf("local argv missing %q: %v", want, local)
+		}
+	}
+	mesh := strings.Join(Argv(Request{Prompt: "p", Pin: "glm-5.2", Route: "glm"}), " ")
+	if strings.Contains(mesh, "--first-token-timeout") || strings.Contains(mesh, "--stall-timeout") {
+		t.Fatalf("mesh argv must keep the default watchdogs: %v", mesh)
+	}
+}
