@@ -243,6 +243,28 @@ if 'done' in kinds:
       done*) STATUS="done"; ANSWER=${RES#done$'\t'}; break;;
       error*) STATUS="error"; ANSWER=${RES#error$'\t'}; break;;
     esac
+
+    # A run whose child died before it emitted anything (the model server is
+    # down, the run hit its own deadline) has no events at all, so the stream
+    # above never says done or err. Without this the loop spins the full
+    # --timeout per use case and then reports "timeout" for a failure that
+    # already happened. The run's own record is the authoritative end signal.
+    RST=$(curl -sS -m 20 "$BASE/api/v1/runs/$RUN" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if not d.get('ended_at'):
+    raise SystemExit(0)          # still running: keep polling
+st=(d.get('status') or 'done').strip() or 'done'
+err=' '.join(str(d.get('error') or '').split())[:300]
+print(('done' if st == 'done' else 'error')+'\t'+('' if st == 'done' else (err or 'finished with status '+st)))
+" 2>/dev/null)
+    case "$RST" in
+      done*) STATUS="done"; ANSWER="(the run finished without emitting any events)"; break;;
+      error*) STATUS="error"; ANSWER=${RST#error$'\t'}; break;;
+    esac
   done
 
   printf '%s\n' "$ANSWER" > "$OUT/$UC.txt"
