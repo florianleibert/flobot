@@ -337,6 +337,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/integrations", s.listIntegrations)
 	mux.HandleFunc("POST /api/v1/integrations", s.createIntegration)
 	mux.HandleFunc("GET /api/v1/integrations/providers", s.listIntegrationProviders)
+	mux.HandleFunc("GET /api/v1/usecases", s.listUseCases)
+	mux.HandleFunc("POST /api/v1/usecases/{id}/activate", s.activateUseCase)
 	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.deleteIntegration)
 	mux.HandleFunc("POST /api/v1/integrations/{id}/fire", s.fireIntegration)
 	mux.HandleFunc("POST /api/v1/integrations/{id}/test", s.testIntegration)
@@ -788,7 +790,7 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 		Yolo:           false,
 		Verify:         false,
 		Route:          bot.Route,
-		Timeout:        executor.AskTimeout,
+		Timeout:        runTimeoutFor(bot.Route),
 		Dir:            s.workDirNow(),
 		ConfigOverride: cfgOverride,
 	})
@@ -825,6 +827,17 @@ func (s *Server) enableRoutine(w http.ResponseWriter, r *http.Request) {
 	}
 	s.persist()
 	writeJSON(w, rt)
+}
+
+// runTimeoutFor gives a run the budget its route deserves. A mesh model
+// answers in seconds, so the short ask budget is enough; the local model
+// loads cold on this Mac and needs the full one — sixty seconds is a
+// guaranteed timeout, not a slow answer.
+func runTimeoutFor(route string) time.Duration {
+	if routes.IsLocal(route) {
+		return executor.DefaultTimeout
+	}
+	return executor.AskTimeout
 }
 
 // resolveRoute maps a bot route to a flocode pin. Mesh routes resolve

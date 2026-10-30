@@ -71,6 +71,11 @@ type Routine struct {
 	// does not validate the id — the server checks it against the
 	// IntegrationStore before binding.
 	IntegrationID string `json:"integration_id,omitempty"`
+	// Worktree, when set, is the thread whose worktree the routine's runs
+	// happen in. Two routines can then fire at the same time without
+	// contending for the same checkout: flocode refuses to run two
+	// sessions in one checkout.
+	Worktree string `json:"worktree,omitempty"`
 }
 
 // Message is a bus item. OwnerBot encodes single-owner-per-stage.
@@ -425,6 +430,27 @@ func (s *Store) UpdateRoutine(id, actor string, trigger *string, paused *bool) (
 	if paused != nil {
 		rt.Paused = *paused
 	}
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
+// SetRoutineWorktree points a routine at a thread's worktree, so its runs
+// happen there instead of in the shared checkout. An empty worktree clears
+// it.
+func (s *Store) SetRoutineWorktree(id, actor, worktree string) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok {
+		s.mu.Unlock()
+		return Routine{}, ErrNotFound
+	}
+	if rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	rt.Worktree = strings.TrimSpace(worktree)
 	s.routines[id] = rt
 	s.mu.Unlock()
 	s.Save()

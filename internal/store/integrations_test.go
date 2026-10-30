@@ -309,3 +309,38 @@ func TestIntegrationStoreEventAttribution(t *testing.T) {
 		t.Fatal("event attributed to the wrong integration")
 	}
 }
+
+func TestRoutineWorktree(t *testing.T) {
+	st := New()
+	coder, err := st.CreateBot(ActorLocal, "Coder", "coder", "glm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk, err := st.CreateSkill(ActorLocal, "s", "how-to")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := st.CreateRoutine(ActorLocal, coder.ID, sk.ID, "manual", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Worktree != "" {
+		t.Fatalf("new routine has a worktree: %q", rt.Worktree)
+	}
+	// A routine can be pointed at a thread's worktree so its runs do not
+	// contend for the shared checkout.
+	set, err := st.SetRoutineWorktree(rt.ID, ActorLocal, "thr-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Worktree != "thr-1" {
+		t.Fatalf("worktree = %q", set.Worktree)
+	}
+	cleared, err := st.SetRoutineWorktree(rt.ID, ActorLocal, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Worktree != "" {
+		t.Fatalf("worktree = %q after clear", cleared.Worktree)
+	}
+}

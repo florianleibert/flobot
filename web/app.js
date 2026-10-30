@@ -3378,6 +3378,135 @@ When a release is cut:
       </button>`).join("");
     host.querySelectorAll("[data-int-connect]").forEach((b) => (b.onclick = () => openIntSheet(b.dataset.intConnect)));
   }
+  // ---- use cases: ten ready-made automations on the local model -------------
+  var intUseCases = [];
+  var ucGlyphs = {
+    triage: "⌖", chatops: "✆", "on-call": "⚠", release: "↥",
+    billing: "$", inbox: "✉", home: "⌂", ci: "⚙", workflow: "⇄", capability: "⚿"
+  };
+  function intUseCase(id) {
+    return intUseCases.find((u) => u.id === id) || null;
+  }
+  function renderIntUseCases() {
+    const host = $4("ucGallery");
+    if (!host) return;
+    host.innerHTML = intUseCases.map((u) => `
+      <button type="button" class="int-tile uc-tile" data-uc="${esc3(u.id)}">
+        <span class="int-glyph">${esc3(ucGlyphs[u.category] || "•")}</span>
+        <span class="int-tile-text">
+          <span class="int-tile-name">${esc3(u.name)}</span>
+          <span class="int-tile-blurb">${esc3(u.blurb)}</span>
+          <span class="int-tile-tags">
+            <span class="chip ghost-chip">${esc3(u.provider)}</span>
+            <span class="chip ghost-chip">${esc3(u.route)}</span>
+          </span>
+        </span>
+        <span class="int-tile-go">Set up →</span>
+      </button>`).join("");
+    host.querySelectorAll("[data-uc]").forEach((b) => (b.onclick = () => openUcSheet(b.dataset.uc)));
+  }
+  function openUcSheet(id) {
+    const u = intUseCase(id);
+    if (!u) {
+      toast3("use case not loaded — refresh the panel", "err");
+      return;
+    }
+    $4("intSheetGlyph").textContent = ucGlyphs[u.category] || "•";
+    $4("intSheetTitle").textContent = u.name;
+    $4("intSheetBlurb").textContent = u.blurb;
+    const existing = integrations
+      .map((i) => `<option value="${esc3(i.id)}">${esc3(i.name)} — ${esc3(i.kind)}</option>`)
+      .join("");
+    $4("intSheetBody").innerHTML = `
+      <div class="int-form">
+        <div class="int-kv"><span class="int-k">fires from</span><span class="int-v">${esc3(u.provider)} · ${esc3(u.auth_mode)}</span></div>
+        <div class="int-kv"><span class="int-k">runs on</span><span class="int-v">${esc3(u.route)} · this Mac's model</span></div>
+        <label class="int-field"><span>teammate name</span>
+          <input id="ucBotName" value="${esc3(u.bot_name || "")}">
+        </label>
+        <label class="int-field"><span>connect to</span>
+          <select id="ucExisting">
+            <option value="">create a new ${esc3(u.provider)} connection</option>
+            ${existing}
+          </select>
+        </label>
+        <div class="int-field"><span>playbook</span>
+          <pre class="int-snippet">${esc3(u.playbook || "")}</pre>
+        </div>
+        <ol class="int-steps">${(u.steps || []).map((s) => `<li>${esc3(s)}</li>`).join("")}</ol>
+        <div class="int-form-actions">
+          <button type="button" class="ghost" data-int-close="1">cancel</button>
+          <button type="button" class="primary" id="ucActivate">Set it up</button>
+        </div>
+      </div>`;
+    $4("intSheetBody").querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
+    $4("ucActivate").onclick = async () => {
+      try {
+        const existingId = $4("ucExisting").value;
+        const res = await api2("POST", `/api/v1/usecases/${encodeURIComponent(u.id)}/activate`, {
+          name: ($4("ucBotName").value || "").trim(),
+          integration_id: existingId,
+          create_integration: !existingId
+        });
+        renderUcReady(u, res);
+        await refreshInt();
+      } catch (e) {
+        showErr(e.message);
+      }
+    };
+    $4("intSheet").hidden = false;
+  }
+  function renderUcReady(u, res) {
+    const in2 = (res && res.integration) || {};
+    const rt = (res && res.routine) || {};
+    const bot = (res && res.bot) || {};
+    const url = (res && res.url) || "";
+    const secret = (res && res.secret) || "";
+    $4("intSheetTitle").textContent = u.name + " is live";
+    $4("intSheetBlurb").textContent = `${bot.name || u.bot_name} · routine ${(rt.id || "").slice(0, 8)} · ${u.route} model${rt.worktree ? " · own worktree" : ""}`;
+    const secretBlock = secret
+      ? `
+        <div class="int-secret-row">
+          <div class="int-kv"><span class="int-k">secret <em>shown once</em></span><span class="int-v int-mono" id="intReadySecret">${esc3(secret)}</span></div>
+          <button type="button" class="ghost" data-int-copytext="secret">copy secret</button>
+        </div>`
+      : "";
+    $4("intSheetBody").innerHTML = `
+      <div class="int-ready">
+        <div class="int-secret-row">
+          <div class="int-kv"><span class="int-k">webhook URL</span><span class="int-v int-mono" id="intReadyUrl">${esc3(url)}</span></div>
+          <button type="button" class="ghost" data-int-copytext="url">copy URL</button>
+        </div>
+        ${secretBlock}
+        <ol class="int-steps">${(u.steps || []).map((s) => `<li>${esc3(s)}</li>`).join("")}</ol>
+        <div class="int-form-actions">
+          <button type="button" class="ghost" data-int-close="1">done</button>
+          <button type="button" class="primary" data-uc-test="${esc3(in2.id || "")}">Send a test event</button>
+        </div>
+      </div>`;
+    const body = $4("intSheetBody");
+    body.querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
+    body.querySelectorAll("[data-int-copytext]").forEach((b) => (b.onclick = () => {
+      const el = document.getElementById(b.dataset.intCopytext === "url" ? "intReadyUrl" : "intReadySecret");
+      if (el) copyInt(el.textContent);
+    }));
+    body.querySelectorAll("[data-uc-test]").forEach((b) => (b.onclick = async () => {
+      const id = b.dataset.ucTest;
+      if (!id) return;
+      try {
+        const out = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/test`, { event: u.event || "" });
+        const fired = out && out.fired ? out.fired : 0;
+        if (fired > 0) {
+          toast3(`test event fired ${fired} routine${fired === 1 ? "" : "s"} — the answer lands in the run log`, "ok");
+        } else {
+          toast3("nothing fired — the routine may still be warming up", "err");
+        }
+        await refreshInt();
+      } catch (e) {
+        toast3(safe2(e.message), "err");
+      }
+    }));
+  }
   function renderIntegrations() {
     const host = $4("integrations");
     if (!host) return;
@@ -3748,15 +3877,20 @@ When a release is cut:
   }
   async function refreshInt() {
     try {
-      const [res, provs] = await Promise.all([
+      const [res, provs, ucs] = await Promise.all([
         api2("GET", "/api/v1/integrations"),
-        api2("GET", "/api/v1/integrations/providers").catch(() => null)
+        api2("GET", "/api/v1/integrations/providers").catch(() => null),
+        api2("GET", "/api/v1/usecases").catch(() => null)
       ]);
       integrations = (res && res.integrations) || [];
       if (provs) {
         intProviders = provs.providers || [];
         intAuthModes = provs.auth_modes || [];
         renderIntGallery();
+      }
+      if (ucs) {
+        intUseCases = ucs.usecases || [];
+        renderIntUseCases();
       }
       renderIntegrations();
       render2();

@@ -2,6 +2,37 @@
 
 Recorded during the "make it insane" push (research → implementation). Add new entries at the top.
 
+## Integrations and the local model (2026-10-29)
+
+1. **The local pin is a flocode *profile*, not a model.** flobot's `local`
+    route pins a profile name (`local-qwen3-coder-30b-a3b-mlx`); the profile
+    names an endpoint (`127.0.0.1:8059`) and a model id. When the MLX server
+    is down, every local run dies with "endpoint unreachable" — the fix is to
+    serve the model, not to touch flobot. `flocode models` is the map.
+2. **A local model needs the whole budget, not the mesh budget.**
+    `AskTimeout` (60s) is sized for a mesh model that answers in seconds; a
+    cold 30B MLX load needs minutes. Runs now take their timeout from the
+    route (`runTimeoutFor`): local gets the full ten minutes.
+3. **"Test-run required before enable" is a store gate, so an activation must
+    record a test-run even when the model could not start.** Otherwise the
+    routine can never be armed and the operator reads it as a broken
+    integration. The activation records the arming and leaves the proof to
+    the first event — a warm-up run would only hold the teammate busy at the
+    exact moment the operator fires the test.
+4. **Two runs in one checkout collide.** flocode refuses to run two sessions
+    in the same directory ("already in use"), so ten automations firing at
+    once need ten worktrees. A routine now carries a `worktree` (the thread
+    id) and its runs use it; that is what makes the kit concurrent.
+5. **Replacing a signed binary on macOS breaks the signature.** `cp` over
+    `/private/tmp/flobot` leaves the signature pointing at the old mtime; the
+    kernel then kills every exec (`cs_mtime != mtime`) and a supervisor loops
+    "server did not become healthy". Re-sign after every replace:
+    `codesign --force --sign - <bin>`.
+6. **An event that arrives with no bound routine is still an event.** Answer
+    `202`, record it as `ignored` and say what to do ("bind a routine").
+    A `400` would make the provider look broken when the operator simply has
+    not wired one up yet.
+
 ## Design system (Obsidian Deck, 2026-10-26)
 
 15. **Glass is the environment, opaque is the data.** The decisive rule of the

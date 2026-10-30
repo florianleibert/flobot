@@ -26,6 +26,7 @@ import (
 
 	"github.com/florianleibert/flobot/internal/executor"
 	"github.com/florianleibert/flobot/internal/store"
+	"github.com/florianleibert/flobot/internal/threads"
 )
 
 // maxFireBody bounds the webhook body flobot reads. Provider payloads are
@@ -522,6 +523,9 @@ func (s *Server) fireIntegration(w http.ResponseWriter, r *http.Request) {
 // integration from the inside with a realistic sample payload, so the
 // operator can prove the whole chain — payload, routine, agent — without
 // touching the provider. It is the "Send a test event" button.
+//
+// An optional {"event": "<raw json>"} body replaces the sample payload, so a
+// use case can fire its own example event instead of the generic one.
 func (s *Server) testIntegration(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	in, ok := s.integrations.Integration(id)
@@ -529,7 +533,19 @@ func (s *Server) testIntegration(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, store.ErrNotFound)
 		return
 	}
+	var body struct {
+		// Event is a raw JSON payload to fire instead of the sample.
+		Event string `json:"event"`
+	}
+	if r.ContentLength > 0 {
+		if !decodeJSON(w, r, smallBodyLimit, &body) {
+			return
+		}
+	}
 	payload := samplePayload(in.Kind)
+	if raw := strings.TrimSpace(body.Event); raw != "" {
+		payload = []byte(raw)
+	}
 	text := eventText(in.Kind, payload)
 	runs, fired, err := s.fireBoundRoutines(in, text, "test")
 	if err != nil {
@@ -619,7 +635,7 @@ func (s *Server) fireRoutineFromIntegration(rt store.Routine, eventText string) 
 	if sk, err := s.store.GetSkill(rt.SkillID, Actor); err == nil {
 		prompt = "Automation fire from an external integration.\n\nEvent:\n" + eventText + "\n\nFollow this skill how-to:\n" + sk.Body
 	}
-	run, err := s.store.CreateRun(Actor, bot.ID, prompt, "ask", false, false, "", pin, bot.Route)
+	run, err := s.store.CreateRun(Actor, bot.ID, prompt, "ask", false, false, rt.Worktree, pin, bot.Route)
 	if err != nil {
 		return "", err
 	}
@@ -629,6 +645,7 @@ func (s *Server) fireRoutineFromIntegration(rt store.Routine, eventText string) 
 		Pin:            pin,
 		Intent:         "ask",
 		Route:          bot.Route,
+		Worktree:       threads.WorktreeName(rt.Worktree),
 		Dir:            s.workDirNow(),
 		ConfigOverride: cfgOverride,
 	})

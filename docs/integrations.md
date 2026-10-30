@@ -205,6 +205,73 @@ The patterns that keep coming up, in rough order of how often people want them:
 - **Secrets as capability** — the webhook secret *is* the permission. Hand it
   to a script, a phone, a colleague; rotate it when it leaks.
 
+### 5.1 The kit: all ten, ready to run on this Mac
+
+Those ten are not a wish list — they ship as a **kit**. **Integrations → Use
+cases** lists them; picking one creates, in one step:
+
+1. a **teammate** on the `local` route (this Mac's MLX model — no mesh hop,
+   no API key, no cloud bill),
+2. the **playbook** it follows (written for a local model: read-only tools, a
+   bounded answer, an explicit "not enough context" instead of a guess),
+3. the **routine** that binds the two, armed and ready, and
+4. the **connection** — the provider integration with the right authentication
+   scheme — with its secret handed out once.
+
+Then you paste that one secret into the provider and the automation is live.
+**Send a test event** in the same sheet fires the example event through the
+whole chain — that is the proof, and it needs no provider.
+
+Each activation also gives the routine **its own worktree**, so ten
+automations can fire at the same time without fighting over one checkout —
+flocode refuses to run two sessions in the same directory, and without the
+worktree the second one dies with "already in use".
+
+| Use case | Fires from | Scheme | What the agent does |
+|---|---|---|---|
+| Triage a new issue | GitHub | HMAC | classify the issue, name the next action |
+| Chatops from your phone | Telegram | bearer | run the request, report the real output |
+| On-call: investigate an alert | webhook | bearer | what is broken, two checks to run first |
+| Release notes from a release event | GitHub | HMAC | one line, five highlights, upgrade notes |
+| Reconcile a payment | Stripe | stripe | amount, purpose, duplicate check, one action |
+| Extract facts from an email | Gmail | bearer | six fixed lines: subject, from, when, amount, due, action |
+| React to a sensor event | webhook | bearer | what changed, the threshold, one safe command |
+| Diagnose a failed build | webhook | bearer | failing stage, first error line, likely cause |
+| Be the smart step in an automation | webhook | bearer | parse the input, output only the result |
+| A bookmarked URL that runs a task | webhook | query | one bounded local task, then stop |
+
+**What "local" needs.** The local route is pinned to a flocode model profile
+that points at an MLX server on this Mac. Two things must be true:
+
+1. **A local MLX endpoint serves the model the pin names.** For the shipped
+   kit that is flocode's `local-qwen3-coder-30b-a3b-mlx` profile
+   (`mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` on
+   `127.0.0.1:8059`):
+
+   ```bash
+   mlx_lm.server --model ~/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-30B-A3B-Instruct-4bit/snapshots/<hash> \
+     --port 8059 --host 127.0.0.1
+   ```
+
+2. **flobot's local route points at that profile.** The pin *is* the profile
+   name; `flocode models` lists them all:
+
+   ```bash
+   curl -X POST http://127.0.0.1:4120/api/v1/local/pin \
+     -H 'Content-Type: application/json' \
+     -d '{"pin":"local-qwen3-coder-30b-a3b-mlx"}'
+   ```
+
+If the endpoint is down the run fails with "endpoint unreachable" — the use
+case itself is fine, the model is not. A local model loads cold, so runs are
+given the full ten-minute budget instead of the sixty seconds a mesh model
+gets.
+
+**API**: `GET /api/v1/usecases` returns the kit;
+`POST /api/v1/usecases/{id}/activate` (body `{"create_integration":true}` or
+`{"integration_id":"int-…"}`) creates it and returns the routine, the run id
+of the warm-up and — for a new connection — the secret, once.
+
 ---
 
 ## 6. HTTP API

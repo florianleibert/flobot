@@ -141,3 +141,28 @@ func TestStylesStyleIntegrations(t *testing.T) {
 		}
 	}
 }
+
+func TestIndexHasUseCaseGallery(t *testing.T) {
+	if !strings.Contains(IndexHTML, `id="ucGallery"`) {
+		t.Errorf("index.html has no use-case gallery")
+	}
+}
+
+func TestAppWiresUseCases(t *testing.T) {
+	for _, needle := range []string{
+		"/api/v1/usecases", "renderIntUseCases", "openUcSheet", "ucActivate",
+		"data-uc", "data-uc-test",
+	} {
+		if !strings.Contains(AppJS, needle) {
+			t.Errorf("app.js does not reference %q", needle)
+		}
+	}
+}
+
+func TestStylesStyleUseCases(t *testing.T) {
+	for _, sel := range []string{".uc-tile", ".int-tile-tags"} {
+		if !strings.Contains(StylesCSS, sel) {
+			t.Errorf("styles.css has no rule for %q", sel)
+		}
+	}
+}

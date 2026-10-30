@@ -1827,6 +1827,18 @@ button .kbd,
   white-space: nowrap;
 }
 
+/* A use-case tile carries two facts the provider tiles do not: what fires it
+   and which model runs it. */
+.uc-tile .int-tile-text { gap: 3px; }
+.int-tile-tags { display: inline-flex; gap: 4px; margin-top: 2px; }
+.int-tile-tags .chip {
+  text-transform: none;
+  letter-spacing: .02em;
+  font-weight: 600;
+  font-size: 9.5px;
+  padding: 0 6px;
+}
+
 /* ---- connected cards ----------------------------------------------------- */
 
 .int-list { display: flex; flex-direction: column; gap: var(--sp-2); }
