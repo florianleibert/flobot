@@ -25,17 +25,17 @@ type RunSummary struct {
 	// PostTree is the git tree captured at run end. It survives
 	// restarts so the apply-time post-tree guard compares against the
 	// historical post state, not a fresh capture of the workspace.
-	PostTree    string    `json:"postTree,omitempty"`
-	ReviewState  string    `json:"reviewState"` // pending|accepted|rejected|partial
+	PostTree    string `json:"postTree,omitempty"`
+	ReviewState string `json:"reviewState"` // pending|accepted|rejected|partial
 	// Review metrics (PRD §11): decision timestamp and hunk accept rate.
-	ReviewedAt   string `json:"reviewedAt,omitempty"`
-	HunksAccepted int  `json:"hunksAccepted,omitempty"`
-	HunksTotal    int   `json:"hunksTotal,omitempty"`
+	ReviewedAt    string `json:"reviewedAt,omitempty"`
+	HunksAccepted int    `json:"hunksAccepted,omitempty"`
+	HunksTotal    int    `json:"hunksTotal,omitempty"`
 	// Result contract (taskclient backend; zero values on executor path).
-	Confidence         float64 `json:"confidence,omitempty"`
-	RequiresHumanReview bool   `json:"requiresHumanReview,omitempty"`
-	TestsPassed        int     `json:"testsPassed,omitempty"`
-	TestsTotal         int     `json:"testsTotal,omitempty"`
+	Confidence          float64 `json:"confidence,omitempty"`
+	RequiresHumanReview bool    `json:"requiresHumanReview,omitempty"`
+	TestsPassed         int     `json:"testsPassed,omitempty"`
+	TestsTotal          int     `json:"testsTotal,omitempty"`
 	// Judge loop (G-Eval-style rubric): score 0–10 of the run's final
 	// output against its prompt, plus a one-line rationale. Zero values
 	// mean "not judged" (judge disabled, run errored, or parse failure).

@@ -13,8 +13,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,10 +23,12 @@ import (
 	"github.com/florianleibert/flobot/internal/amesh"
 	"github.com/florianleibert/flobot/internal/checkpoint"
 	"github.com/florianleibert/flobot/internal/executor"
+	"github.com/florianleibert/flobot/internal/queue"
 	"github.com/florianleibert/flobot/internal/routes"
 	"github.com/florianleibert/flobot/internal/schedule"
 	"github.com/florianleibert/flobot/internal/store"
 	"github.com/florianleibert/flobot/internal/taskclient"
+	"github.com/florianleibert/flobot/internal/threads"
 	"github.com/florianleibert/flobot/internal/workspace"
 	"github.com/florianleibert/flobot/web"
 )
@@ -40,14 +42,17 @@ const (
 
 // Server serves roster + runs on loopback.
 type Server struct {
-	store   *store.Store
-	exec    *executor.Exec
+	store *store.Store
+	exec  *executor.Exec
+	// projects is the project/tag store behind the Code view.
+	projects *store.ProjectStore
+	psOnce   sync.Once
 	taskExec *taskclient.Adapter
-	index   string
-	probes  []Probe
-	client  *http.Client
-	home    string
-	workDir string
+	index    string
+	probes   []Probe
+	client   *http.Client
+	home     string
+	workDir  string
 	// workMu guards workDir/ws: the workspace can be switched at runtime
 	// via POST /api/v1/workspace/select (Code Studio folder picker).
 	workMu sync.RWMutex
@@ -72,7 +77,12 @@ type Server struct {
 
 	// cp is the checkpoint store; rs the persisted run summaries; snaps
 	// the in-memory pre/post-run git trees (Code Studio Phase 2).
-	cp     *checkpoint.Store
+	cp *checkpoint.Store
+	// cpRoot is the git root cp is rooted at. A checkpoint store is bound
+	// to one root and the workspace can be switched at runtime, so a store
+	// left over from the previous workspace would snapshot the old tree
+	// and restore into it — the wrong repository entirely.
+	cpRoot string
 	cpMu   sync.Mutex
 	rs     *store.RunStore
 	rsOnce sync.Once
@@ -84,6 +94,22 @@ type Server struct {
 	// event stream) before capturePostRun writes the run summary.
 	contracts   map[string]contractPayload
 	contractsMu sync.Mutex
+	// threads owns the thread worktrees, queue serves the review queue,
+	// and live holds the in-flight diff of running runs. The thread store
+	// lives in its own file so state.json's "never persists runs" contract
+	// stays true.
+	threads *threads.Manager
+	queue   *queue.Queue
+	live    *liveStore
+	// integrations is the external-service integration store (Gmail,
+	// webhooks). It lives in its own file (~/.flobot/integrations.json)
+	// because it holds webhook secrets that state.json's leak guard would
+	// refuse to persist.
+	integrations *store.IntegrationStore
+	// cpRoots caches one checkpoint store per git root, so a run in a
+	// worktree snapshots its own tree while the user's tree stays the
+	// default.
+	cpRoots map[string]*checkpoint.Store
 }
 
 // contractPayload is the parsed result_contract event payload.
@@ -111,6 +137,12 @@ func WithWorkDir(dir string) Option {
 	return func(s *Server) { s.workDir = dir }
 }
 
+// WithIntegrationStore overrides the integration store (tests). Without it
+// the server builds one rooted at its home / FLOBOT_TEST_STATE.
+func WithIntegrationStore(ist *store.IntegrationStore) Option {
+	return func(s *Server) { s.integrations = ist }
+}
+
 // workDirNow returns the current workspace directory (guarded by workMu so
 // a runtime workspace switch cannot race a run spawn).
 func (s *Server) workDirNow() string {
@@ -127,6 +159,19 @@ func New(st *store.Store, opts ...Option) *Server {
 	}
 	for _, o := range opts {
 		o(s)
+	}
+	// The executor writes its run log under the home directory
+	// (~/.flobot/ccpm-runs.md). A server with its own home — a test, a
+	// sandbox — keeps that log inside it instead of in the operator's.
+	if s.exec.Home == "" {
+		s.exec.Home = s.home
+	}
+	if s.exec.Home == "" {
+		// FLOBOT_TEST_STATE is the test-isolated state directory: keep the
+		// run log out of the operator's real ~/.flobot.
+		if ts := os.Getenv("FLOBOT_TEST_STATE"); ts != "" {
+			s.exec.Home = ts
+		}
 	}
 	if s.store == nil {
 		s.store = store.New()
@@ -152,6 +197,36 @@ func New(st *store.Store, opts ...Option) *Server {
 	s.hubOnce.Do(func() { s.hub = newHub() })
 	s.snaps = newRunSnapshots()
 	s.contracts = map[string]contractPayload{}
+	// Supervision surfaces. The thread store is its own file
+	// (~/.flobot/threads.json) so state.json's "never persists runs"
+	// contract stays true.
+	home := s.home
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	ts := store.NewThreadStore()
+	if home != "" {
+		ts.SetPath(filepath.Join(home, ".flobot", "threads.json"))
+	}
+	if err := ts.Load(); err != nil {
+		log.Printf("flobot: load threads: %v", err)
+	}
+	s.threads = threads.New(ts)
+	s.queue = queue.New(ts)
+	s.live = newLiveStore()
+	// Integration store: same home-based path as the thread store, but its
+	// own file because it holds webhook secrets. WithIntegrationStore (tests)
+	// injects one; otherwise build and load the default.
+	if s.integrations == nil {
+		s.integrations = store.NewIntegrationStore()
+		if home != "" {
+			s.integrations.SetPath(filepath.Join(home, ".flobot", "integrations.json"))
+		}
+		if err := s.integrations.Load(); err != nil {
+			log.Printf("flobot: load integrations: %v", err)
+		}
+	}
+	s.cpRoots = map[string]*checkpoint.Store{}
 	// Restore the roster from disk. A missing state file is not an error.
 	if err := s.store.Load(); err != nil {
 		log.Printf("flobot: load state: %v", err)
@@ -200,6 +275,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/skills", s.createSkill)
 	mux.HandleFunc("DELETE /api/v1/skills/{id}", s.deleteSkill)
 	mux.HandleFunc("POST /api/v1/routines", s.createRoutine)
+	mux.HandleFunc("PATCH /api/v1/routines/{id}", s.patchRoutine)
 	mux.HandleFunc("POST /api/v1/routines/{id}/test-run", s.testRun)
 	mux.HandleFunc("POST /api/v1/routines/{id}/enable", s.enableRoutine)
 	mux.HandleFunc("POST /api/v1/routines/{id}/pause", s.pauseRoutine)
@@ -224,6 +300,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/workspace/roots", s.workspaceRoots)
 	mux.HandleFunc("POST /api/v1/workspace/select", s.workspaceSelect)
 	mux.HandleFunc("GET /api/v1/workspace/tree", s.workspaceTree)
+	mux.HandleFunc("GET /api/v1/workspace/symbols", s.workspaceSymbols)
+	mux.HandleFunc("GET /api/v1/workspace/search", s.searchWorkspace)
 	mux.HandleFunc("GET /api/v1/workspace/file", s.workspaceFileGet)
 	mux.HandleFunc("PUT /api/v1/workspace/file", s.workspaceFilePut)
 	mux.HandleFunc("POST /api/v1/workspace/file", s.workspaceFilePost)
@@ -238,8 +316,35 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/diff/apply", s.applyDiff)
 	mux.HandleFunc("POST /api/v1/runs/{id}/diff/reject", s.rejectDiff)
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
+	mux.HandleFunc("GET /api/v1/runs/{id}/diff/live", s.runDiffLive)
+	mux.HandleFunc("POST /api/v1/runs/{id}/diff/merge", s.mergeThreadDiff)
+	mux.HandleFunc("POST /api/v1/threads", s.createThread)
+	mux.HandleFunc("GET /api/v1/threads", s.listThreads)
+	mux.HandleFunc("GET /api/v1/threads/{id}", s.getThread)
+	mux.HandleFunc("DELETE /api/v1/threads/{id}", s.deleteThread)
+	mux.HandleFunc("GET /api/v1/projects", s.listProjects)
+	mux.HandleFunc("POST /api/v1/projects", s.createProject)
+	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.patchProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.deleteProject)
+	mux.HandleFunc("GET /api/v1/tags", s.listTags)
+	mux.HandleFunc("POST /api/v1/tags", s.createTag)
+	mux.HandleFunc("DELETE /api/v1/tags/{name}", s.deleteTag)
+	mux.HandleFunc("GET /api/v1/queue", s.listQueue)
+	mux.HandleFunc("POST /api/v1/queue/{id}/state", s.setQueueState)
+	mux.HandleFunc("DELETE /api/v1/queue/{id}", s.resolveQueueEntry)
 	mux.HandleFunc("GET /api/v1/checkpoints", s.listCheckpoints)
 	mux.HandleFunc("POST /api/v1/checkpoints/{id}/restore", s.restoreCheckpoint)
+	mux.HandleFunc("GET /api/v1/integrations", s.listIntegrations)
+	mux.HandleFunc("POST /api/v1/integrations", s.createIntegration)
+	mux.HandleFunc("GET /api/v1/integrations/providers", s.listIntegrationProviders)
+	mux.HandleFunc("GET /api/v1/usecases", s.listUseCases)
+	mux.HandleFunc("POST /api/v1/usecases/{id}/activate", s.activateUseCase)
+	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.deleteIntegration)
+	mux.HandleFunc("POST /api/v1/integrations/{id}/fire", s.fireIntegration)
+	mux.HandleFunc("POST /api/v1/integrations/{id}/test", s.testIntegration)
+	mux.HandleFunc("POST /api/v1/integrations/{id}/rotate", s.rotateIntegration)
+	mux.HandleFunc("GET /api/v1/integrations/{id}/events", s.integrationEventsHandler)
+	mux.HandleFunc("POST /api/v1/routines/{id}/integration", s.bindIntegration)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	return sameOrigin(mux)
 }
@@ -423,7 +528,7 @@ func (s *Server) roster(w http.ResponseWriter, _ *http.Request) {
 		"install_free": true,
 		"bots":         s.store.ListBots(Actor),
 		"skills":       s.store.ListSkills(Actor),
-		"routines":     s.store.ListRoutines(Actor),
+		"routines":     routineViews(s.store.ListRoutines(Actor), time.Now()),
 		"messages":     s.store.ListMessages(Actor),
 		"runs":         s.runsWithSummaries(),
 		"routes":       routes.DefaultRoutes(),
@@ -614,7 +719,7 @@ func (s *Server) createRoutine(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, err)
 		return
 	}
-	rt, err := s.store.CreateRoutine(Actor, body.BotID, body.SkillID, body.Trigger)
+	rt, err := s.store.CreateRoutine(Actor, body.BotID, body.SkillID, body.Trigger, "")
 	if err != nil {
 		s.httpError(w, err)
 		return
@@ -685,7 +790,7 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 		Yolo:           false,
 		Verify:         false,
 		Route:          bot.Route,
-		Timeout:        executor.AskTimeout,
+		Timeout:        runTimeoutFor(bot.Route),
 		Dir:            s.workDirNow(),
 		ConfigOverride: cfgOverride,
 	})
@@ -722,6 +827,17 @@ func (s *Server) enableRoutine(w http.ResponseWriter, r *http.Request) {
 	}
 	s.persist()
 	writeJSON(w, rt)
+}
+
+// runTimeoutFor gives a run the budget its route deserves. A mesh model
+// answers in seconds, so the short ask budget is enough; the local model
+// loads cold on this Mac and needs the full one — sixty seconds is a
+// guaranteed timeout, not a slow answer.
+func runTimeoutFor(route string) time.Duration {
+	if routes.IsLocal(route) {
+		return executor.DefaultTimeout
+	}
+	return executor.AskTimeout
 }
 
 // resolveRoute maps a bot route to a flocode pin. Mesh routes resolve
@@ -913,6 +1029,8 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		Yolo     bool   `json:"yolo"`
 		Verify   bool   `json:"verify"`
 		Worktree string `json:"worktree"`
+		Project  string `json:"project"`
+		Tag      string `json:"tag"`
 	}
 	if !decodeJSON(w, r, runBodyLimit, &body) {
 		return
@@ -937,10 +1055,27 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if bot.Memory != "" {
 		prompt = "Teammate memory (you said to remember this):\n" + bot.Memory + "\n\n" + prompt
 	}
+	// A project or a tag scopes the mission: the agent is told exactly
+	// which files and folders it may touch.
+	scopeRoot, scopePaths, scopeLabel, scopeErr := s.scopeFor(body.Project, body.Tag)
+	if scopeErr != nil {
+		s.httpError(w, scopeErr)
+		return
+	}
+	if scopeLabel != "" {
+		prompt = scopeBlock(scopeLabel, scopeRoot, scopePaths) + prompt
+	}
 	run, err := s.store.CreateRun(Actor, bot.ID, prompt, intent, body.Yolo, body.Verify, body.Worktree, pin, bot.Route)
 	if err != nil {
 		s.httpError(w, err)
 		return
+	}
+	if scopeLabel != "" {
+		run, err = s.store.SetRunScope(run.ID, Actor, body.Project, body.Tag, scopePaths)
+		if err != nil {
+			s.httpError(w, err)
+			return
+		}
 	}
 	s.spawn(run, executor.Request{
 		Prompt:         prompt,
@@ -998,6 +1133,9 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 	}
 	s.cancels[run.ID] = cancel
 	s.cancelsMu.Unlock()
+	// Live diff: poll this run's tree so the review pane fills while the
+	// agent is still working. The poller stops with the run's context.
+	s.startLiveDiff(ctx, run.ID)
 	// Pre-run git snapshot (single choke point: createRun, handoff,
 	// testRun, fireRoutine). Fail-closed: snapshot errors never block
 	// the run, they only disable diff review for it. Runs in its own
@@ -1319,6 +1457,17 @@ func (s *Server) scrubPaths(msg string) string {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+}
+
+// writeJSONStatus writes a JSON body with an explicit status code. It is
+// used where the status carries meaning (202 for an event that was accepted
+// but fired nothing, 401 for a rejected webhook credential).
+func writeJSONStatus(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)

@@ -68,26 +68,26 @@ type Hub struct {
 
 // WG is the WireGuard status embedded in a hub row.
 type WG struct {
-	Up       bool   `json:"up"`
-	IP       string `json:"ip,omitempty"`
+	Up        bool   `json:"up"`
+	IP        string `json:"ip,omitempty"`
 	RealIface string `json:"real_iface,omitempty"`
 }
 
 // Service is one model service row from `amesh models list --json`.
 type Service struct {
-	ID            string `json:"id"`
-	ModelID       string `json:"model_id,omitempty"`
-	Display       string `json:"display,omitempty"`
-	Location      string `json:"location"` // "local" or a hub name
-	State         string `json:"state"`    // "ready" | "stopped"
-	Endpoint      string `json:"endpoint,omitempty"`
-	Profile       string `json:"profile,omitempty"`
-	ContextTokens int    `json:"context_tokens,omitempty"`
-	Backend       string `json:"backend,omitempty"`
-	Shared        bool   `json:"shared,omitempty"`
-	ShareRequested bool  `json:"share_requested,omitempty"`
-	RouteCount    int    `json:"route_count,omitempty"`
-	Provenance    string `json:"provenance,omitempty"`
+	ID             string `json:"id"`
+	ModelID        string `json:"model_id,omitempty"`
+	Display        string `json:"display,omitempty"`
+	Location       string `json:"location"` // "local" or a hub name
+	State          string `json:"state"`    // "ready" | "stopped"
+	Endpoint       string `json:"endpoint,omitempty"`
+	Profile        string `json:"profile,omitempty"`
+	ContextTokens  int    `json:"context_tokens,omitempty"`
+	Backend        string `json:"backend,omitempty"`
+	Shared         bool   `json:"shared,omitempty"`
+	ShareRequested bool   `json:"share_requested,omitempty"`
+	RouteCount     int    `json:"route_count,omitempty"`
+	Provenance     string `json:"provenance,omitempty"`
 }
 
 // ameshBin returns the amesh binary path: AMESH_BIN env, then PATH amesh.

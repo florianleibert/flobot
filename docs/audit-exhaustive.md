@@ -28,7 +28,7 @@ GET /{$}, /styles.css, /app.js, /health, /api/v1/roster, /api/v1/runs, /api/v1/r
 - **MED — Store/State dual-mutex trap:** Store has its own mutex over maps also guarded by State's mutex; promoted State methods race Store methods (store.go:105-108).
 - **MED — all Save() errors discarded by mutators** (store.go:160,228,283,331,350,381) — full disk silently loses persistence.
 - **MED — Result.Stderr un-scrubbed** (executor.go:231): only realistic key-exfil channel if a child ever dumps env on crash. A `strings.Contains(stderr, key)` scrub would close it.
-- **MED — logCCPMRun writes docs/ccpm-runs.md into the user's worktree on every run** (executor.go:413-442), 0644, unbounded, errors swallowed.
+- **FIXED — logCCPMRun no longer writes into the user's worktree**: the run log moved to `~/.flobot/ccpm-runs.md` (0600, bounded to 500 lines / 256 KiB). It used to be written on every run, 0644, unbounded, errors swallowed — and because the post-run snapshot is taken after the log is written, it showed up in the agent's diff as a change the user never made.
 - **MED — scheduler:** failing fire() refires every 30s tick (retry storm, schedule.go:131-135); fire is synchronous so one slow run blocks all routines; async fire could duplicate runs.
 - **MED — AppendEvent silently drops events past 2000** (store.go:476-483); EventCount lies.
 - **MED — 256 KiB scanner token limit** (executor.go:219): one long NDJSON line fails the run even if the child succeeded.

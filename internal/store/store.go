@@ -55,6 +55,10 @@ type Skill struct {
 	Owner   string `json:"-"`
 }
 
+// ToolsNone is the tool policy that exposes no tools at all: the run can
+// only answer in text. It is what a text-only automation wants.
+const ToolsNone = "none"
+
 // Routine binds a skill to a bot and a trigger. Test-run before enable.
 type Routine struct {
 	ID       string `json:"id"`
@@ -65,6 +69,24 @@ type Routine struct {
 	LastRun  string `json:"last_run,omitempty"`
 	LastNote string `json:"last_note,omitempty"`
 	Owner    string `json:"-"`
+	// IntegrationID, when set, binds the routine to an external-service
+	// integration (Gmail, webhook): the routine fires when the integration
+	// receives an event, in addition to any schedule trigger. The store
+	// does not validate the id — the server checks it against the
+	// IntegrationStore before binding.
+	IntegrationID string `json:"integration_id,omitempty"`
+	// Worktree, when set, is the thread whose worktree the routine's runs
+	// happen in. Two routines can then fire at the same time without
+	// contending for the same checkout: flocode refuses to run two
+	// sessions in one checkout.
+	Worktree string `json:"worktree,omitempty"`
+	// Tools is the tool policy for this routine's runs: "" (the route's
+	// default), "none" (no tools at all — the run can only answer in
+	// text) or a comma-separated allow-list such as "read,glob,grep".
+	// A local model is tool-happy: an automation told to "answer in plain
+	// text" sometimes returns the tool call instead of the answer, so
+	// the policy belongs to the routine, not to the playbook's wording.
+	Tools string `json:"tools,omitempty"`
 }
 
 // Message is a bus item. OwnerBot encodes single-owner-per-stage.
@@ -89,22 +111,28 @@ type Event struct {
 
 // Run is one flocode child. Events stay off the default JSON (json:"-").
 type Run struct {
-	ID         string  `json:"id"`
-	BotID      string  `json:"bot_id,omitempty"`
-	Prompt     string  `json:"prompt"`
-	Intent     string  `json:"intent"`
-	Yolo       bool    `json:"yolo"`
-	Verify     bool    `json:"verify"`
-	Worktree   string  `json:"worktree,omitempty"`
-	Pin        string  `json:"pin,omitempty"`
-	Route      string  `json:"route,omitempty"`
-	Status     string  `json:"status"`
-	Err        string  `json:"error,omitempty"`
-	EventCount int     `json:"event_count"`
-	CreatedAt  string  `json:"created_at"`
-	EndedAt    string  `json:"ended_at,omitempty"`
-	Owner      string  `json:"-"`
-	Events     []Event `json:"-"`
+	ID       string `json:"id"`
+	BotID    string `json:"bot_id,omitempty"`
+	Prompt   string `json:"prompt"`
+	Intent   string `json:"intent"`
+	Yolo     bool   `json:"yolo"`
+	Verify   bool   `json:"verify"`
+	Worktree string `json:"worktree,omitempty"`
+	Pin      string `json:"pin,omitempty"`
+	Route    string `json:"route,omitempty"`
+	// Project scope: the project (or the tag's projects) this run was
+	// pointed at, and the workspace-relative paths the agent was told to
+	// work inside.
+	ProjectID  string   `json:"project_id,omitempty"`
+	Tag        string   `json:"tag,omitempty"`
+	ScopePaths []string `json:"scope_paths,omitempty"`
+	Status     string   `json:"status"`
+	Err        string   `json:"error,omitempty"`
+	EventCount int      `json:"event_count"`
+	CreatedAt  string   `json:"created_at"`
+	EndedAt    string   `json:"ended_at,omitempty"`
+	Owner      string   `json:"-"`
+	Events     []Event  `json:"-"`
 	// Code Studio AC-2f: merged from the persisted RunStore by
 	// Server.runsWithSummaries so run history shows the diff and review
 	// state without duplicating the summary fields on the in-memory Run.
@@ -357,7 +385,7 @@ func (s *Store) ListSkills(actor string) []Skill {
 	return out
 }
 
-func (s *Store) CreateRoutine(owner, botID, skillID, trigger string) (Routine, error) {
+func (s *Store) CreateRoutine(owner, botID, skillID, trigger, integrationID string) (Routine, error) {
 	if _, err := s.ownedBot(botID, owner); err != nil {
 		return Routine{}, err
 	}
@@ -372,18 +400,151 @@ func (s *Store) CreateRoutine(owner, botID, skillID, trigger string) (Routine, e
 		return Routine{}, fmt.Errorf("trigger required")
 	}
 	rt := Routine{
-		ID:      newID("rtn"),
-		BotID:   botID,
-		SkillID: skillID,
-		Trigger: trigger,
-		Paused:  true,
-		Owner:   owner,
+		ID:            newID("rtn"),
+		BotID:         botID,
+		SkillID:       skillID,
+		Trigger:       trigger,
+		IntegrationID: strings.TrimSpace(integrationID),
+		Paused:        true,
+		Owner:         owner,
 	}
 	s.mu.Lock()
 	s.routines[rt.ID] = rt
 	s.mu.Unlock()
 	s.Save()
 	return rt, nil
+}
+
+// UpdateRoutine changes a routine's trigger and/or paused flag. A nil
+// field is left unchanged. The trigger is validated by the caller before
+// it gets here — the store only persists what it is given — so a routine's
+// trigger can be corrected without deleting and recreating it.
+func (s *Store) UpdateRoutine(id, actor string, trigger *string, paused *bool) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok {
+		s.mu.Unlock()
+		return Routine{}, ErrNotFound
+	}
+	if rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	if trigger != nil {
+		t := strings.TrimSpace(*trigger)
+		if t == "" {
+			s.mu.Unlock()
+			return Routine{}, fmt.Errorf("trigger required")
+		}
+		rt.Trigger = t
+	}
+	if paused != nil {
+		rt.Paused = *paused
+	}
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
+// SetRoutineWorktree points a routine at a thread's worktree, so its runs
+// happen there instead of in the shared checkout. An empty worktree clears
+// it.
+func (s *Store) SetRoutineWorktree(id, actor, worktree string) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok {
+		s.mu.Unlock()
+		return Routine{}, ErrNotFound
+	}
+	if rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	rt.Worktree = strings.TrimSpace(worktree)
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
+// SetRoutineTools sets the tool policy for a routine's runs: "" restores the
+// default, "none" exposes no tools at all, and a comma-separated list narrows
+// the run to exactly those tools.
+func (s *Store) SetRoutineTools(id, actor, tools string) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok {
+		s.mu.Unlock()
+		return Routine{}, ErrNotFound
+	}
+	if rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	rt.Tools = NormalizeTools(tools)
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
+// NormalizeTools canonicalises a tool policy: "" (the default), "none", or a
+// comma-separated allow-list of lower-case tool names without duplicates.
+func NormalizeTools(tools string) string {
+	t := strings.ToLower(strings.TrimSpace(tools))
+	if t == "" {
+		return ""
+	}
+	if t == ToolsNone {
+		return ToolsNone
+	}
+	parts := strings.Split(t, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return strings.Join(out, ",")
+}
+
+// BindRoutine sets (or clears, with "") the integration a routine fires on.
+// The store does not validate the integration id; the server checks it
+// against the IntegrationStore before binding.
+func (s *Store) BindRoutine(id, actor, integrationID string) (Routine, error) {
+	s.mu.Lock()
+	rt, ok := s.routines[id]
+	if !ok || rt.Owner != actor {
+		s.mu.Unlock()
+		return Routine{}, ErrDenied
+	}
+	rt.IntegrationID = strings.TrimSpace(integrationID)
+	s.routines[id] = rt
+	s.mu.Unlock()
+	s.Save()
+	return rt, nil
+}
+
+// RoutinesForIntegration lists the routines bound to an integration.
+func (s *Store) RoutinesForIntegration(integrationID string) []Routine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Routine, 0, len(s.routines))
+	for _, rt := range s.routines {
+		if rt.IntegrationID == integrationID {
+			out = append(out, rt)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // DeleteRoutine removes a routine.
@@ -600,6 +761,26 @@ func (s *Store) CreateRun(owner, botID, prompt, intent string, yolo, verify bool
 	s.mu.Lock()
 	s.runs[run.ID] = run
 	s.mu.Unlock()
+	return run, nil
+}
+
+// SetRunScope records the project scope a run was pointed at: which project
+// or tag it belongs to, and the files and folders the agent was told to work
+// inside. It is metadata about the mission, not a permission boundary.
+func (s *Store) SetRunScope(id, actor, projectID, tag string, paths []string) (Run, error) {
+	if id == "" || actor == "" {
+		return Run{}, ErrDenied
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok || run.Owner != actor {
+		return Run{}, ErrDenied
+	}
+	run.ProjectID = strings.TrimSpace(projectID)
+	run.Tag = strings.TrimSpace(tag)
+	run.ScopePaths = append([]string(nil), paths...)
+	s.runs[id] = run
 	return run, nil
 }
 

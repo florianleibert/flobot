@@ -73,7 +73,15 @@ func (rs *runSnapshots) evict(id string) {
 func (s *Server) checkpointStore() (*checkpoint.Store, error) {
 	s.cpMu.Lock()
 	defer s.cpMu.Unlock()
-	if s.cp != nil {
+	// A checkpoint store is bound to one git root, and the workspace can be
+	// switched at runtime. A store left over from the previous workspace
+	// would snapshot the old tree and restore into it — the wrong repository
+	// entirely — so it is rebuilt when the root changes.
+	root := s.workDirNow()
+	if root == "" {
+		root, _ = os.Getwd()
+	}
+	if s.cp != nil && s.cpRoot == root {
 		return s.cp, nil
 	}
 	dir := s.home
@@ -84,15 +92,12 @@ func (s *Server) checkpointStore() (*checkpoint.Store, error) {
 		}
 		dir = home
 	}
-	root := s.workDirNow()
-	if root == "" {
-		root, _ = os.Getwd()
-	}
 	cp, err := checkpoint.New(root, filepath.Join(dir, ".flobot"))
 	if err != nil {
 		return nil, err
 	}
 	s.cp = cp
+	s.cpRoot = root
 	return cp, nil
 }
 
@@ -124,7 +129,7 @@ func (s *Server) runStore() *store.RunStore {
 // capturePreRun snapshots the workspace before a run. Failures are
 // logged, never fatal: runs must always work; review is fail-closed.
 func (s *Server) capturePreRun(runID string) {
-	cp, err := s.checkpointStore()
+	cp, err := s.checkpointStoreFor(s.runRoot(runID))
 	if err != nil {
 		return
 	}
@@ -163,7 +168,7 @@ func (s *Server) capturePostRun(runID, botID, status string) {
 		return store.RunSummary{ID: runID, BotID: botID, Status: status,
 			CreatedAt: time.Now().UTC().Format(time.RFC3339), EndedAt: time.Now().UTC().Format(time.RFC3339)}
 	}
-	cp, err := s.checkpointStore()
+	cp, err := s.checkpointStoreFor(s.runRoot(runID))
 	if err != nil {
 		record(noDiff())
 		return
@@ -224,6 +229,23 @@ func (s *Server) capturePostRun(runID, botID, status string) {
 		ReviewState:  "pending",
 	}
 	record(sum)
+	// The run's changes are now reviewable work. Queue them so the review
+	// queue shows them without the user having to go and find them.
+	if s.queue != nil {
+		files := make([]string, 0, len(fds))
+		hunks := 0
+		for _, fd := range fds {
+			files = append(files, fd.Path)
+			hunks += len(fd.Hunks)
+		}
+		threadID := ""
+		if run, err := s.store.GetRun(runID, Actor); err == nil {
+			threadID = run.Worktree
+		}
+		if _, err := s.queue.Enqueue(threadID, runID, files, hunks); err != nil {
+			log.Printf("flobot: enqueue run %s: %v", runID, err)
+		}
+	}
 	s.hub.publish(store.Event{Kind: "diff_ready", Text: runID})
 }
 
@@ -237,7 +259,7 @@ func min(a, b int) int {
 // runDiff serves the parsed per-hunk diff for a run.
 func (s *Server) runDiff(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	cp, err := s.checkpointStore()
+	cp, err := s.checkpointStoreFor(s.runRoot(id))
 	if err != nil {
 		s.httpError(w, err)
 		return

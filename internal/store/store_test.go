@@ -38,7 +38,7 @@ func TestRosterOwnershipAndNoSecrets(t *testing.T) {
 	if !strings.HasPrefix(sk.ID, "skill-") {
 		t.Fatalf("skill id = %s", sk.ID)
 	}
-	rt, err := st.CreateRoutine("sess-a", coder.ID, sk.ID, "manual")
+	rt, err := st.CreateRoutine("sess-a", coder.ID, sk.ID, "manual", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,5 +312,63 @@ func TestPersistRoundTrip(t *testing.T) {
 	}
 	if n := len(st3.ListBots("sess-a")); n != 0 {
 		t.Fatalf("empty store saw %d bots", n)
+	}
+}
+
+// TestRoutineToolPolicy proves the tool policy is stored, canonicalised and
+// persisted: a text-only automation says "none", a list is normalised, and a
+// stranger cannot change it.
+func TestRoutineToolPolicy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	st := New()
+	st.SetPersistPath(path)
+	bot, err := st.CreateBot("sess-a", "Triage", "triage", "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk, err := st.CreateSkill("sess-a", "triage", "Answer in plain text. Do not call tools.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := st.CreateRoutine("sess-a", bot.ID, sk.ID, "manual", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Tools != "" {
+		t.Fatalf("new routine tools = %q, want the default", rt.Tools)
+	}
+	rt, err = st.SetRoutineTools(rt.ID, "sess-a", " READ , glob ,glob ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Tools != "read,glob" {
+		t.Fatalf("tools = %q, want read,glob", rt.Tools)
+	}
+	rt, err = st.SetRoutineTools(rt.ID, "sess-a", "none")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Tools != ToolsNone {
+		t.Fatalf("tools = %q, want %q", rt.Tools, ToolsNone)
+	}
+	if _, err := st.SetRoutineTools(rt.ID, "sess-b", ""); err != ErrDenied {
+		t.Fatalf("stranger changed the tool policy: %v", err)
+	}
+
+	// It survives a restart: the policy is part of the routine, not of the
+	// run that happened to use it.
+	st2 := New()
+	st2.SetPersistPath(path)
+	if err := st2.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st2.GetRoutine(rt.ID, "sess-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tools != ToolsNone {
+		t.Fatalf("tools after load = %q, want %q", got.Tools, ToolsNone)
 	}
 }

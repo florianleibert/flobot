@@ -103,3 +103,66 @@ func TestStylesStyleHubPanel(t *testing.T) {
 		}
 	}
 }
+
+func TestIndexHasIntegrationsPanel(t *testing.T) {
+	if !strings.Contains(IndexHTML, `data-panel="integrations"`) {
+		t.Errorf("index.html has no Integrations nav button")
+	}
+	if !strings.Contains(IndexHTML, `id="panel-integrations"`) {
+		t.Errorf("index.html has no Integrations panel section")
+	}
+	for _, host := range []string{`id="integrations"`, `id="intGallery"`, `id="intEvents"`, `id="intSheet"`, `id="intCount"`} {
+		if !strings.Contains(IndexHTML, host) {
+			t.Errorf("index.html Integrations panel is missing %s", host)
+		}
+	}
+}
+
+func TestAppWiresIntegrations(t *testing.T) {
+	for _, needle := range []string{
+		"/api/v1/integrations", "/api/v1/integrations/providers",
+		"refreshInt", "renderIntegrations", "renderIntGallery", "renderIntEvents",
+		"createInt", "data-int-bind", "data-int-test", "data-int-rotate",
+		"data-int-connect", "data-int-copyurl",
+	} {
+		if !strings.Contains(AppJS, needle) {
+			t.Errorf("app.js does not reference %q", needle)
+		}
+	}
+}
+
+func TestStylesStyleIntegrations(t *testing.T) {
+	for _, sel := range []string{
+		".int-gallery", ".int-tile", ".int-card", ".int-grid", ".int-events",
+		".int-ev", ".int-sheet", ".int-snippet", ".int-steps",
+	} {
+		if !strings.Contains(StylesCSS, sel) {
+			t.Errorf("styles.css has no rule for %q", sel)
+		}
+	}
+}
+
+func TestIndexHasUseCaseGallery(t *testing.T) {
+	if !strings.Contains(IndexHTML, `id="ucGallery"`) {
+		t.Errorf("index.html has no use-case gallery")
+	}
+}
+
+func TestAppWiresUseCases(t *testing.T) {
+	for _, needle := range []string{
+		"/api/v1/usecases", "renderIntUseCases", "openUcSheet", "ucActivate",
+		"data-uc", "data-uc-test",
+	} {
+		if !strings.Contains(AppJS, needle) {
+			t.Errorf("app.js does not reference %q", needle)
+		}
+	}
+}
+
+func TestStylesStyleUseCases(t *testing.T) {
+	for _, sel := range []string{".uc-tile", ".int-tile-tags"} {
+		if !strings.Contains(StylesCSS, sel) {
+			t.Errorf("styles.css has no rule for %q", sel)
+		}
+	}
+}

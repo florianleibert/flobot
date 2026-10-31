@@ -19,3 +19,12 @@
 | 2026-08-20T02:22:45Z | C | implement-T-verify | qwen-3.8 | ok | 1m50s |
 | 2026-08-20T02:22:55Z | D | review-tasks | glm-5.2 | ok | 9s |
 | 2026-08-20T02:23:31Z | E | surface-review | muse-spark-1.2 | ok | 35s |
+| 2026-10-28T03:05:00Z | A | codex-desktop-prd | MiniMax-M3.1 | ok | PRD v1, 20 research cycles |
+| 2026-10-28T03:12:00Z | B | codex-desktop-epic-tasks | MiniMax-M3.1 | ok | 7 tasks, disjoint files |
+| 2026-10-28T03:20:00Z | C | implement-T-1-symbols | MiniMax-M3.1 | ok | workspace symbol search |
+| 2026-10-28T03:40:00Z | C | implement-T-3-sched | MiniMax-M3.1 | ok | next-fire preview, editable trigger |
+| 2026-10-28T03:52:00Z | C | implement-T-2-durable | MiniMax-M3.1 | ok | threads + review queue store |
+| 2026-10-28T04:25:00Z | C | implement-T-4-threads | MiniMax-M3.1 | ok | threads with worktree isolation + merge-back |
+| 2026-10-28T04:30:00Z | C | implement-T-5-queue | MiniMax-M3.1 | ok | review queue |
+| 2026-10-28T04:35:00Z | C | implement-T-6-livediff | MiniMax-M3.1 | ok | live diff while a run is in flight |
+| 2026-10-28T04:45:00Z | C | implement-T-7-frontend | MiniMax-M3.1 | ok | supervision card + symbol palette |

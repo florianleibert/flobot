@@ -82,8 +82,10 @@ func TestRunLogsCCPMRunLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := t.TempDir()
+	home := t.TempDir()
 	ex := &Exec{
 		Bin:     bin,
+		Home:    home,
 		Environ: func() []string { return []string{} },
 	}
 	res := ex.Run(context.Background(), Request{
@@ -96,7 +98,8 @@ func TestRunLogsCCPMRunLine(t *testing.T) {
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
-	b, err := os.ReadFile(filepath.Join(ws, "docs", "ccpm-runs.md"))
+	logPath := filepath.Join(home, ".flobot", "ccpm-runs.md")
+	b, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +110,17 @@ func TestRunLogsCCPMRunLine(t *testing.T) {
 	if !strings.Contains(got, "| glm-5.2 | code | ok |") {
 		t.Fatalf("missing run line: %s", got)
 	}
+	// The log must never land in the user's workspace: it would dirty the
+	// tree on every run and show up in the agent's diff as a change the
+	// user never made.
+	if _, statErr := os.Stat(filepath.Join(ws, "docs")); !os.IsNotExist(statErr) {
+		t.Fatalf("the workspace was touched: %v", statErr)
+	}
 	// Second run appends a second line.
 	if res := ex.Run(context.Background(), Request{Prompt: "again", Pin: "qwen-3.8", Intent: "ask", Route: "qwen", Dir: ws}, nil); res.Err != nil {
 		t.Fatal(res.Err)
 	}
-	b, err = os.ReadFile(filepath.Join(ws, "docs", "ccpm-runs.md"))
+	b, err = os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,5 +305,44 @@ func TestCancelKillsProcess(t *testing.T) {
 	}
 	if res.Err == nil {
 		t.Fatal("expected cancel error")
+	}
+}
+
+// TestLocalRouteGetsWideModelWatchdogs proves a local run gets the model
+// room it needs: a 30B model on this Mac streams slower than flocode's
+// default first-token and stall watchdogs allow, and the run dies with
+// "provider timeout" while the model is still thinking. A mesh route keeps
+// the defaults.
+func TestLocalRouteGetsWideModelWatchdogs(t *testing.T) {
+	local := strings.Join(Argv(Request{Prompt: "p", Pin: "local-qwen3-coder-30b-a3b-mlx", Route: "local"}), " ")
+	for _, want := range []string{"--first-token-timeout 6m", "--stall-timeout 6m"} {
+		if !strings.Contains(local, want) {
+			t.Fatalf("local argv missing %q: %v", want, local)
+		}
+	}
+	mesh := strings.Join(Argv(Request{Prompt: "p", Pin: "glm-5.2", Route: "glm"}), " ")
+	if strings.Contains(mesh, "--first-token-timeout") || strings.Contains(mesh, "--stall-timeout") {
+		t.Fatalf("mesh argv must keep the default watchdogs: %v", mesh)
+	}
+}
+
+// TestToolPolicyInArgv proves the tool policy reaches the child: "none"
+// starts it with no tools at all, a list narrows it to exactly those tools,
+// and the default leaves the intent's tool set alone.
+func TestToolPolicyInArgv(t *testing.T) {
+	none := strings.Join(Argv(Request{Prompt: "p", Pin: "local", Intent: "ask", Tools: "none"}), " ")
+	if !strings.Contains(none, "--no-tools") {
+		t.Fatalf("argv missing --no-tools: %v", none)
+	}
+	list := strings.Join(Argv(Request{Prompt: "p", Pin: "local", Intent: "ask", Tools: "read,glob"}), " ")
+	if !strings.Contains(list, "--tool-allow read,glob") {
+		t.Fatalf("argv missing --tool-allow: %v", list)
+	}
+	if strings.Contains(list, "--no-tools") {
+		t.Fatalf("a tool list must not disable tools: %v", list)
+	}
+	def := strings.Join(Argv(Request{Prompt: "p", Pin: "local", Intent: "ask"}), " ")
+	if strings.Contains(def, "--no-tools") || strings.Contains(def, "--tool-allow") {
+		t.Fatalf("the default argv must not touch the tool set: %v", def)
 	}
 }

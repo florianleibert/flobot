@@ -46,9 +46,13 @@ type Request struct {
 	SkillBody string
 	Pin       string
 	Intent    string
-	Yolo      bool
-	Verify    bool
-	Worktree  string
+	// Tools is the tool policy for this run: "" (the intent's default),
+	// "none" (no tools at all — the run can only answer in text) or a
+	// comma-separated allow-list such as "read,glob,grep".
+	Tools    string
+	Yolo     bool
+	Verify   bool
+	Worktree string
 	// ConfigOverride, when set, is written to a temp file and passed to the
 	// child as FLOCODE_CONFIG. Used for mesh routes: a generated config that
 	// pins the mesh model. It must never contain secrets.
@@ -123,6 +127,25 @@ func Argv(req Request) []string {
 	}
 	if req.ContinueUntil {
 		args = append(args, "--continue-until")
+	}
+	// A local model on this Mac loads cold and streams slowly. flocode's
+	// first-token and stall watchdogs (one minute by default) kill it
+	// mid-answer, and the run dies with "provider timeout" while the model
+	// was still thinking. A local route gets a wider window; a mesh route
+	// keeps the defaults.
+	if strings.TrimSpace(req.Route) == "local" {
+		args = append(args, "--first-token-timeout", "6m", "--stall-timeout", "6m")
+	}
+	// The tool policy belongs to the run, not to the playbook's wording. A
+	// local model is tool-happy: asked to "answer in plain text" it
+	// sometimes returns a tool call instead of the answer, and the
+	// automation looks broken. "none" starts the child with no tools at
+	// all; a list narrows it to exactly those tools.
+	switch tools := strings.ToLower(strings.TrimSpace(req.Tools)); {
+	case tools == "none":
+		args = append(args, "--no-tools")
+	case tools != "":
+		args = append(args, "--tool-allow", tools)
 	}
 	return args
 }
@@ -247,7 +270,8 @@ func (e *Exec) run(ctx context.Context, req Request, reqEnv []string, emit func(
 	stderr := scrubKey(ring.String(), envVal(cmd.Env, ModelAPIKeyEnv))
 
 	// ccpm run log: one line per finished child. Never includes secrets.
-	logCCPMRun(req.Dir, req.Pin, req.Intent, waitErr)
+	// The log lives in ~/.flobot, never in the user's workspace.
+	e.logCCPMRun(req.Pin, req.Intent, waitErr)
 
 	if ctx.Err() != nil {
 		err := ctx.Err()
@@ -445,8 +469,24 @@ func (r *ringBuf) String() string {
 	return string(r.buf)
 }
 
-// ccpmRunsRel is the run log inside the workspace.
-const ccpmRunsRel = "docs/ccpm-runs.md"
+// ccpmRunsFile is the run log inside ~/.flobot.
+//
+// It used to live in the workspace (docs/ccpm-runs.md). That put flobot's own
+// bookkeeping into the user's repository: it dirtied the tree on every run,
+// and — because the post-run snapshot is taken after the log is written — it
+// showed up in the agent's diff as a change the user never made. The log
+// belongs with flobot's other state, not in the user's project.
+const ccpmRunsFile = "ccpm-runs.md"
+
+const (
+	// ccpmMaxBytes and ccpmMaxLines bound the log: an audit trail is useful
+	// for the recent past, not forever.
+	ccpmMaxBytes = 256 << 10
+	ccpmMaxLines = 500
+	// ccpmHeaderLines is the length of the markdown header (title, blank,
+	// note, blank, table head).
+	ccpmHeaderLines = 5
+)
 
 const ccpmRunsHeader = `# ccpm runs
 
@@ -456,15 +496,19 @@ One line per flocode child. Never contains API keys or tokens.
 | --- | --- | --- | --- |
 `
 
-// logCCPMRun appends one markdown table row to docs/ccpm-runs.md in dir
-// (or the current directory). It never writes API keys, MODEL_API_KEY or
-// LLM_ tokens: only the pin, intent and a sanitized result are recorded.
-func logCCPMRun(dir, pin, intent string, err error) {
-	if dir == "" {
-		dir, _ = os.Getwd()
+// logCCPMRun appends one markdown table row to ~/.flobot/ccpm-runs.md.
+//
+// It never writes API keys, MODEL_API_KEY or LLM_ tokens: only the pin,
+// intent and a sanitized result are recorded. If the home directory cannot
+// be resolved the line is dropped: the log must never fall back to the
+// user's workspace.
+func (e *Exec) logCCPMRun(pin, intent string, runErr error) {
+	home := e.home()
+	if home == "" {
+		return
 	}
 	result := "ok"
-	if err != nil {
+	if runErr != nil {
 		result = "error"
 	}
 	line := fmt.Sprintf("| %s | %s | %s | %s |\n",
@@ -473,21 +517,56 @@ func logCCPMRun(dir, pin, intent string, err error) {
 		sanitizeCell(intent),
 		result,
 	)
-	path := filepath.Join(dir, ccpmRunsRel)
+	dir := filepath.Join(home, ".flobot")
+	path := filepath.Join(dir, ccpmRunsFile)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-		if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
-			return
-		}
-		if wErr := os.WriteFile(path, []byte(ccpmRunsHeader), 0o644); wErr != nil {
+		if wErr := os.WriteFile(path, []byte(ccpmRunsHeader), 0o600); wErr != nil {
 			return
 		}
 	}
-	f, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if openErr != nil {
 		return
 	}
-	defer f.Close()
 	_, _ = f.WriteString(line)
+	_ = f.Close()
+	trimCCPMRuns(path)
+}
+
+// trimCCPMRuns keeps the log bounded: the header plus the newest lines.
+func trimCCPMRuns(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= ccpmMaxBytes {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(raw), "\n")
+	if len(lines) <= ccpmHeaderLines {
+		return
+	}
+	tail := lines[ccpmHeaderLines:]
+	if len(tail) > ccpmMaxLines {
+		tail = tail[len(tail)-ccpmMaxLines:]
+	}
+	kept := append([]string{}, lines[:ccpmHeaderLines]...)
+	kept = append(kept, tail...)
+	out := strings.Join(kept, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+	}
 }
 
 // sanitizeCell keeps a value safe for a markdown table cell: no pipes,
