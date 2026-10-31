@@ -246,8 +246,26 @@
         <button type="button" class="ghost" id="edFindClose" title="close">×</button>
       </div>
       <div class="ed-buffer">
-        <textarea id="edContent" spellcheck="false" placeholder="open a file to edit it"></textarea>
+        <div class="ed-editor" id="edEditor">
+          <pre class="ed-gutter" id="edGutter" aria-hidden="true"></pre>
+          <div class="ed-code" id="edCode">
+            <div class="ed-line-band" id="edBand" aria-hidden="true"></div>
+            <pre class="ed-hl" id="edHighlight" aria-hidden="true"></pre>
+            <textarea id="edContent" spellcheck="false" placeholder="open a file to edit it" aria-label="code buffer" wrap="off"></textarea>
+          </div>
+        </div>
         <div class="ed-outline" id="edOutline"></div>
+      </div>
+      <div class="ed-statusbar" id="edStatus">
+        <button type="button" class="ed-st ed-st-path" id="edStPath" title="the open file">no file</button>
+        <span class="ed-st" id="edStLang"></span>
+        <span class="spacer"></span>
+        <span class="ed-st" id="edStSel" hidden></span>
+        <button type="button" class="ed-st ed-st-btn" id="edStPos" title="go to line (⌘G)">Ln 1, Col 1</button>
+        <span class="ed-st" id="edStLines">0 lines</span>
+        <button type="button" class="ed-st ed-st-btn" id="edStWrap" title="toggle word wrap (⌥Z)">wrap off</button>
+        <button type="button" class="ed-st ed-st-btn" id="edStZoom" title="zoom the buffer (⌘+ / ⌘−)">100%</button>
+        <button type="button" class="ed-st ed-st-btn" id="edStZen" title="zen mode — hide everything but the buffer (⌘⌥Z)">zen</button>
       </div>
       <div class="row ed-keys">
         <span><b>⌘P</b> open file</span>

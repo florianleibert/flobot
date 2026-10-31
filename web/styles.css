@@ -2115,3 +2115,133 @@ button.ghost.danger-armed {
   white-space: pre;
   user-select: text;
 }
+/* ---- the editor surface (editor-core.js) ----------------------------------
+   A highlight layer and a line gutter painted under the textarea. All three
+   layers share one metric set — font, size, line height, padding — so the
+   paint lands exactly where the caret sits. */
+
+.ed-editor {
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex;
+  background: var(--surface-1, var(--card));
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  --ed-font-size: 12.5px;
+  --ed-line-height: 1.55;
+  --ed-pad-y: 10px;
+  --ed-pad-x: 12px;
+}
+.ed-gutter {
+  flex: none; width: 46px; margin: 0;
+  padding: var(--ed-pad-y) 8px var(--ed-pad-y) 0;
+  background: var(--surface-2, var(--card));
+  border-right: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--ed-font-size);
+  line-height: var(--ed-line-height);
+  text-align: right;
+  overflow: hidden;
+  user-select: none;
+  cursor: pointer;
+}
+.ed-gutter:hover { color: var(--fg-dim); }
+.ed-code { position: relative; flex: 1; min-width: 0; }
+.ed-line-band {
+  position: absolute; left: 0; right: 0; top: 0; height: 20px;
+  background: var(--surface-2, var(--card-hi));
+  opacity: .5; pointer-events: none; display: none;
+}
+.ed-hl, .ed-code textarea {
+  margin: 0;
+  padding: var(--ed-pad-y) var(--ed-pad-x);
+  font-family: var(--font-mono);
+  font-size: var(--ed-font-size);
+  line-height: var(--ed-line-height);
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  border: 0;
+}
+.ed-hl {
+  position: absolute; inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--fg);
+  background: transparent;
+}
+.ed-code textarea {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  resize: none;
+  overflow: auto;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--acc);
+}
+.ed-code textarea::selection { background: rgba(122, 162, 255, .3); }
+.ed-code textarea:focus { outline: none; }
+
+/* token colours — one hue per token kind, all from the deck's accents */
+.tok-c { color: var(--faint); font-style: italic; }
+.tok-s { color: var(--ok); }
+.tok-k { color: var(--acc-2); }
+.tok-t { color: var(--warn); }
+.tok-f { color: var(--acc); }
+.tok-m { color: var(--acc); opacity: .85; }
+.tok-n { color: var(--ok); opacity: .9; }
+.tok-d { color: var(--warn); }
+.tok-h { color: var(--acc-2); font-weight: 700; }
+.tok-i { font-style: italic; }
+
+/* the status bar: the editor's own truth, left to right */
+.ed-statusbar {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: var(--sp-1);
+  padding: 2px 6px;
+  min-height: 22px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+  background: var(--surface-2, var(--card));
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.ed-st { color: var(--faint); white-space: nowrap; }
+.ed-st-path {
+  background: none; border: none; cursor: pointer;
+  font: inherit; color: var(--fg-dim); padding: 0 4px;
+  max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ed-st-path:hover { color: var(--fg); }
+.ed-st-btn {
+  background: none; border: none; cursor: pointer;
+  font: inherit; color: var(--faint); padding: 0 5px;
+  border-radius: var(--r-sm);
+}
+.ed-st-btn:hover { color: var(--fg); background: var(--surface-3, var(--card-hi)); }
+.ed-st-btn.on { color: var(--acc-2); }
+.ed-st-input {
+  width: 54px;
+  background: var(--surface-1, var(--card));
+  border: 1px solid var(--acc);
+  color: var(--fg);
+  font: inherit;
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+}
+
+/* zen mode: the buffer, and nothing else */
+#panel-editor.zen .ed-runbar,
+#panel-editor.zen .ed-tree-card,
+#panel-editor.zen .ed-rail-card,
+#panel-editor.zen .ed-keys,
+#panel-editor.zen .panel-head { display: none; }
+#panel-editor.zen .ed-layout > * { display: none; }
+#panel-editor.zen .ed-layout > .ed-main-card { display: flex; }
+#panel-editor.zen .ed-outline { display: none; }
+body.zen .nav { display: none; }
+body.zen .panels { padding: 0; }

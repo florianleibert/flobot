@@ -271,6 +271,601 @@
     };
   }
 
+  // src/editor-core.js
+  // src/editor-core.js
+  //
+  // The Code Studio buffer stops being a bare <textarea>: a syntax-highlight
+  // layer and a line gutter are painted underneath it, and a status bar reports
+  // where the cursor is.
+  //
+  // The textarea keeps native selection, IME composition and undo — the layers
+  // are derived from its value, never the other way round. That way every
+  // existing feature (find/replace, save, the diff review) keeps working
+  // unchanged.
+  //
+  // No dependency: the tokenizer is a single pass over sticky regexes.
+
+  const LANG_BY_EXT = {
+    go: "go", js: "js", jsx: "js", mjs: "js", cjs: "js", ts: "js", tsx: "js",
+    py: "py", rs: "rs", sh: "sh", bash: "sh", zsh: "sh", json: "json",
+    md: "md", markdown: "md", css: "css", scss: "css", html: "html", htm: "html",
+    yml: "yml", yaml: "yml", toml: "toml", sql: "sql", txt: "txt",
+  };
+
+  // langForPath maps a file path to a highlighting language.
+  function langForPath(path) {
+    const m = /\.([A-Za-z0-9]+)$/.exec(String(path || ""));
+    if (!m) return "txt";
+    return LANG_BY_EXT[m[1].toLowerCase()] || "txt";
+  }
+
+  const KEYWORDS = {
+    go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var",
+    js: "async await break case catch class const continue default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch this throw try typeof var void while with yield true false null undefined",
+    py: "and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield True False None self",
+    rs: "as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self static struct super trait type unsafe use where while true false",
+    sh: "if then else elif fi case esac for while do done in function select until return local export source echo cd set unset exit",
+    sql: "select from where insert into values update set delete create table drop alter join left right inner outer on group by order having limit offset distinct",
+    json: "true false null",
+    toml: "true false",
+    css: "important media supports keyframes import charset font-face root",
+  };
+
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // buildRules returns the sticky-regex rules for a language, in priority
+  // order. Comments and strings come first so their contents are never
+  // mistaken for code.
+  function buildRules(lang) {
+    const rules = [];
+    const add = (src, cls) => rules.push({ re: new RegExp(src, "y"), cls });
+    const lineComment = "\\/\\/[^\\n]*";
+    const blockComment = "\\/\\*[\\s\\S]*?\\*\\/";
+    const dq = "\"(?:[^\"\\\\\\n]|\\\\.)*\"";
+    const sq = "'(?:[^'\\\\\\n]|\\\\.)*'";
+    switch (lang) {
+      case "py":
+        add("#[^\\n]*", "c");
+        add("\"\"\"[\\s\\S]*?\"\"\"", "s");
+        add(sq, "s");
+        add(dq, "s");
+        add("@[A-Za-z_][\\w.]*", "d");
+        break;
+      case "sh":
+        add("#[^\\n]*", "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "css":
+        add(blockComment, "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "html":
+        add("<!--[\\s\\S]*?-->", "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "yml":
+        add("#[^\\n]*", "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "md":
+        add("`[^`\\n]*`", "s");
+        break;
+      case "json":
+      case "toml":
+      case "sql":
+        add(lineComment, "c");
+        add(blockComment, "c");
+        add(dq, "s");
+        add(sq, "s");
+        break;
+      default:
+        add(lineComment, "c");
+        add(blockComment, "c");
+        add("`(?:[^`\\\\]|\\\\.)*`", "s");
+        add(dq, "s");
+        add(sq, "s");
+    }
+    return rules;
+  }
+
+  const RULE_CACHE = new Map();
+  function rulesFor(lang) {
+    if (!RULE_CACHE.has(lang)) RULE_CACHE.set(lang, buildRules(lang));
+    return RULE_CACHE.get(lang);
+  }
+
+  const NUM_RE = /\b\d[\w.]*/y;
+  const IDENT_RE = /[A-Za-z_$][\w$]*/y;
+
+  // classify decides what an identifier is: a keyword, a type, a call or plain
+  // text. The look-ahead is what turns `foo(` into a call.
+  function classify(word, text, end, keywords) {
+    if (keywords.has(word)) return "k";
+    if (/^[A-Z]/.test(word)) return "t";
+    let i = end;
+    while (i < text.length && (text[i] === " " || text[i] === "\t")) i++;
+    if (text[i] === "(") return "f";
+    if (text[end - 1] === "." || text[end] === ".") return "m";
+    return "i";
+  }
+
+  // highlightMd renders markdown line by line: headings, list bullets, inline
+  // code, emphasis and links.
+  function highlightMd(text) {
+    return text.split("\n").map(line => {
+      let out = esc(line);
+      if (/^\s{0,3}#{1,6}\s/.test(line)) return `<span class="tok-h">${out}</span>`;
+      out = out.replace(/^(\s*)([-*+]\s|\d+\.\s)/, (m, sp, bullet) => `${sp}<span class="tok-k">${bullet}</span>`);
+      out = out.replace(/`[^`]*`/g, m => `<span class="tok-s">${m}</span>`);
+      out = out.replace(/\*\*([^*]+)\*\*/g, (m, inner) => `<span class="tok-k">**${inner}**</span>`);
+      out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, (m, pre, inner) => `${pre}<span class="tok-i">*${inner}*</span>`);
+      out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => `<span class="tok-f">[${label}]</span><span class="tok-s">(${href})</span>`);
+      if (/^\s*&gt;|^\s*>/.test(line)) out = `<span class="tok-c">${out}</span>`;
+      return out;
+    }).join("\n");
+  }
+
+  // highlight turns source text into HTML with token spans. It is one pass:
+  // at every position the rules are tried in order, and a run of plain
+  // characters is copied without touching each one.
+  function highlight(text, lang) {
+    const src = String(text ?? "");
+    if (lang === "md") return highlightMd(src);
+    const rules = rulesFor(lang);
+    const keywords = new Set((KEYWORDS[lang] || "").split(" ").filter(Boolean));
+    let out = "";
+    let i = 0;
+    const n = src.length;
+    while (i < n) {
+      let hit = null;
+      for (const rule of rules) {
+        rule.re.lastIndex = i;
+        const m = rule.re.exec(src);
+        if (m && m.index === i && m[0].length) {
+          hit = { text: m[0], cls: rule.cls };
+          break;
+        }
+      }
+      if (!hit) {
+        NUM_RE.lastIndex = i;
+        const num = NUM_RE.exec(src);
+        if (num && num.index === i) {
+          hit = { text: num[0], cls: "n" };
+        } else {
+          IDENT_RE.lastIndex = i;
+          const id = IDENT_RE.exec(src);
+          if (id && id.index === i) {
+            hit = { text: id[0], cls: classify(id[0], src, i + id[0].length, keywords) };
+          }
+        }
+      }
+      if (hit) {
+        out += `<span class="tok-${hit.cls}">${esc(hit.text)}</span>`;
+        i += hit.text.length;
+        continue;
+      }
+      // Plain run: copy until a character that could start a token.
+      const start = i;
+      while (i < n) {
+        const c = src.charCodeAt(i);
+        const interesting =
+          c === 47 || c === 34 || c === 39 || c === 96 || c === 35 || c === 64 ||
+          (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+          c === 95 || c === 36;
+        if (interesting) break;
+        i++;
+      }
+      if (i === start) i++;
+      out += esc(src.slice(start, i));
+    }
+    return out;
+  }
+
+  // ---- the editor surface ---------------------------------------------------
+
+  const LANG_LABEL = {
+    go: "Go", js: "JavaScript", py: "Python", rs: "Rust", sh: "Shell",
+    json: "JSON", md: "Markdown", css: "CSS", html: "HTML", yml: "YAML",
+    toml: "TOML", sql: "SQL", txt: "Plain text",
+  };
+
+  const PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'", "`": "`" };
+
+  // EditorCore owns the editor surface: the highlight layer, the gutter, the
+  // status bar, and the key handling a code buffer needs.
+  class EditorCore {
+    constructor() {
+      this.ta = null;
+      this.hl = null;
+      this.gutter = null;
+      this.band = null;
+      this.path = "";
+      this.lang = "txt";
+      this.wrap = false;
+      this.zoom = 0;
+      this.pending = 0;
+    }
+
+    // attach wires the surface to the DOM. Safe to call once the page exists.
+    attach() {
+      this.ta = document.getElementById("edContent");
+      this.hl = document.getElementById("edHighlight");
+      this.gutter = document.getElementById("edGutter");
+      this.band = document.getElementById("edBand");
+      if (!this.ta) return;
+      try {
+        const prefs = JSON.parse(localStorage.getItem("edPrefs") || "{}");
+        this.wrap = !!prefs.wrap;
+        this.zoom = Number(prefs.zoom) || 0;
+      } catch {
+        // no prefs yet — the defaults are fine
+      }
+      this.ta.setAttribute("wrap", this.wrap ? "soft" : "off");
+      this.applyZoom();
+      this.ta.addEventListener("input", () => this.schedulePaint());
+      this.ta.addEventListener("scroll", () => this.syncScroll());
+      for (const ev of ["keyup", "click", "select", "focus"]) {
+        this.ta.addEventListener(ev, () => this.updateStatus());
+      }
+      this.ta.addEventListener("keydown", (e) => this.onKeyDown(e));
+      if (this.gutter) {
+        this.gutter.addEventListener("click", (e) => {
+          const line = this.lineAt(e);
+          if (line) this.gotoLine(line);
+        });
+      }
+      document.getElementById("edStWrap")?.addEventListener("click", () => this.toggleWrap());
+      document.getElementById("edStZoom")?.addEventListener("click", () => this.zoomBy(1));
+      document.getElementById("edStZen")?.addEventListener("click", () => this.toggleZen());
+      document.getElementById("edStPos")?.addEventListener("click", () => this.promptLine());
+      this.paint();
+    }
+
+    // setFile records which file is in the buffer, so the highlighting and the
+    // status bar know what they are looking at.
+    setFile(path) {
+      this.path = String(path || "");
+      this.lang = langForPath(this.path);
+      this.paint();
+    }
+
+    // ---- painting ----------------------------------------------------------
+
+    paint() {
+      if (!this.ta || !this.hl) return;
+      const text = this.ta.value;
+      this.hl.innerHTML = highlight(text, this.lang);
+      this.paintGutter(text);
+      this.updateStatus();
+      this.syncScroll();
+    }
+
+    schedulePaint() {
+      if (this.pending) return;
+      this.pending = requestAnimationFrame(() => {
+        this.pending = 0;
+        this.paint();
+      });
+    }
+
+    paintGutter(text) {
+      if (!this.gutter) return;
+      const lines = text.split("\n").length;
+      const buf = new Array(lines);
+      for (let i = 0; i < lines; i++) buf[i] = String(i + 1);
+      this.gutter.textContent = buf.join("\n");
+    }
+
+    syncScroll() {
+      if (!this.ta) return;
+      if (this.hl) {
+        this.hl.scrollTop = this.ta.scrollTop;
+        this.hl.scrollLeft = this.ta.scrollLeft;
+      }
+      if (this.gutter) this.gutter.scrollTop = this.ta.scrollTop;
+      this.updateBand(this.currentLine());
+    }
+
+    lineHeight() {
+      if (!this.ta) return 20;
+      const lh = parseFloat(getComputedStyle(this.ta).lineHeight);
+      return Number.isFinite(lh) && lh > 0 ? lh : 20;
+    }
+
+    padTop() {
+      if (!this.ta) return 0;
+      return parseFloat(getComputedStyle(this.ta).paddingTop) || 0;
+    }
+
+    updateBand(line) {
+      if (!this.band || !this.ta) return;
+      if (this.wrap) {
+        this.band.style.display = "none";
+        return;
+      }
+      const lh = this.lineHeight();
+      this.band.style.display = "block";
+      this.band.style.top = `${this.padTop() + (line - 1) * lh - this.ta.scrollTop}px`;
+      this.band.style.height = `${lh}px`;
+    }
+
+    // ---- status ------------------------------------------------------------
+
+    updateStatus() {
+      if (!this.ta) return;
+      const ta = this.ta;
+      const pos = ta.selectionStart ?? 0;
+      const before = ta.value.slice(0, pos);
+      const line = before.split("\n").length;
+      const col = pos - before.lastIndexOf("\n");
+      const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+      };
+      set("edStPos", `Ln ${line}, Col ${col}`);
+      set("edStLines", `${ta.value.split("\n").length} lines`);
+      set("edStLang", LANG_LABEL[this.lang] || this.lang.toUpperCase());
+      set("edStPath", this.path ? this.path.split("/").pop() : "no file");
+      const pathEl = document.getElementById("edStPath");
+      if (pathEl) pathEl.title = this.path || "no file";
+      const sel = (ta.selectionEnd ?? 0) - pos;
+      const selEl = document.getElementById("edStSel");
+      if (selEl) {
+        selEl.hidden = sel <= 0;
+        selEl.textContent = sel > 0 ? `${sel} selected` : "";
+      }
+      this.updateBand(line);
+    }
+
+    currentLine() {
+      if (!this.ta) return 1;
+      return this.ta.value.slice(0, this.ta.selectionStart ?? 0).split("\n").length;
+    }
+
+    // ---- navigation --------------------------------------------------------
+
+    gotoLine(n) {
+      if (!this.ta) return;
+      const lines = this.ta.value.split("\n");
+      const idx = Math.max(0, Math.min(lines.length, n) - 1);
+      let pos = 0;
+      for (let i = 0; i < idx; i++) pos += lines[i].length + 1;
+      this.ta.focus();
+      this.ta.setSelectionRange(pos, pos + lines[idx].length);
+      const lh = this.lineHeight();
+      this.ta.scrollTop = Math.max(0, idx * lh - ta_height(this.ta) / 2 + lh / 2);
+      this.updateStatus();
+    }
+
+    lineAt(ev) {
+      if (!this.gutter) return 0;
+      const rect = this.gutter.getBoundingClientRect();
+      const y = ev.clientY - rect.top + this.gutter.scrollTop - this.padTop();
+      return Math.max(1, Math.floor(y / this.lineHeight()) + 1);
+    }
+
+    // promptLine turns the position readout into a one-field editor, so "go to
+    // line" is a keystroke away instead of a dialog.
+    promptLine() {
+      const btn = document.getElementById("edStPos");
+      if (!btn || !this.ta) return;
+      const input = document.createElement("input");
+      input.className = "ed-st-input";
+      input.type = "text";
+      input.value = String(this.currentLine());
+      input.setAttribute("aria-label", "go to line");
+      btn.replaceWith(input);
+      input.focus();
+      input.select();
+      const done = (go) => {
+        const n = parseInt(input.value, 10);
+        input.replaceWith(btn);
+        if (go && n > 0) this.gotoLine(n);
+        else this.updateStatus();
+      };
+      input.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          done(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          done(false);
+        }
+      });
+      input.addEventListener("blur", () => done(false));
+    }
+
+    // ---- editing -----------------------------------------------------------
+
+    onKeyDown(e) {
+      const ta = this.ta;
+      if (!ta) return;
+      const mod = e.metaKey || e.ctrlKey;
+
+      if (mod && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        this.zoomBy(1);
+        return;
+      }
+      if (mod && e.key === "-") {
+        e.preventDefault();
+        this.zoomBy(-1);
+        return;
+      }
+      if (mod && e.key === "0") {
+        e.preventDefault();
+        this.zoomBy(-this.zoom);
+        return;
+      }
+      if (e.altKey && !mod && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        this.toggleWrap();
+        return;
+      }
+      if (mod && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        this.promptLine();
+        return;
+      }
+
+      if (e.key === "Tab") {
+        e.preventDefault();
+        this.indent(e.shiftKey);
+        return;
+      }
+
+      if (e.key === "Enter" && ta.selectionStart === ta.selectionEnd) {
+        e.preventDefault();
+        this.newline();
+        return;
+      }
+
+      if (!mod && PAIRS[e.key]) {
+        const close = PAIRS[e.key];
+        const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+        if (sel) {
+          e.preventDefault();
+          this.replaceSelection(e.key + sel + close, 1);
+        } else if (!/[\w"'`]/.test(ta.value[ta.selectionStart] || "")) {
+          e.preventDefault();
+          this.replaceSelection(e.key + close, 1);
+        }
+        return;
+      }
+
+      if (!mod && (e.key === ")" || e.key === "]" || e.key === "}" || e.key === '"' || e.key === "'" || e.key === "`")) {
+        if (ta.selectionStart === ta.selectionEnd && ta.value[ta.selectionStart] === e.key) {
+          e.preventDefault();
+          ta.setSelectionRange(ta.selectionStart + 1, ta.selectionStart + 1);
+          this.updateStatus();
+        }
+        return;
+      }
+
+      if (e.key === "Backspace" && ta.selectionStart === ta.selectionEnd && ta.selectionStart > 0) {
+        const s = ta.selectionStart;
+        if (PAIRS[ta.value[s - 1]] && PAIRS[ta.value[s - 1]] === ta.value[s]) {
+          e.preventDefault();
+          ta.setRangeText("", s - 1, s + 1, "end");
+          this.afterEdit();
+        }
+      }
+    }
+
+    // indent adds or removes two spaces on every line the selection touches.
+    indent(outdent) {
+      const ta = this.ta;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const value = ta.value;
+      const from = value.lastIndexOf("\n", start - 1) + 1;
+      const stop = value.indexOf("\n", end);
+      const to = stop === -1 ? value.length : stop;
+      const block = value.slice(from, to);
+      const next = block.split("\n").map((ln) => {
+        if (outdent) return ln.replace(/^( {1,2}|\t)/, "");
+        return ln.trim() === "" ? ln : "  " + ln;
+      }).join("\n");
+      ta.setRangeText(next, from, to, "preserve");
+      ta.setSelectionRange(from, to + (next.length - block.length));
+      this.afterEdit();
+    }
+
+    // newline keeps the indentation of the current line and adds one level
+    // after an opening bracket.
+    newline() {
+      const ta = this.ta;
+      const pos = ta.selectionStart;
+      const value = ta.value;
+      const from = value.lastIndexOf("\n", pos - 1) + 1;
+      const line = value.slice(from, pos);
+      const indent = (line.match(/^[ \t]*/) || [""])[0];
+      const opens = /[{[(]\s*$/.test(line);
+      const closes = /^[}\])]/.test(value[pos] || "");
+      if (opens && closes) {
+        const ins = `\n${indent}  \n${indent}`;
+        ta.setRangeText(ins, pos, pos, "end");
+        const caret = pos + 1 + indent.length + 2;
+        ta.setSelectionRange(caret, caret);
+      } else {
+        ta.setRangeText(`\n${indent}${opens ? "  " : ""}`, pos, pos, "end");
+      }
+      this.afterEdit();
+    }
+
+    replaceSelection(text, caret) {
+      const ta = this.ta;
+      const from = ta.selectionStart;
+      ta.setRangeText(text, from, ta.selectionEnd, "end");
+      const pos = from + (caret ?? text.length);
+      ta.setSelectionRange(pos, pos);
+      this.afterEdit();
+    }
+
+    afterEdit() {
+      this.ta.dispatchEvent(new Event("input", { bubbles: true }));
+      this.schedulePaint();
+    }
+
+    // ---- view preferences --------------------------------------------------
+
+    toggleWrap() {
+      this.wrap = !this.wrap;
+      this.ta.setAttribute("wrap", this.wrap ? "soft" : "off");
+      this.savePrefs();
+      const btn = document.getElementById("edStWrap");
+      if (btn) btn.textContent = this.wrap ? "wrap on" : "wrap off";
+      this.paint();
+    }
+
+    zoomBy(step) {
+      this.zoom = Math.max(-3, Math.min(6, this.zoom + step));
+      this.applyZoom();
+      this.savePrefs();
+      this.paint();
+    }
+
+    applyZoom() {
+      const editor = document.getElementById("edEditor");
+      if (editor) editor.style.setProperty("--ed-font-size", `${12.5 + this.zoom}px`);
+      const btn = document.getElementById("edStZoom");
+      if (btn) btn.textContent = `${Math.round(((12.5 + this.zoom) / 12.5) * 100)}%`;
+    }
+
+    toggleZen() {
+      const panel = document.getElementById("panel-editor");
+      if (!panel) return;
+      const on = panel.classList.toggle("zen");
+      document.body.classList.toggle("zen", on);
+      const btn = document.getElementById("edStZen");
+      if (btn) {
+        btn.textContent = on ? "exit zen" : "zen";
+        btn.classList.toggle("on", on);
+      }
+      if (this.ta) this.ta.focus();
+    }
+
+    savePrefs() {
+      try {
+        localStorage.setItem("edPrefs", JSON.stringify({ wrap: this.wrap, zoom: this.zoom }));
+      } catch {
+        // a private window may refuse storage — the view still works
+      }
+    }
+  }
+
+  // ta_height is the visible height of the textarea, used to centre a jump.
+  function ta_height(ta) {
+    return ta.clientHeight || 0;
+  }
+
+  // editorCore is the one editor surface the Code Studio uses.
+  const editorCore = new EditorCore();
   // src/editor.js
   var $2 = (id) => document.getElementById(id);
   function esc(s) {
@@ -491,6 +1086,7 @@
       ed.dirty = false;
       $2("edPath").value = f.path;
       $2("edContent").value = f.content || "";
+    editorCore.setFile(f.path);
       $2("edDirty").textContent = "";
       ed.tabs.push({ path: f.path, sha: f.sha256, descId: id, content: f.content || "", saved: f.content || "", dirty: false });
       ed.activeTab = f.path;
@@ -510,6 +1106,7 @@
             ed.dirty = false;
             $2("edPath").value = f.path;
             $2("edContent").value = "";
+          editorCore.setFile(f.path);
             $2("edDirty").textContent = "";
             try {
               ed.descId = await openDescriptor(f.path);
@@ -626,6 +1223,7 @@
     ed.dirty = tab.dirty;
     $2("edPath").value = tab.path;
     $2("edContent").value = tab.content;
+  editorCore.setFile(tab.path);
     $2("edDirty").textContent = tab.dirty ? "\u25CF unsaved" : "";
     markOpen(tab.path);
     ctx?.renderBreadcrumbs(tab.path);
@@ -1577,6 +2175,7 @@
       if (document.getElementById("panel-editor")?.classList.contains("active")) openQuick();
     });
     wireEditorKeys();
+    editorCore.attach();
     loadTree();
     restoreTabs();
     loadLatestDiff();
