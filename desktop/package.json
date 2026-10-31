@@ -1,6 +1,6 @@
 {
   "name": "flobot-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "flobot desktop app (Electron shell around the flobot web UI)",
   "main": "main.js",
   "scripts": {
