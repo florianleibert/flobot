@@ -773,7 +773,10 @@ func verifyStandardSignature(secret string, h http.Header, body []byte) bool {
 	mac.Write([]byte(id + "." + ts + "."))
 	mac.Write(body)
 	want := mac.Sum(nil)
-	for _, part := range strings.Split(header, ",") {
+	// standard-webhooks sends a space-separated list of "v1,<base64>" entries
+	// ("v1,AAAA v1,BBBB"), one per signing secret. Splitting on "," breaks
+	// every valid signature in half, so split on whitespace.
+	for _, part := range strings.Fields(header) {
 		part = strings.TrimSpace(part)
 		if !strings.HasPrefix(part, "v1,") {
 			continue

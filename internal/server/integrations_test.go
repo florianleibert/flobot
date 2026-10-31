@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -639,4 +640,50 @@ func TestIntegrationEventsAreAttributed(t *testing.T) {
 		t.Fatalf("events on b = %v", rowsB)
 	}
 	_ = aSecret
+}
+
+// TestVerifyStandardSignature checks the standard-webhooks scheme. The
+// webhook-signature header is a space-separated list of "v1,<base64>" entries
+// — one per signing secret, so a provider can rotate keys without downtime.
+// Splitting that header on "," breaks every valid signature.
+func TestVerifyStandardSignature(t *testing.T) {
+	key := []byte("super-secret-key")
+	secret := "whsec_" + base64.StdEncoding.EncodeToString(key)
+	id := "msg_2f7c1a"
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	body := []byte(`{"hello":"world"}`)
+
+	sign := func(timestamp string) string {
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(id + "." + timestamp + "."))
+		mac.Write(body)
+		return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	}
+
+	h := http.Header{}
+	h.Set("webhook-id", id)
+	h.Set("webhook-timestamp", ts)
+	h.Set("webhook-signature", "v1,"+sign(ts))
+	if !verifyStandardSignature(secret, h, body) {
+		t.Fatal("a valid standard-webhooks signature was refused")
+	}
+
+	// A rotated secret in the same header must not break the valid one.
+	h.Set("webhook-signature", "v1,"+base64.StdEncoding.EncodeToString([]byte("other-key"))+" v1,"+sign(ts))
+	if !verifyStandardSignature(secret, h, body) {
+		t.Fatal("a signature list with a rotated secret was refused")
+	}
+
+	// A signature over a different body must not verify.
+	if verifyStandardSignature(secret, h, []byte(`{"hello":"other"}`)) {
+		t.Fatal("a signature over a different body was accepted")
+	}
+
+	// A stale timestamp must not verify, even with a correct signature.
+	old := strconv.FormatInt(time.Now().Add(-2*time.Hour).Unix(), 10)
+	h.Set("webhook-timestamp", old)
+	h.Set("webhook-signature", "v1,"+sign(old))
+	if verifyStandardSignature(secret, h, body) {
+		t.Fatal("a stale signature was accepted")
+	}
 }

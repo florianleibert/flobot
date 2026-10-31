@@ -439,6 +439,13 @@ func (s *Store) UpdateRoutine(id, actor string, trigger *string, paused *bool) (
 		rt.Trigger = t
 	}
 	if paused != nil {
+		// Arming a routine still needs the test-run proof. EnableRoutine and
+		// SetRoutinePause both refuse a routine that was never test-run; PATCH
+		// must not be a way around that gate.
+		if !*paused && rt.Paused && rt.LastRun == "" {
+			s.mu.Unlock()
+			return Routine{}, fmt.Errorf("test-run required before enable")
+		}
 		rt.Paused = *paused
 	}
 	s.routines[id] = rt
