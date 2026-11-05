@@ -118,6 +118,61 @@
   --z-toast: 500;
 }
 
+/* ---- light theme ----------------------------------------------------------
+   Applied by toggling html[data-theme="light"]. Every token the dark deck
+   defines is overridden so no component is left mid-contrast. */
+html[data-theme="light"] {
+  --bg:          #f4f5f7;
+  --bg-raise:    #eceef2;
+  --surface-1:   #ffffff;
+  --surface-2:   #f0f2f6;
+  --surface-3:   #e6e9ef;
+  --surface-4:   #d9dde6;
+
+  --card:        var(--surface-1);
+  --card-hi:     var(--surface-3);
+  --panel:       var(--surface-2);
+
+  --line:        #d5dae3;
+  --line-soft:   #e2e6ee;
+  --line-strong: #c3cad6;
+
+  --fg:          #1a1d24;
+  --fg-dim:      #3a4150;
+  --muted:       #5a6374;
+  --faint:       #8a93a5;
+
+  --acc:         #4f46e5;
+  --acc-2:       #4f46e5;
+  --acc-soft:    rgba(79, 70, 229, .12);
+  --acc-glow:    rgba(79, 70, 229, .18);
+  --acc-ink:     #ffffff;
+
+  --grad: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+
+  --ok:          #0e9f6e;
+  --ok-ink:      #ffffff;
+  --ok-soft:     rgba(14, 159, 110, .12);
+  --warn:        #b45309;
+  --warn-ink:    #ffffff;
+  --warn-soft:   rgba(180, 83, 9, .12);
+  --err:         #dc2626;
+  --err-ink:     #ffffff;
+  --err-soft:    rgba(220, 38, 38, .12);
+  --violet:      #7c3aed;
+  --violet-soft: rgba(124, 58, 237, .14);
+
+  --shadow:    0 1px 2px rgba(20,24,40,.12);
+  --shadow-lg: 0 18px 50px rgba(20,24,40,.22);
+}
+
+html[data-theme="light"] body::before {
+  background:
+    radial-gradient(1100px 620px at 12% -12%, rgba(99,102,241,.10), transparent 62%),
+    radial-gradient(900px 560px at 92% 108%, rgba(124,155,255,.06), transparent 62%);
+}
+html[data-theme="light"] ::selection { background: rgba(79, 70, 229, .22); color: #1a1d24; }
+
 * { box-sizing: border-box; }
 /* the hidden attribute must win over layout rules like .row { display:flex } */
 [hidden] { display: none !important; }
@@ -1193,7 +1248,14 @@ button .kbd,
   font-family: var(--font-mono); font-size: 12.5px;
   color: var(--fg-dim); cursor: pointer;
 }
-.ed-quick-item:hover { background: var(--acc-soft); color: var(--fg); }
+.ed-quick-item.sel, .ed-quick-item:hover { background: var(--acc-soft); color: var(--fg); }
+.ed-quick-name { white-space: nowrap; }
+.ed-quick-dir {
+  color: var(--faint); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left;
+}
+.ed-quick-empty { padding: var(--sp-2); color: var(--faint); font-size: 12px; }
 
 /* --- touched files strip (follow-mode) -------------------------------------------------- */
 
@@ -1756,6 +1818,216 @@ button .kbd,
   max-width: 100%;
 }
 
+/* ---- the editor surface (editor-core.js) ----------------------------------
+   A highlight layer and a line gutter painted under the textarea. All three
+   layers share one metric set — font, size, line height, padding — so the
+   paint lands exactly where the caret sits. */
+
+.ed-editor {
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex;
+  background: var(--surface-1, var(--card));
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  --ed-font-size: 12.5px;
+  --ed-line-height: 1.55;
+  --ed-pad-y: 10px;
+  --ed-pad-x: 12px;
+}
+.ed-gutter {
+  flex: none; width: 46px; margin: 0;
+  padding: var(--ed-pad-y) 8px var(--ed-pad-y) 0;
+  background: var(--surface-2, var(--card));
+  border-right: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--ed-font-size);
+  line-height: var(--ed-line-height);
+  text-align: right;
+  overflow: hidden;
+  user-select: none;
+  cursor: pointer;
+}
+.ed-gutter:hover { color: var(--fg-dim); }
+.ed-code { position: relative; flex: 1; min-width: 0; }
+.ed-line-band {
+  position: absolute; left: 0; right: 0; top: 0; height: 20px;
+  background: var(--surface-2, var(--card-hi));
+  opacity: .6; pointer-events: none; display: none;
+}
+.ed-guides {
+  position: absolute; inset: 0; overflow: hidden;
+  pointer-events: none; display: none;
+}
+.ed-guide {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  background: var(--line-soft);
+}
+.ed-minimap {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: 56px; display: none;
+  border-left: 1px solid var(--line-soft);
+  cursor: pointer;
+  background: var(--surface-2, var(--card));
+}
+.ed-empty-buffer {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-1);
+  pointer-events: none;
+  color: var(--faint);
+  text-align: center;
+}
+.ed-empty-buffer .ed-empty-ico {
+  font-size: 26px; font-weight: 700;
+  color: var(--acc-2); opacity: .7;
+  margin-bottom: var(--sp-1);
+}
+.ed-empty-buffer p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.ed-empty-buffer p.sub { font-size: 11px; color: var(--faint); }
+.ed-hl, .ed-code textarea {
+  margin: 0;
+  padding: var(--ed-pad-y) var(--ed-pad-x);
+  font-family: var(--font-mono);
+  font-size: var(--ed-font-size);
+  line-height: var(--ed-line-height);
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  border: 0;
+}
+.ed-hl {
+  position: absolute; inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--fg);
+  background: transparent;
+}
+.ed-code textarea {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  resize: none;
+  overflow: auto;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--acc);
+}
+.ed-code textarea::selection { background: rgba(122, 162, 255, .3); }
+.ed-code textarea:focus { outline: none; }
+
+/* token colours — one hue per token kind, all from the deck's accents */
+.tok-c { color: var(--faint); font-style: italic; }
+.tok-s { color: var(--ok); }
+.tok-k { color: var(--acc-2); }
+.tok-t { color: var(--warn); }
+.tok-f { color: var(--acc); }
+.tok-m { color: var(--acc); opacity: .85; }
+.tok-n { color: var(--ok); opacity: .9; }
+.tok-d { color: var(--warn); }
+.tok-h { color: var(--acc-2); font-weight: 700; }
+.tok-i { font-style: italic; }
+.tok-bracket {
+  color: var(--warn);
+  font-weight: 700;
+  background: var(--warn-soft);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px var(--warn-soft);
+}
+
+/* the status bar: the editor's own truth, left to right */
+.ed-statusbar {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: var(--sp-1);
+  padding: 2px 6px;
+  min-height: 22px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+  background: var(--surface-2, var(--card));
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.ed-st { color: var(--faint); white-space: nowrap; }
+.ed-st-path {
+  background: none; border: none; cursor: pointer;
+  font: inherit; color: var(--fg-dim); padding: 0 4px;
+  max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ed-st-path:hover { color: var(--fg); }
+.ed-st-btn {
+  background: none; border: none; cursor: pointer;
+  font: inherit; color: var(--faint); padding: 0 5px;
+  border-radius: var(--r-sm);
+}
+.ed-st-btn:hover { color: var(--fg); background: var(--surface-3, var(--card-hi)); }
+.ed-st-btn.on { color: var(--acc-2); }
+.ed-st-btn:focus-visible, .ed-st-path:focus-visible, .ed-outline-item:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: -1px;
+}
+.ed-st-input {
+  width: 54px;
+  background: var(--surface-1, var(--card));
+  border: 1px solid var(--acc);
+  color: var(--fg);
+  font: inherit;
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+}
+
+/* keyboard shortcut help overlay */
+.ed-help-root {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(0, 0, 0, .5);
+  display: flex; align-items: center; justify-content: center;
+}
+.ed-help {
+  width: min(480px, 92vw);
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--sp-3);
+}
+.ed-help-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-weight: 700; margin-bottom: var(--sp-2);
+}
+.ed-help-body {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-3);
+}
+.ed-help-group-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--faint); margin-bottom: var(--sp-1);
+}
+.ed-help-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 2px 0; font-size: 12px; color: var(--fg-dim);
+}
+.ed-help-row kbd {
+  font-family: var(--font-mono); font-size: 11px;
+  background: var(--surface-3); border: 1px solid var(--line);
+  border-radius: var(--r-xs); padding: 1px 5px; color: var(--fg);
+  min-width: 34px; text-align: center;
+}
+.ed-help-foot { margin-top: var(--sp-3); color: var(--faint); font-size: 11px; }
+
+/* zen mode: the buffer, and nothing else */
+#panel-editor.zen .ed-runbar,
+#panel-editor.zen .ed-tree-card,
+#panel-editor.zen .ed-rail-card,
+#panel-editor.zen .ed-keys,
+#panel-editor.zen .panel-head { display: none; }
+#panel-editor.zen .ed-layout > * { display: none; }
+#panel-editor.zen .ed-layout > .ed-main-card { display: flex; }
+#panel-editor.zen .ed-outline { display: none; }
+body.zen .nav { display: none; }
+body.zen .panels { padding: 0; }
+
 /* ============================================================================
    INTEGRATIONS — connect gallery, connected cards, event log, connect sheet
    ----------------------------------------------------------------------------
@@ -2115,133 +2387,3 @@ button.ghost.danger-armed {
   white-space: pre;
   user-select: text;
 }
-/* ---- the editor surface (editor-core.js) ----------------------------------
-   A highlight layer and a line gutter painted under the textarea. All three
-   layers share one metric set — font, size, line height, padding — so the
-   paint lands exactly where the caret sits. */
-
-.ed-editor {
-  flex: 1; min-width: 0; min-height: 0;
-  display: flex;
-  background: var(--surface-1, var(--card));
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-md);
-  overflow: hidden;
-  --ed-font-size: 12.5px;
-  --ed-line-height: 1.55;
-  --ed-pad-y: 10px;
-  --ed-pad-x: 12px;
-}
-.ed-gutter {
-  flex: none; width: 46px; margin: 0;
-  padding: var(--ed-pad-y) 8px var(--ed-pad-y) 0;
-  background: var(--surface-2, var(--card));
-  border-right: 1px solid var(--line-soft);
-  color: var(--faint);
-  font-family: var(--font-mono);
-  font-size: var(--ed-font-size);
-  line-height: var(--ed-line-height);
-  text-align: right;
-  overflow: hidden;
-  user-select: none;
-  cursor: pointer;
-}
-.ed-gutter:hover { color: var(--fg-dim); }
-.ed-code { position: relative; flex: 1; min-width: 0; }
-.ed-line-band {
-  position: absolute; left: 0; right: 0; top: 0; height: 20px;
-  background: var(--surface-2, var(--card-hi));
-  opacity: .5; pointer-events: none; display: none;
-}
-.ed-hl, .ed-code textarea {
-  margin: 0;
-  padding: var(--ed-pad-y) var(--ed-pad-x);
-  font-family: var(--font-mono);
-  font-size: var(--ed-font-size);
-  line-height: var(--ed-line-height);
-  tab-size: 2;
-  white-space: pre;
-  overflow-wrap: normal;
-  word-break: normal;
-  border: 0;
-}
-.ed-hl {
-  position: absolute; inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  color: var(--fg);
-  background: transparent;
-}
-.ed-code textarea {
-  position: absolute; inset: 0;
-  width: 100%; height: 100%;
-  resize: none;
-  overflow: auto;
-  background: transparent;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  caret-color: var(--acc);
-}
-.ed-code textarea::selection { background: rgba(122, 162, 255, .3); }
-.ed-code textarea:focus { outline: none; }
-
-/* token colours — one hue per token kind, all from the deck's accents */
-.tok-c { color: var(--faint); font-style: italic; }
-.tok-s { color: var(--ok); }
-.tok-k { color: var(--acc-2); }
-.tok-t { color: var(--warn); }
-.tok-f { color: var(--acc); }
-.tok-m { color: var(--acc); opacity: .85; }
-.tok-n { color: var(--ok); opacity: .9; }
-.tok-d { color: var(--warn); }
-.tok-h { color: var(--acc-2); font-weight: 700; }
-.tok-i { font-style: italic; }
-
-/* the status bar: the editor's own truth, left to right */
-.ed-statusbar {
-  display: flex; align-items: center; gap: 4px;
-  margin-top: var(--sp-1);
-  padding: 2px 6px;
-  min-height: 22px;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-pill);
-  background: var(--surface-2, var(--card));
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--faint);
-}
-.ed-st { color: var(--faint); white-space: nowrap; }
-.ed-st-path {
-  background: none; border: none; cursor: pointer;
-  font: inherit; color: var(--fg-dim); padding: 0 4px;
-  max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ed-st-path:hover { color: var(--fg); }
-.ed-st-btn {
-  background: none; border: none; cursor: pointer;
-  font: inherit; color: var(--faint); padding: 0 5px;
-  border-radius: var(--r-sm);
-}
-.ed-st-btn:hover { color: var(--fg); background: var(--surface-3, var(--card-hi)); }
-.ed-st-btn.on { color: var(--acc-2); }
-.ed-st-input {
-  width: 54px;
-  background: var(--surface-1, var(--card));
-  border: 1px solid var(--acc);
-  color: var(--fg);
-  font: inherit;
-  border-radius: var(--r-sm);
-  padding: 0 4px;
-}
-
-/* zen mode: the buffer, and nothing else */
-#panel-editor.zen .ed-runbar,
-#panel-editor.zen .ed-tree-card,
-#panel-editor.zen .ed-rail-card,
-#panel-editor.zen .ed-keys,
-#panel-editor.zen .panel-head { display: none; }
-#panel-editor.zen .ed-layout > * { display: none; }
-#panel-editor.zen .ed-layout > .ed-main-card { display: flex; }
-#panel-editor.zen .ed-outline { display: none; }
-body.zen .nav { display: none; }
-body.zen .panels { padding: 0; }

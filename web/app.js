@@ -1,5 +1,1204 @@
 /* Code Studio redesign — esbuild bundle of src/*.js, embedded via web/embed.go. Edit flobot-ui-redesign/src and run sync-to-flobot.mjs. */
 (() => {
+  // src/editor-core.js
+  var LANG_BY_EXT = {
+    go: "go",
+    js: "js",
+    jsx: "js",
+    mjs: "js",
+    cjs: "js",
+    ts: "js",
+    tsx: "js",
+    py: "py",
+    rs: "rs",
+    sh: "sh",
+    bash: "sh",
+    zsh: "sh",
+    json: "json",
+    md: "md",
+    markdown: "md",
+    css: "css",
+    scss: "css",
+    html: "html",
+    htm: "html",
+    yml: "yml",
+    yaml: "yml",
+    toml: "toml",
+    sql: "sql",
+    txt: "txt"
+  };
+  function langForPath(path) {
+    const m = /\.([A-Za-z0-9]+)$/.exec(String(path || ""));
+    if (!m) return "txt";
+    return LANG_BY_EXT[m[1].toLowerCase()] || "txt";
+  }
+  var KEYWORDS = {
+    go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var",
+    js: "async await break case catch class const continue default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch this throw try typeof var void while with yield true false null undefined",
+    py: "and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield True False None self",
+    rs: "as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self static struct super trait type unsafe use where while true false",
+    sh: "if then else elif fi case esac for while do done in function select until return local export source echo cd set unset exit",
+    sql: "select from where insert into values update set delete create table drop alter join left right inner outer on group by order having limit offset distinct",
+    json: "true false null",
+    toml: "true false",
+    css: "important media supports keyframes import charset font-face root"
+  };
+  var esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  function buildRules(lang) {
+    const rules = [];
+    const add = (src, cls) => rules.push({ re: new RegExp(src, "y"), cls });
+    const lineComment = "\\/\\/[^\\n]*";
+    const blockComment = "\\/\\*[\\s\\S]*?\\*\\/";
+    const dq = '"(?:[^"\\\\\\n]|\\\\.)*"';
+    const sq = "'(?:[^'\\\\\\n]|\\\\.)*'";
+    switch (lang) {
+      case "py":
+        add("#[^\\n]*", "c");
+        add('"""[\\s\\S]*?"""', "s");
+        add(sq, "s");
+        add(dq, "s");
+        add("@[A-Za-z_][\\w.]*", "d");
+        break;
+      case "sh":
+        add("#[^\\n]*", "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "css":
+        add(blockComment, "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "html":
+        add("<!--[\\s\\S]*?-->", "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "yml":
+        add("#[^\\n]*", "c");
+        add(dq, "s");
+        add("'[^']*'", "s");
+        break;
+      case "md":
+        add("`[^`\\n]*`", "s");
+        break;
+      case "json":
+      case "toml":
+      case "sql":
+        add(lineComment, "c");
+        add(blockComment, "c");
+        add(dq, "s");
+        add(sq, "s");
+        break;
+      default:
+        add(lineComment, "c");
+        add(blockComment, "c");
+        add("`(?:[^`\\\\]|\\\\.)*`", "s");
+        add(dq, "s");
+        add(sq, "s");
+    }
+    return rules;
+  }
+  var RULE_CACHE = /* @__PURE__ */ new Map();
+  function rulesFor(lang) {
+    if (!RULE_CACHE.has(lang)) RULE_CACHE.set(lang, buildRules(lang));
+    return RULE_CACHE.get(lang);
+  }
+  var NUM_RE = /\b\d[\w.]*/y;
+  var IDENT_RE = /[A-Za-z_$][\w$]*/y;
+  function classify(word, text, end, keywords) {
+    if (keywords.has(word)) return "k";
+    if (/^[A-Z]/.test(word)) return "t";
+    let i = end;
+    while (i < text.length && (text[i] === " " || text[i] === "	")) i++;
+    if (text[i] === "(") return "f";
+    if (text[end - 1] === "." || text[end] === ".") return "m";
+    return "i";
+  }
+  function highlightMd(text) {
+    return text.split("\n").map((line) => {
+      let out = esc(line);
+      if (/^\s{0,3}#{1,6}\s/.test(line)) return `<span class="tok-h">${out}</span>`;
+      out = out.replace(/^(\s*)([-*+]\s|\d+\.\s)/, (m, sp, bullet) => `${sp}<span class="tok-k">${bullet}</span>`);
+      out = out.replace(/`[^`]*`/g, (m) => `<span class="tok-s">${m}</span>`);
+      out = out.replace(/\*\*([^*]+)\*\*/g, (m, inner) => `<span class="tok-k">**${inner}**</span>`);
+      out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, (m, pre, inner) => `${pre}<span class="tok-i">*${inner}*</span>`);
+      out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => `<span class="tok-f">[${label}]</span><span class="tok-s">(${href})</span>`);
+      if (/^\s*&gt;|^\s*>/.test(line)) out = `<span class="tok-c">${out}</span>`;
+      return out;
+    }).join("\n");
+  }
+  function highlight(text, lang) {
+    const src = String(text ?? "");
+    if (lang === "md") return highlightMd(src);
+    const rules = rulesFor(lang);
+    const keywords = new Set((KEYWORDS[lang] || "").split(" ").filter(Boolean));
+    let out = "";
+    let i = 0;
+    const n = src.length;
+    while (i < n) {
+      let hit = null;
+      for (const rule of rules) {
+        rule.re.lastIndex = i;
+        const m = rule.re.exec(src);
+        if (m && m.index === i && m[0].length) {
+          hit = { text: m[0], cls: rule.cls };
+          break;
+        }
+      }
+      if (!hit) {
+        NUM_RE.lastIndex = i;
+        const num = NUM_RE.exec(src);
+        if (num && num.index === i) {
+          hit = { text: num[0], cls: "n" };
+        } else {
+          IDENT_RE.lastIndex = i;
+          const id = IDENT_RE.exec(src);
+          if (id && id.index === i) {
+            hit = { text: id[0], cls: classify(id[0], src, i + id[0].length, keywords) };
+          }
+        }
+      }
+      if (hit) {
+        out += `<span class="tok-${hit.cls}">${esc(hit.text)}</span>`;
+        i += hit.text.length;
+        continue;
+      }
+      const start = i;
+      while (i < n) {
+        const c = src.charCodeAt(i);
+        const interesting = c === 47 || c === 34 || c === 39 || c === 96 || c === 35 || c === 64 || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c === 95 || c === 36;
+        if (interesting) break;
+        i++;
+      }
+      if (i === start) i++;
+      out += esc(src.slice(start, i));
+    }
+    return out;
+  }
+  var LANG_LABEL = {
+    go: "Go",
+    js: "JavaScript",
+    py: "Python",
+    rs: "Rust",
+    sh: "Shell",
+    json: "JSON",
+    md: "Markdown",
+    css: "CSS",
+    html: "HTML",
+    yml: "YAML",
+    toml: "TOML",
+    sql: "SQL",
+    txt: "Plain text"
+  };
+  var PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'", "`": "`" };
+  var EditorCore = class {
+    constructor() {
+      this.ta = null;
+      this.hl = null;
+      this.gutter = null;
+      this.band = null;
+      this.guides = null;
+      this.minimap = null;
+      this.empty = null;
+      this.path = "";
+      this.lang = "txt";
+      this.wrap = false;
+      this.map = false;
+      this.theme = "dark";
+      this.zoom = 0;
+      this.pending = 0;
+    }
+    // attach wires the surface to the DOM. Safe to call once the page exists.
+    attach() {
+      this.ta = document.getElementById("edContent");
+      this.hl = document.getElementById("edHighlight");
+      this.gutter = document.getElementById("edGutter");
+      this.band = document.getElementById("edBand");
+      this.guides = document.getElementById("edGuides");
+      this.minimap = document.getElementById("edMinimap");
+      this.empty = document.getElementById("edEmptyBuffer");
+      if (!this.ta) return;
+      try {
+        const prefs = JSON.parse(localStorage.getItem("edPrefs") || "{}");
+        this.wrap = !!prefs.wrap;
+        this.map = !!prefs.map;
+        this.theme = prefs.theme === "light" ? "light" : "dark";
+        this.zoom = Number(prefs.zoom) || 0;
+      } catch {
+      }
+      this.ta.setAttribute("wrap", this.wrap ? "soft" : "off");
+      this.applyZoom();
+      this.applyMap();
+      this.applyTheme();
+      this.ta.addEventListener("input", () => this.schedulePaint());
+      this.ta.addEventListener("scroll", () => this.syncScroll());
+      for (const ev of ["keyup", "click", "select", "focus"]) {
+        this.ta.addEventListener(ev, () => this.updateStatus());
+      }
+      this.ta.addEventListener("keydown", (e) => this.onKeyDown(e));
+      if (this.gutter) {
+        this.gutter.addEventListener("click", (e) => {
+          const line = this.lineAt(e);
+          if (line) this.gotoLine(line);
+        });
+      }
+      document.getElementById("edStWrap")?.addEventListener("click", () => this.toggleWrap());
+      document.getElementById("edStZoom")?.addEventListener("click", () => this.zoomBy(1));
+      document.getElementById("edStZen")?.addEventListener("click", () => this.toggleZen());
+      document.getElementById("edStPos")?.addEventListener("click", () => this.promptLine());
+      document.getElementById("edStMap")?.addEventListener("click", () => this.toggleMap());
+      document.getElementById("edStTheme")?.addEventListener("click", () => this.toggleTheme());
+      if (this.minimap) {
+        this.minimap.addEventListener("click", (e) => {
+          const rect = this.minimap.getBoundingClientRect();
+          const frac = (e.clientY - rect.top) / rect.height;
+          if (this.ta) {
+            const max = this.ta.scrollHeight - this.ta.clientHeight;
+            this.ta.scrollTop = Math.max(0, frac * max);
+            this.syncScroll();
+          }
+        });
+      }
+      this.paint();
+    }
+    // setFile records which file is in the buffer, so the highlighting and the
+    // status bar know what they are looking at.
+    setFile(path) {
+      this.path = String(path || "");
+      this.lang = langForPath(this.path);
+      if (this.empty) this.empty.style.display = this.path ? "none" : "";
+      this.paint();
+    }
+    // ---- painting ----------------------------------------------------------
+    paint() {
+      if (!this.ta || !this.hl) return;
+      const text = this.ta.value;
+      let html = highlight(text, this.lang);
+      const pair = this.matchBracket(text, this.ta.selectionStart ?? 0);
+      if (pair) html = this.markBrackets(html, text, pair);
+      this.hl.innerHTML = html;
+      this.paintGutter(text);
+      this.paintGuides(text);
+      this.paintMinimap(text);
+      this.updateStatus();
+      this.syncScroll();
+    }
+    // matchBracket finds the bracket pair around pos. Returns {open, close} as
+    // character offsets, or null. Only brackets that are actually paired are
+    // reported — an unmatched "(" paints nothing.
+    matchBracket(text, pos) {
+      const OPEN = "([{", CLOSE = ")]}";
+      const c = text[pos];
+      if (OPEN.includes(c)) {
+        const close = this.findClose(text, pos, c);
+        return close >= 0 ? { open: pos, close } : null;
+      }
+      if (CLOSE.includes(c)) {
+        const open = this.findOpen(text, pos, c);
+        return open >= 0 ? { open, close: pos } : null;
+      }
+      const prev = text[pos - 1];
+      if (prev && OPEN.includes(prev)) {
+        const close = this.findClose(text, pos - 1, prev);
+        return close >= 0 ? { open: pos - 1, close } : null;
+      }
+      const next = text[pos];
+      if (next && CLOSE.includes(next)) {
+        const open = this.findOpen(text, pos, next);
+        return open >= 0 ? { open, close: pos } : null;
+      }
+      return null;
+    }
+    findClose(text, i, open) {
+      const map = { "(": ")", "[": "]", "{": "}" };
+      let depth = 0;
+      for (let j = i; j < text.length; j++) {
+        const ch = text[j];
+        if (ch === open) depth++;
+        else if (ch === map[open]) {
+          depth--;
+          if (depth === 0) return j;
+        }
+      }
+      return -1;
+    }
+    findOpen(text, i, close) {
+      const map = { ")": "(", "]": "[", "}": "{" };
+      let depth = 0;
+      for (let j = i; j >= 0; j--) {
+        const ch = text[j];
+        if (ch === close) depth++;
+        else if (ch === map[close]) {
+          depth--;
+          if (depth === 0) return j;
+        }
+      }
+      return -1;
+    }
+    // markBrackets wraps the two matched brackets in the highlight HTML with a
+    // span so they render with the bracket-match colour.
+    markBrackets(html, text, pair) {
+      let out = "";
+      let ti = 0;
+      let inTag = false;
+      for (let i = 0; i < html.length; i++) {
+        const ch = html[i];
+        if (inTag) {
+          out += ch;
+          if (ch === ">") inTag = false;
+          continue;
+        }
+        if (ch === "<") {
+          inTag = true;
+          out += ch;
+          continue;
+        }
+        if (ch === "&") {
+          const semi = html.indexOf(";", i);
+          out += html.slice(i, semi + 1);
+          i = semi;
+          ti++;
+          continue;
+        }
+        const isOpen = ti === pair.open;
+        const isClose = ti === pair.close;
+        if (isOpen || isClose) {
+          out += `<span class="tok-bracket">${ch}</span>`;
+        } else {
+          out += ch;
+        }
+        ti++;
+      }
+      return out;
+    }
+    schedulePaint() {
+      if (this.pending) return;
+      this.pending = requestAnimationFrame(() => {
+        this.pending = 0;
+        this.paint();
+      });
+    }
+    paintGutter(text) {
+      if (!this.gutter) return;
+      const lines = text.split("\n").length;
+      const buf = new Array(lines);
+      for (let i = 0; i < lines; i++) buf[i] = String(i + 1);
+      this.gutter.textContent = buf.join("\n");
+    }
+    // paintGuides draws vertical indent guides at every indentation level, so
+    // block structure is visible without a language server. Guides sit in
+    // their own layer under the highlight, aligned to the same metrics.
+    paintGuides(text) {
+      if (!this.guides) return;
+      if (this.wrap) {
+        this.guides.style.display = "none";
+        return;
+      }
+      const lh = this.lineHeight();
+      const fs = parseFloat(getComputedStyle(this.ta).fontSize) || 12.5;
+      const tab = 2 * fs * 0.6;
+      const padX = this.padX();
+      const lines = text.split("\n");
+      const stops = /* @__PURE__ */ new Set();
+      for (const ln of lines) {
+        let col = 0;
+        for (const ch of ln) {
+          if (ch === " ") col++;
+          else if (ch === "	") col += 2;
+          else break;
+        }
+        for (let level = 2; level <= col; level += 2) stops.add(level);
+      }
+      if (!stops.size) {
+        this.guides.style.display = "none";
+        return;
+      }
+      this.guides.style.display = "block";
+      let html = "";
+      for (const level of stops) {
+        const x = padX + level * tab - 1;
+        html += `<div class="ed-guide" style="left:${x}px"></div>`;
+      }
+      this.guides.innerHTML = html;
+    }
+    padX() {
+      if (!this.ta) return 12;
+      return parseFloat(getComputedStyle(this.ta).paddingLeft) || 12;
+    }
+    // paintMinimap renders a one-pixel-per-line overview of the buffer on a
+    // canvas. Lines are colour-coded by rough token class so the shape of the
+    // file is readable at a glance.
+    paintMinimap(text) {
+      if (!this.minimap || !this.map) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = this.minimap.clientWidth || 60;
+      const h = this.minimap.clientHeight || 120;
+      this.minimap.width = Math.round(w * dpr);
+      this.minimap.height = Math.round(h * dpr);
+      const ctx2 = this.minimap.getContext("2d");
+      ctx2.scale(dpr, dpr);
+      ctx2.clearRect(0, 0, w, h);
+      const lines = text.split("\n");
+      const lh = h / Math.max(1, lines.length);
+      const css = getComputedStyle(this.ta);
+      const fg = css.color || "#f7f8f8";
+      const acc = getComputedStyle(document.documentElement).getPropertyValue("--acc-2").trim() || "#7c9bff";
+      const ok = getComputedStyle(document.documentElement).getPropertyValue("--ok").trim() || "#4ee6a8";
+      ctx2.fillStyle = fg;
+      for (let i = 0; i < lines.length; i++) {
+        const y = i * lh;
+        const ln = lines[i];
+        const trimmed = ln.trimStart();
+        if (!trimmed) continue;
+        const indent = ln.length - trimmed.length;
+        let color = fg;
+        if (/^\s*(func|def|class|type|struct|impl|fn|interface|const|var)\b/.test(ln)) color = acc;
+        else if (/^\s*(\/\/|#|<!--|--|\/\*)/.test(ln)) color = ok;
+        else if (indent > 0) color = fg;
+        ctx2.fillStyle = color;
+        ctx2.globalAlpha = indent > 0 ? 0.7 : 1;
+        ctx2.fillRect(0, y, w, Math.max(1, lh));
+        ctx2.globalAlpha = 1;
+      }
+      if (this.ta) {
+        const frac = this.ta.scrollTop / Math.max(1, this.ta.scrollHeight - this.ta.clientHeight);
+        const vh = this.ta.clientHeight / Math.max(1, this.ta.scrollHeight) * h;
+        ctx2.fillStyle = "rgba(122,162,255,.18)";
+        ctx2.fillRect(0, frac * (h - vh), w, vh);
+      }
+    }
+    syncScroll() {
+      if (!this.ta) return;
+      if (this.hl) {
+        this.hl.scrollTop = this.ta.scrollTop;
+        this.hl.scrollLeft = this.ta.scrollLeft;
+      }
+      if (this.gutter) this.gutter.scrollTop = this.ta.scrollTop;
+      this.updateBand(this.currentLine());
+    }
+    lineHeight() {
+      if (!this.ta) return 20;
+      const lh = parseFloat(getComputedStyle(this.ta).lineHeight);
+      return Number.isFinite(lh) && lh > 0 ? lh : 20;
+    }
+    padTop() {
+      if (!this.ta) return 0;
+      return parseFloat(getComputedStyle(this.ta).paddingTop) || 0;
+    }
+    updateBand(line) {
+      if (!this.band || !this.ta) return;
+      if (this.wrap) {
+        this.band.style.display = "none";
+        return;
+      }
+      const lh = this.lineHeight();
+      this.band.style.display = "block";
+      this.band.style.top = `${this.padTop() + (line - 1) * lh - this.ta.scrollTop}px`;
+      this.band.style.height = `${lh}px`;
+    }
+    // ---- status ------------------------------------------------------------
+    updateStatus() {
+      if (!this.ta) return;
+      const ta = this.ta;
+      const pos = ta.selectionStart ?? 0;
+      const before = ta.value.slice(0, pos);
+      const line = before.split("\n").length;
+      const col = pos - before.lastIndexOf("\n");
+      const set = (id, text) => {
+        const el2 = document.getElementById(id);
+        if (el2) el2.textContent = text;
+      };
+      set("edStPos", `Ln ${line}, Col ${col}`);
+      set("edStLines", `${ta.value.split("\n").length} lines`);
+      set("edStLang", LANG_LABEL[this.lang] || this.lang.toUpperCase());
+      set("edStPath", this.path ? this.path.split("/").pop() : "no file");
+      const pathEl = document.getElementById("edStPath");
+      if (pathEl) pathEl.title = this.path || "no file";
+      const sel = (ta.selectionEnd ?? 0) - pos;
+      const selEl = document.getElementById("edStSel");
+      if (selEl) {
+        selEl.hidden = sel <= 0;
+        if (sel > 0) {
+          const selected = ta.value.slice(pos, ta.selectionEnd ?? pos);
+          const words = (selected.match(/\S+/g) || []).length;
+          selEl.textContent = `${sel} chars \xB7 ${words} words`;
+        } else {
+          selEl.textContent = "";
+        }
+      }
+      this.updateBand(line);
+    }
+    currentLine() {
+      if (!this.ta) return 1;
+      return this.ta.value.slice(0, this.ta.selectionStart ?? 0).split("\n").length;
+    }
+    // ---- navigation --------------------------------------------------------
+    gotoLine(n) {
+      if (!this.ta) return;
+      const lines = this.ta.value.split("\n");
+      const idx = Math.max(0, Math.min(lines.length, n) - 1);
+      let pos = 0;
+      for (let i = 0; i < idx; i++) pos += lines[i].length + 1;
+      this.ta.focus();
+      this.ta.setSelectionRange(pos, pos + lines[idx].length);
+      const lh = this.lineHeight();
+      this.ta.scrollTop = Math.max(0, idx * lh - ta_height(this.ta) / 2 + lh / 2);
+      this.updateStatus();
+    }
+    lineAt(ev) {
+      if (!this.gutter) return 0;
+      const rect = this.gutter.getBoundingClientRect();
+      const y = ev.clientY - rect.top + this.gutter.scrollTop - this.padTop();
+      return Math.max(1, Math.floor(y / this.lineHeight()) + 1);
+    }
+    // promptLine turns the position readout into a one-field editor, so "go to
+    // line" is a keystroke away instead of a dialog.
+    promptLine() {
+      const btn = document.getElementById("edStPos");
+      if (!btn || !this.ta) return;
+      const input = document.createElement("input");
+      input.className = "ed-st-input";
+      input.type = "text";
+      input.value = String(this.currentLine());
+      input.setAttribute("aria-label", "go to line");
+      btn.replaceWith(input);
+      input.focus();
+      input.select();
+      const done = (go) => {
+        const n = parseInt(input.value, 10);
+        input.replaceWith(btn);
+        if (go && n > 0) this.gotoLine(n);
+        else this.updateStatus();
+      };
+      input.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          done(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          done(false);
+        }
+      });
+      input.addEventListener("blur", () => done(false));
+    }
+    // ---- editing -----------------------------------------------------------
+    onKeyDown(e) {
+      const ta = this.ta;
+      if (!ta) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (e.key === "Escape" && this.helpRoot) {
+        e.preventDefault();
+        this.closeHelp();
+        return;
+      }
+      if (mod && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        this.zoomBy(1);
+        return;
+      }
+      if (mod && e.key === "-") {
+        e.preventDefault();
+        this.zoomBy(-1);
+        return;
+      }
+      if (mod && e.key === "0") {
+        e.preventDefault();
+        this.zoomBy(-this.zoom);
+        return;
+      }
+      if (e.altKey && !mod && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        this.toggleWrap();
+        return;
+      }
+      if (mod && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        this.promptLine();
+        return;
+      }
+      if (mod && e.key === "/") {
+        e.preventDefault();
+        this.toggleComment();
+        return;
+      }
+      if (mod && e.shiftKey && e.key === "K") {
+        e.preventDefault();
+        this.deleteLines();
+        return;
+      }
+      if (mod && e.key === "D") {
+        e.preventDefault();
+        this.selectWord();
+        return;
+      }
+      if (mod && e.shiftKey && e.key === "L") {
+        e.preventDefault();
+        this.selectAllOccurrences();
+        return;
+      }
+      if (e.altKey && !mod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        e.preventDefault();
+        this.moveLine(e.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (e.altKey && e.shiftKey && !mod && e.key === "ArrowDown") {
+        e.preventDefault();
+        this.duplicateLine();
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        this.indent(e.shiftKey);
+        return;
+      }
+      if (e.key === "Enter" && ta.selectionStart === ta.selectionEnd) {
+        e.preventDefault();
+        this.newline();
+        return;
+      }
+      if (!mod && PAIRS[e.key]) {
+        const close = PAIRS[e.key];
+        const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+        if (sel) {
+          e.preventDefault();
+          this.replaceSelection(e.key + sel + close, 1);
+        } else if (!/[\w"'`]/.test(ta.value[ta.selectionStart] || "")) {
+          e.preventDefault();
+          this.replaceSelection(e.key + close, 1);
+        }
+        return;
+      }
+      if (!mod && (e.key === ")" || e.key === "]" || e.key === "}" || e.key === '"' || e.key === "'" || e.key === "`")) {
+        if (ta.selectionStart === ta.selectionEnd && ta.value[ta.selectionStart] === e.key) {
+          e.preventDefault();
+          ta.setSelectionRange(ta.selectionStart + 1, ta.selectionStart + 1);
+          this.updateStatus();
+        }
+        return;
+      }
+      if (e.key === "Backspace" && ta.selectionStart === ta.selectionEnd && ta.selectionStart > 0) {
+        const s = ta.selectionStart;
+        if (PAIRS[ta.value[s - 1]] && PAIRS[ta.value[s - 1]] === ta.value[s]) {
+          e.preventDefault();
+          ta.setRangeText("", s - 1, s + 1, "end");
+          this.afterEdit();
+        }
+      }
+    }
+    // indent adds or removes two spaces on every line the selection touches.
+    indent(outdent) {
+      const ta = this.ta;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const value = ta.value;
+      const from = value.lastIndexOf("\n", start - 1) + 1;
+      const stop = value.indexOf("\n", end);
+      const to = stop === -1 ? value.length : stop;
+      const block = value.slice(from, to);
+      const next = block.split("\n").map((ln) => {
+        if (outdent) return ln.replace(/^( {1,2}|\t)/, "");
+        return ln.trim() === "" ? ln : "  " + ln;
+      }).join("\n");
+      ta.setRangeText(next, from, to, "preserve");
+      ta.setSelectionRange(from, to + (next.length - block.length));
+      this.afterEdit();
+    }
+    // newline keeps the indentation of the current line and adds one level
+    // after an opening bracket.
+    newline() {
+      const ta = this.ta;
+      const pos = ta.selectionStart;
+      const value = ta.value;
+      const from = value.lastIndexOf("\n", pos - 1) + 1;
+      const line = value.slice(from, pos);
+      const indent = (line.match(/^[ \t]*/) || [""])[0];
+      const opens = /[{[(]\s*$/.test(line);
+      const closes = /^[}\])]/.test(value[pos] || "");
+      if (opens && closes) {
+        const ins = `
+${indent}  
+${indent}`;
+        ta.setRangeText(ins, pos, pos, "end");
+        const caret = pos + 1 + indent.length + 2;
+        ta.setSelectionRange(caret, caret);
+      } else {
+        ta.setRangeText(`
+${indent}${opens ? "  " : ""}`, pos, pos, "end");
+      }
+      this.afterEdit();
+    }
+    replaceSelection(text, caret) {
+      const ta = this.ta;
+      const from = ta.selectionStart;
+      ta.setRangeText(text, from, ta.selectionEnd, "end");
+      const pos = from + (caret ?? text.length);
+      ta.setSelectionRange(pos, pos);
+      this.afterEdit();
+    }
+    afterEdit() {
+      this.ta.dispatchEvent(new Event("input", { bubbles: true }));
+      this.schedulePaint();
+    }
+    // ---- line operations ---------------------------------------------------
+    // lineBounds returns [from, to] covering every line the selection touches.
+    lineBounds() {
+      const ta = this.ta;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const value = ta.value;
+      const from = value.lastIndexOf("\n", start - 1) + 1;
+      const stop = value.indexOf("\n", end);
+      const to = stop === -1 ? value.length : stop;
+      return [from, to];
+    }
+    // toggleComment comments or uncomments every line the selection touches.
+    // The comment marker follows the language; a line that is already fully
+    // commented is uncommented instead.
+    toggleComment() {
+      const ta = this.ta;
+      const marker = this.commentMarker();
+      if (!marker) return;
+      const [from, to] = this.lineBounds();
+      const block = ta.value.slice(from, to);
+      const lines = block.split("\n");
+      const allCommented = lines.every((ln) => ln.trim().startsWith(marker));
+      const next = lines.map((ln) => {
+        if (allCommented) {
+          const i = ln.indexOf(marker);
+          return i >= 0 ? ln.slice(0, i) + ln.slice(i + marker.length) : ln;
+        }
+        return marker + " " + ln;
+      }).join("\n");
+      ta.setRangeText(next, from, to, "preserve");
+      this.afterEdit();
+    }
+    commentMarker() {
+      switch (this.lang) {
+        case "py":
+        case "sh":
+        case "yml":
+        case "toml":
+          return "#";
+        case "html":
+          return "<!-- -->";
+        default:
+          return "//";
+      }
+    }
+    // deleteLines removes every line the selection touches and puts the caret
+    // at the start of the next line.
+    deleteLines() {
+      const ta = this.ta;
+      const [from, to] = this.lineBounds();
+      let next = to;
+      if (to < ta.value.length && ta.value[to] === "\n") next = to + 1;
+      ta.setRangeText("", from, next, "start");
+      this.afterEdit();
+    }
+    // moveLine shifts the selected lines up or down by one.
+    moveLine(dir) {
+      const ta = this.ta;
+      const [from, to] = this.lineBounds();
+      const value = ta.value;
+      const lines = value.split("\n");
+      const startLine = value.slice(0, from).split("\n").length - 1;
+      const endLine = value.slice(0, to).split("\n").length - 1;
+      const target = dir > 0 ? endLine + 1 : startLine - 1;
+      if (target < 0 || target >= lines.length) return;
+      const block = lines.slice(startLine, endLine + 1);
+      lines.splice(startLine, block.length);
+      lines.splice(target, 0, ...block);
+      const next = lines.join("\n");
+      ta.value = next;
+      const newStartLine = dir > 0 ? startLine + 1 : startLine - 1;
+      let acc = 0;
+      for (let i = 0; i < newStartLine; i++) acc += lines[i].length + 1;
+      const newTo = acc + block.join("\n").length;
+      ta.setSelectionRange(acc, newTo);
+      this.afterEdit();
+    }
+    // duplicateLine copies every selected line below itself and keeps the
+    // selection on the copy.
+    duplicateLine() {
+      const ta = this.ta;
+      const [from, to] = this.lineBounds();
+      const block = ta.value.slice(from, to);
+      const ins = block + "\n";
+      ta.setRangeText(ins, to, to, "end");
+      ta.setSelectionRange(to + 1, to + 1 + block.length);
+      this.afterEdit();
+    }
+    // ---- multi-cursor-ish selection ---------------------------------------
+    // selectWord selects the word under the caret; pressing ⌘D again extends
+    // to the next occurrence of that word.
+    selectWord() {
+      const ta = this.ta;
+      const pos = ta.selectionStart;
+      const value = ta.value;
+      if (ta.selectionStart !== ta.selectionEnd) {
+        const sel = value.slice(ta.selectionStart, ta.selectionEnd);
+        if (!/\s/.test(sel)) {
+          const from = value.indexOf(sel, ta.selectionEnd);
+          if (from >= 0) {
+            ta.setSelectionRange(from, from + sel.length);
+            this.updateStatus();
+            return;
+          }
+        }
+      }
+      const re = /[A-Za-z0-9_$]+/g;
+      let m;
+      while (m = re.exec(value)) {
+        if (m.index <= pos && pos <= m.index + m[0].length) {
+          ta.setSelectionRange(m.index, m.index + m[0].length);
+          this.updateStatus();
+          return;
+        }
+      }
+    }
+    // selectAllOccurrences selects every occurrence of the current word.
+    selectAllOccurrences() {
+      const ta = this.ta;
+      const value = ta.value;
+      let word = "";
+      if (ta.selectionStart !== ta.selectionEnd) {
+        word = value.slice(ta.selectionStart, ta.selectionEnd);
+      } else {
+        const pos = ta.selectionStart;
+        const re = /[A-Za-z0-9_$]+/g;
+        let m;
+        while (m = re.exec(value)) {
+          if (m.index <= pos && pos <= m.index + m[0].length) {
+            word = m[0];
+            break;
+          }
+        }
+      }
+      if (!word) return;
+      const first = value.indexOf(word);
+      if (first >= 0) {
+        ta.setSelectionRange(first, first + word.length);
+        this.updateStatus();
+        const n = value.split(word).length - 1;
+        if (n > 1) {
+          const selEl = document.getElementById("edStSel");
+          if (selEl) {
+            selEl.hidden = false;
+            selEl.textContent = `${n} occurrences`;
+          }
+        }
+      }
+    }
+    // ---- view preferences --------------------------------------------------
+    toggleWrap() {
+      this.wrap = !this.wrap;
+      this.ta.setAttribute("wrap", this.wrap ? "soft" : "off");
+      this.savePrefs();
+      const btn = document.getElementById("edStWrap");
+      if (btn) btn.textContent = this.wrap ? "wrap on" : "wrap off";
+      this.paint();
+    }
+    toggleMap() {
+      this.map = !this.map;
+      this.savePrefs();
+      this.applyMap();
+      this.paint();
+    }
+    applyMap() {
+      const btn = document.getElementById("edStMap");
+      if (btn) btn.textContent = this.map ? "map on" : "map off";
+      if (this.minimap) this.minimap.style.display = this.map ? "block" : "none";
+    }
+    toggleTheme() {
+      this.theme = this.theme === "light" ? "dark" : "light";
+      this.savePrefs();
+      this.applyTheme();
+      this.paint();
+    }
+    applyTheme() {
+      document.documentElement.setAttribute("data-theme", this.theme);
+      const btn = document.getElementById("edStTheme");
+      if (btn) btn.textContent = this.theme;
+    }
+    zoomBy(step) {
+      this.zoom = Math.max(-3, Math.min(6, this.zoom + step));
+      this.applyZoom();
+      this.savePrefs();
+      this.paint();
+    }
+    applyZoom() {
+      const editor = document.getElementById("edEditor");
+      if (editor) editor.style.setProperty("--ed-font-size", `${12.5 + this.zoom}px`);
+      const btn = document.getElementById("edStZoom");
+      if (btn) btn.textContent = `${Math.round((12.5 + this.zoom) / 12.5 * 100)}%`;
+    }
+    toggleZen() {
+      const panel = document.getElementById("panel-editor");
+      if (!panel) return;
+      const on = panel.classList.toggle("zen");
+      document.body.classList.toggle("zen", on);
+      const btn = document.getElementById("edStZen");
+      if (btn) {
+        btn.textContent = on ? "exit zen" : "zen";
+        btn.classList.toggle("on", on);
+      }
+      if (this.ta) this.ta.focus();
+    }
+    savePrefs() {
+      try {
+        localStorage.setItem("edPrefs", JSON.stringify({ wrap: this.wrap, zoom: this.zoom, map: this.map, theme: this.theme }));
+      } catch {
+      }
+    }
+    // showHelp overlays the keyboard map so a new user never has to guess.
+    showHelp() {
+      if (this.helpRoot) {
+        this.closeHelp();
+        return;
+      }
+      const root = document.createElement("div");
+      root.className = "ed-help-root";
+      const groups = [
+        ["Cursor & file", [
+          ["\u2318P", "open file"],
+          ["\u2318S", "save"],
+          ["\u2318W", "close tab"],
+          ["\u2318\u21E7F", "search workspace"],
+          ["\u2318G", "go to line"]
+        ]],
+        ["Edit", [
+          ["\u2318/", "toggle line comment"],
+          ["\u2325\u21E7\u2193", "duplicate line"],
+          ["\u2325\u2191 / \u2325\u2193", "move line"],
+          ["\u2318\u21E7K", "delete line"],
+          ["\u2318D", "select word"],
+          ["\u2318\u21E7L", "select all occurrences"]
+        ]],
+        ["View", [
+          ["\u2318+ / \u2318\u2212", "zoom"],
+          ["\u2325Z", "word wrap"],
+          ["\u2318\u2325Z", "zen mode"],
+          ["Tab", "indent"],
+          ["\u21E7Tab", "outdent"],
+          ["\u21B5", "smart newline"]
+        ]]
+      ];
+      root.innerHTML = `<div class="ed-help" role="dialog" aria-label="keyboard shortcuts">
+      <div class="ed-help-head"><span>Keyboard shortcuts</span><button type="button" class="ghost ed-help-close" title="close">\u2715</button></div>
+      <div class="ed-help-body">${groups.map((g) => `
+        <div class="ed-help-group"><div class="ed-help-group-title">${g[0]}</div>
+        ${g[1].map(([k, d]) => `<div class="ed-help-row"><kbd>${k}</kbd><span>${d}</span></div>`).join("")}
+        </div>`).join("")}
+      </div>
+      <div class="ed-help-foot"><span>press <b>esc</b> to close</span></div>
+    </div>`;
+      root.addEventListener("mousedown", (e) => {
+        if (e.target === root) this.closeHelp();
+      });
+      document.body.appendChild(root);
+      this.helpRoot = root;
+      root.querySelector(".ed-help-close").onclick = () => this.closeHelp();
+    }
+    closeHelp() {
+      if (this.helpRoot) {
+        this.helpRoot.remove();
+        this.helpRoot = null;
+      }
+    }
+  };
+  function ta_height(ta) {
+    return ta.clientHeight || 0;
+  }
+  var editorCore = new EditorCore();
+
+  // src/power.js
+  function fuzzy(needle, hay) {
+    needle = needle.toLowerCase();
+    hay = String(hay).toLowerCase();
+    if (!needle) return 0;
+    let score = 0, ni = 0, streak = 0;
+    for (let i = 0; i < hay.length && ni < needle.length; i++) {
+      if (hay[i] === needle[ni]) {
+        ni++;
+        streak++;
+        score += 1 + streak;
+        if (i === 0 || " /-_.:".includes(hay[i - 1])) score += 5;
+      } else streak = 0;
+    }
+    return ni === needle.length ? score : -1;
+  }
+  var Palette = class {
+    // commands: [{label, hint, icon, run}]
+    constructor(opts) {
+      this.commands = opts.commands || [];
+      this.onClose = opts.onClose || (() => {
+      });
+      this.sel = 0;
+      this.results = [];
+      this.build();
+    }
+    build() {
+      this.root = document.createElement("div");
+      this.root.className = "palette-root";
+      this.root.innerHTML = `
+      <div class="palette" role="dialog" aria-label="command palette">
+        <div class="palette-in">
+          <span class="p-ico">\u2318</span>
+          <input class="p-input" placeholder="type a command\u2026" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="p-list"></div>
+        <div class="p-foot">
+          <span><b>\u2191\u2193</b> navigate</span><span><b>\u21B5</b> run</span><span><b>esc</b> close</span>
+        </div>
+      </div>`;
+      document.body.appendChild(this.root);
+      this.input = this.root.querySelector(".p-input");
+      this.list = this.root.querySelector(".p-list");
+      this.input.addEventListener("input", () => this.search(this.input.value));
+      this.input.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          this.move(1);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          this.move(-1);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          this.exec();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          this.close();
+        }
+      });
+      this.root.addEventListener("mousedown", (e) => {
+        if (e.target === this.root) this.close();
+      });
+      this.search("");
+      this.input.focus();
+    }
+    setCommands(cmds) {
+      this.commands = cmds;
+      this.search(this.input.value);
+    }
+    search(q) {
+      const scored = this.commands.map((c) => ({ c, s: fuzzy(q, c.label + " " + (c.hint || "")) })).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).slice(0, 12);
+      this.results = scored.map((x) => x.c);
+      this.sel = 0;
+      this.render();
+    }
+    render() {
+      this.list.innerHTML = this.results.map((c, i) => `
+      <button type="button" class="p-item ${i === this.sel ? "sel" : ""}" data-i="${i}">
+        <span class="p-item-ico">${c.icon || "\u203A"}</span>
+        <span class="p-item-label">${c.label}</span>
+        ${c.hint ? `<span class="p-item-hint">${c.hint}</span>` : ""}
+      </button>`).join("") || `<div class="p-empty">nothing matches \u2014 try "run", "deploy", "demo"</div>`;
+      this.list.querySelectorAll("[data-i]").forEach((btn) => {
+        btn.onclick = () => {
+          this.sel = +btn.dataset.i;
+          this.exec();
+        };
+        btn.onmouseenter = () => {
+          this.sel = +btn.dataset.i;
+          this.render();
+        };
+      });
+      const sel = this.list.querySelector(".sel");
+      if (sel) sel.scrollIntoView({ block: "nearest" });
+    }
+    move(d) {
+      if (!this.results.length) return;
+      this.sel = (this.sel + d + this.results.length) % this.results.length;
+      this.render();
+    }
+    exec() {
+      const c = this.results[this.sel];
+      if (!c) return;
+      this.close();
+      c.run();
+    }
+    close() {
+      if (this.root) {
+        this.root.remove();
+        this.root = null;
+      }
+      this.onClose();
+    }
+  };
+  function boot() {
+    if (localStorage.getItem("flobot-booted")) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const el2 = document.createElement("div");
+    el2.className = "boot";
+    const lines = [
+      "flobot v1 \xB7 standalone \xB7 loopback only",
+      "loading roster \u2026",
+      "mounting skills library \u2026",
+      "arming routines \u2026",
+      "probing model routes \u2026",
+      "crew online."
+    ];
+    el2.innerHTML = `<div class="boot-in"><pre class="boot-lines"></pre></div>`;
+    document.body.appendChild(el2);
+    const pre = el2.querySelector(".boot-lines");
+    let i = 0;
+    const step = () => {
+      if (i < lines.length) {
+        pre.textContent += lines[i++] + "\n";
+        setTimeout(step, 160);
+      } else {
+        setTimeout(() => {
+          el2.classList.add("out");
+          localStorage.setItem("flobot-booted", "1");
+          setTimeout(() => el2.remove(), 500);
+        }, 350);
+      }
+    };
+    step();
+  }
+  function confetti() {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const cv = document.createElement("canvas");
+    cv.className = "confetti-cv";
+    cv.width = innerWidth;
+    cv.height = innerHeight;
+    document.body.appendChild(cv);
+    const ctx2 = cv.getContext("2d");
+    const colors = ["#6366f1", "#22d3ee", "#4ee6a8", "#e879f9", "#fbbf24"];
+    const parts = Array.from({ length: 120 }, () => ({
+      x: Math.random() * cv.width,
+      y: -20 - Math.random() * 80,
+      vx: (Math.random() - 0.5) * 3,
+      vy: 2 + Math.random() * 3,
+      w: 6 + Math.random() * 6,
+      h: 3 + Math.random() * 4,
+      rot: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 0.3,
+      c: colors[Math.random() * colors.length | 0]
+    }));
+    const t0 = performance.now();
+    const frame = (t) => {
+      const dt = t - t0;
+      ctx2.clearRect(0, 0, cv.width, cv.height);
+      for (const p of parts) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.rot += p.vr;
+        ctx2.save();
+        ctx2.translate(p.x, p.y);
+        ctx2.rotate(p.rot);
+        ctx2.fillStyle = p.c;
+        ctx2.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx2.restore();
+      }
+      if (dt < 2200) requestAnimationFrame(frame);
+      else cv.remove();
+    };
+    requestAnimationFrame(frame);
+  }
+
   // src/ctx.js
   var $ = (id) => document.getElementById(id);
   var OUTLINE_RULES = {
@@ -70,7 +1269,15 @@
         b.textContent = seg;
         b.title = segs.slice(0, i + 1).join("/");
         if (isLast) {
-          b.onclick = () => toast4(safe3(segs.join("/")), "");
+          const full = segs.join("/");
+          b.onclick = async () => {
+            try {
+              await navigator.clipboard.writeText(full);
+              toast4("copied " + full, "ok");
+            } catch {
+              toast4(safe3(full), "");
+            }
+          };
         } else {
           const dir = segs.slice(0, i + 1).join("/");
           b.onclick = () => {
@@ -271,604 +1478,9 @@
     };
   }
 
-  // src/editor-core.js
-  // src/editor-core.js
-  //
-  // The Code Studio buffer stops being a bare <textarea>: a syntax-highlight
-  // layer and a line gutter are painted underneath it, and a status bar reports
-  // where the cursor is.
-  //
-  // The textarea keeps native selection, IME composition and undo — the layers
-  // are derived from its value, never the other way round. That way every
-  // existing feature (find/replace, save, the diff review) keeps working
-  // unchanged.
-  //
-  // No dependency: the tokenizer is a single pass over sticky regexes.
-
-  const LANG_BY_EXT = {
-    go: "go", js: "js", jsx: "js", mjs: "js", cjs: "js", ts: "js", tsx: "js",
-    py: "py", rs: "rs", sh: "sh", bash: "sh", zsh: "sh", json: "json",
-    md: "md", markdown: "md", css: "css", scss: "css", html: "html", htm: "html",
-    yml: "yml", yaml: "yml", toml: "toml", sql: "sql", txt: "txt",
-  };
-
-  // langForPath maps a file path to a highlighting language.
-  function langForPath(path) {
-    const m = /\.([A-Za-z0-9]+)$/.exec(String(path || ""));
-    if (!m) return "txt";
-    return LANG_BY_EXT[m[1].toLowerCase()] || "txt";
-  }
-
-  const KEYWORDS = {
-    go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var",
-    js: "async await break case catch class const continue default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch this throw try typeof var void while with yield true false null undefined",
-    py: "and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield True False None self",
-    rs: "as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self static struct super trait type unsafe use where while true false",
-    sh: "if then else elif fi case esac for while do done in function select until return local export source echo cd set unset exit",
-    sql: "select from where insert into values update set delete create table drop alter join left right inner outer on group by order having limit offset distinct",
-    json: "true false null",
-    toml: "true false",
-    css: "important media supports keyframes import charset font-face root",
-  };
-
-  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-  // buildRules returns the sticky-regex rules for a language, in priority
-  // order. Comments and strings come first so their contents are never
-  // mistaken for code.
-  function buildRules(lang) {
-    const rules = [];
-    const add = (src, cls) => rules.push({ re: new RegExp(src, "y"), cls });
-    const lineComment = "\\/\\/[^\\n]*";
-    const blockComment = "\\/\\*[\\s\\S]*?\\*\\/";
-    const dq = "\"(?:[^\"\\\\\\n]|\\\\.)*\"";
-    const sq = "'(?:[^'\\\\\\n]|\\\\.)*'";
-    switch (lang) {
-      case "py":
-        add("#[^\\n]*", "c");
-        add("\"\"\"[\\s\\S]*?\"\"\"", "s");
-        add(sq, "s");
-        add(dq, "s");
-        add("@[A-Za-z_][\\w.]*", "d");
-        break;
-      case "sh":
-        add("#[^\\n]*", "c");
-        add(dq, "s");
-        add("'[^']*'", "s");
-        break;
-      case "css":
-        add(blockComment, "c");
-        add(dq, "s");
-        add("'[^']*'", "s");
-        break;
-      case "html":
-        add("<!--[\\s\\S]*?-->", "c");
-        add(dq, "s");
-        add("'[^']*'", "s");
-        break;
-      case "yml":
-        add("#[^\\n]*", "c");
-        add(dq, "s");
-        add("'[^']*'", "s");
-        break;
-      case "md":
-        add("`[^`\\n]*`", "s");
-        break;
-      case "json":
-      case "toml":
-      case "sql":
-        add(lineComment, "c");
-        add(blockComment, "c");
-        add(dq, "s");
-        add(sq, "s");
-        break;
-      default:
-        add(lineComment, "c");
-        add(blockComment, "c");
-        add("`(?:[^`\\\\]|\\\\.)*`", "s");
-        add(dq, "s");
-        add(sq, "s");
-    }
-    return rules;
-  }
-
-  const RULE_CACHE = new Map();
-  function rulesFor(lang) {
-    if (!RULE_CACHE.has(lang)) RULE_CACHE.set(lang, buildRules(lang));
-    return RULE_CACHE.get(lang);
-  }
-
-  const NUM_RE = /\b\d[\w.]*/y;
-  const IDENT_RE = /[A-Za-z_$][\w$]*/y;
-
-  // classify decides what an identifier is: a keyword, a type, a call or plain
-  // text. The look-ahead is what turns `foo(` into a call.
-  function classify(word, text, end, keywords) {
-    if (keywords.has(word)) return "k";
-    if (/^[A-Z]/.test(word)) return "t";
-    let i = end;
-    while (i < text.length && (text[i] === " " || text[i] === "\t")) i++;
-    if (text[i] === "(") return "f";
-    if (text[end - 1] === "." || text[end] === ".") return "m";
-    return "i";
-  }
-
-  // highlightMd renders markdown line by line: headings, list bullets, inline
-  // code, emphasis and links.
-  function highlightMd(text) {
-    return text.split("\n").map(line => {
-      let out = esc(line);
-      if (/^\s{0,3}#{1,6}\s/.test(line)) return `<span class="tok-h">${out}</span>`;
-      out = out.replace(/^(\s*)([-*+]\s|\d+\.\s)/, (m, sp, bullet) => `${sp}<span class="tok-k">${bullet}</span>`);
-      out = out.replace(/`[^`]*`/g, m => `<span class="tok-s">${m}</span>`);
-      out = out.replace(/\*\*([^*]+)\*\*/g, (m, inner) => `<span class="tok-k">**${inner}**</span>`);
-      out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, (m, pre, inner) => `${pre}<span class="tok-i">*${inner}*</span>`);
-      out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => `<span class="tok-f">[${label}]</span><span class="tok-s">(${href})</span>`);
-      if (/^\s*&gt;|^\s*>/.test(line)) out = `<span class="tok-c">${out}</span>`;
-      return out;
-    }).join("\n");
-  }
-
-  // highlight turns source text into HTML with token spans. It is one pass:
-  // at every position the rules are tried in order, and a run of plain
-  // characters is copied without touching each one.
-  function highlight(text, lang) {
-    const src = String(text ?? "");
-    if (lang === "md") return highlightMd(src);
-    const rules = rulesFor(lang);
-    const keywords = new Set((KEYWORDS[lang] || "").split(" ").filter(Boolean));
-    let out = "";
-    let i = 0;
-    const n = src.length;
-    while (i < n) {
-      let hit = null;
-      for (const rule of rules) {
-        rule.re.lastIndex = i;
-        const m = rule.re.exec(src);
-        if (m && m.index === i && m[0].length) {
-          hit = { text: m[0], cls: rule.cls };
-          break;
-        }
-      }
-      if (!hit) {
-        NUM_RE.lastIndex = i;
-        const num = NUM_RE.exec(src);
-        if (num && num.index === i) {
-          hit = { text: num[0], cls: "n" };
-        } else {
-          IDENT_RE.lastIndex = i;
-          const id = IDENT_RE.exec(src);
-          if (id && id.index === i) {
-            hit = { text: id[0], cls: classify(id[0], src, i + id[0].length, keywords) };
-          }
-        }
-      }
-      if (hit) {
-        out += `<span class="tok-${hit.cls}">${esc(hit.text)}</span>`;
-        i += hit.text.length;
-        continue;
-      }
-      // Plain run: copy until a character that could start a token.
-      const start = i;
-      while (i < n) {
-        const c = src.charCodeAt(i);
-        const interesting =
-          c === 47 || c === 34 || c === 39 || c === 96 || c === 35 || c === 64 ||
-          (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
-          c === 95 || c === 36;
-        if (interesting) break;
-        i++;
-      }
-      if (i === start) i++;
-      out += esc(src.slice(start, i));
-    }
-    return out;
-  }
-
-  // ---- the editor surface ---------------------------------------------------
-
-  const LANG_LABEL = {
-    go: "Go", js: "JavaScript", py: "Python", rs: "Rust", sh: "Shell",
-    json: "JSON", md: "Markdown", css: "CSS", html: "HTML", yml: "YAML",
-    toml: "TOML", sql: "SQL", txt: "Plain text",
-  };
-
-  const PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'", "`": "`" };
-
-  // EditorCore owns the editor surface: the highlight layer, the gutter, the
-  // status bar, and the key handling a code buffer needs.
-  class EditorCore {
-    constructor() {
-      this.ta = null;
-      this.hl = null;
-      this.gutter = null;
-      this.band = null;
-      this.path = "";
-      this.lang = "txt";
-      this.wrap = false;
-      this.zoom = 0;
-      this.pending = 0;
-    }
-
-    // attach wires the surface to the DOM. Safe to call once the page exists.
-    attach() {
-      this.ta = document.getElementById("edContent");
-      this.hl = document.getElementById("edHighlight");
-      this.gutter = document.getElementById("edGutter");
-      this.band = document.getElementById("edBand");
-      if (!this.ta) return;
-      try {
-        const prefs = JSON.parse(localStorage.getItem("edPrefs") || "{}");
-        this.wrap = !!prefs.wrap;
-        this.zoom = Number(prefs.zoom) || 0;
-      } catch {
-        // no prefs yet — the defaults are fine
-      }
-      this.ta.setAttribute("wrap", this.wrap ? "soft" : "off");
-      this.applyZoom();
-      this.ta.addEventListener("input", () => this.schedulePaint());
-      this.ta.addEventListener("scroll", () => this.syncScroll());
-      for (const ev of ["keyup", "click", "select", "focus"]) {
-        this.ta.addEventListener(ev, () => this.updateStatus());
-      }
-      this.ta.addEventListener("keydown", (e) => this.onKeyDown(e));
-      if (this.gutter) {
-        this.gutter.addEventListener("click", (e) => {
-          const line = this.lineAt(e);
-          if (line) this.gotoLine(line);
-        });
-      }
-      document.getElementById("edStWrap")?.addEventListener("click", () => this.toggleWrap());
-      document.getElementById("edStZoom")?.addEventListener("click", () => this.zoomBy(1));
-      document.getElementById("edStZen")?.addEventListener("click", () => this.toggleZen());
-      document.getElementById("edStPos")?.addEventListener("click", () => this.promptLine());
-      this.paint();
-    }
-
-    // setFile records which file is in the buffer, so the highlighting and the
-    // status bar know what they are looking at.
-    setFile(path) {
-      this.path = String(path || "");
-      this.lang = langForPath(this.path);
-      this.paint();
-    }
-
-    // ---- painting ----------------------------------------------------------
-
-    paint() {
-      if (!this.ta || !this.hl) return;
-      const text = this.ta.value;
-      this.hl.innerHTML = highlight(text, this.lang);
-      this.paintGutter(text);
-      this.updateStatus();
-      this.syncScroll();
-    }
-
-    schedulePaint() {
-      if (this.pending) return;
-      this.pending = requestAnimationFrame(() => {
-        this.pending = 0;
-        this.paint();
-      });
-    }
-
-    paintGutter(text) {
-      if (!this.gutter) return;
-      const lines = text.split("\n").length;
-      const buf = new Array(lines);
-      for (let i = 0; i < lines; i++) buf[i] = String(i + 1);
-      this.gutter.textContent = buf.join("\n");
-    }
-
-    syncScroll() {
-      if (!this.ta) return;
-      if (this.hl) {
-        this.hl.scrollTop = this.ta.scrollTop;
-        this.hl.scrollLeft = this.ta.scrollLeft;
-      }
-      if (this.gutter) this.gutter.scrollTop = this.ta.scrollTop;
-      this.updateBand(this.currentLine());
-    }
-
-    lineHeight() {
-      if (!this.ta) return 20;
-      const lh = parseFloat(getComputedStyle(this.ta).lineHeight);
-      return Number.isFinite(lh) && lh > 0 ? lh : 20;
-    }
-
-    padTop() {
-      if (!this.ta) return 0;
-      return parseFloat(getComputedStyle(this.ta).paddingTop) || 0;
-    }
-
-    updateBand(line) {
-      if (!this.band || !this.ta) return;
-      if (this.wrap) {
-        this.band.style.display = "none";
-        return;
-      }
-      const lh = this.lineHeight();
-      this.band.style.display = "block";
-      this.band.style.top = `${this.padTop() + (line - 1) * lh - this.ta.scrollTop}px`;
-      this.band.style.height = `${lh}px`;
-    }
-
-    // ---- status ------------------------------------------------------------
-
-    updateStatus() {
-      if (!this.ta) return;
-      const ta = this.ta;
-      const pos = ta.selectionStart ?? 0;
-      const before = ta.value.slice(0, pos);
-      const line = before.split("\n").length;
-      const col = pos - before.lastIndexOf("\n");
-      const set = (id, text) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = text;
-      };
-      set("edStPos", `Ln ${line}, Col ${col}`);
-      set("edStLines", `${ta.value.split("\n").length} lines`);
-      set("edStLang", LANG_LABEL[this.lang] || this.lang.toUpperCase());
-      set("edStPath", this.path ? this.path.split("/").pop() : "no file");
-      const pathEl = document.getElementById("edStPath");
-      if (pathEl) pathEl.title = this.path || "no file";
-      const sel = (ta.selectionEnd ?? 0) - pos;
-      const selEl = document.getElementById("edStSel");
-      if (selEl) {
-        selEl.hidden = sel <= 0;
-        selEl.textContent = sel > 0 ? `${sel} selected` : "";
-      }
-      this.updateBand(line);
-    }
-
-    currentLine() {
-      if (!this.ta) return 1;
-      return this.ta.value.slice(0, this.ta.selectionStart ?? 0).split("\n").length;
-    }
-
-    // ---- navigation --------------------------------------------------------
-
-    gotoLine(n) {
-      if (!this.ta) return;
-      const lines = this.ta.value.split("\n");
-      const idx = Math.max(0, Math.min(lines.length, n) - 1);
-      let pos = 0;
-      for (let i = 0; i < idx; i++) pos += lines[i].length + 1;
-      this.ta.focus();
-      this.ta.setSelectionRange(pos, pos + lines[idx].length);
-      const lh = this.lineHeight();
-      this.ta.scrollTop = Math.max(0, idx * lh - ta_height(this.ta) / 2 + lh / 2);
-      this.updateStatus();
-    }
-
-    lineAt(ev) {
-      if (!this.gutter) return 0;
-      const rect = this.gutter.getBoundingClientRect();
-      const y = ev.clientY - rect.top + this.gutter.scrollTop - this.padTop();
-      return Math.max(1, Math.floor(y / this.lineHeight()) + 1);
-    }
-
-    // promptLine turns the position readout into a one-field editor, so "go to
-    // line" is a keystroke away instead of a dialog.
-    promptLine() {
-      const btn = document.getElementById("edStPos");
-      if (!btn || !this.ta) return;
-      const input = document.createElement("input");
-      input.className = "ed-st-input";
-      input.type = "text";
-      input.value = String(this.currentLine());
-      input.setAttribute("aria-label", "go to line");
-      btn.replaceWith(input);
-      input.focus();
-      input.select();
-      const done = (go) => {
-        const n = parseInt(input.value, 10);
-        input.replaceWith(btn);
-        if (go && n > 0) this.gotoLine(n);
-        else this.updateStatus();
-      };
-      input.addEventListener("keydown", (e) => {
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          done(true);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          done(false);
-        }
-      });
-      input.addEventListener("blur", () => done(false));
-    }
-
-    // ---- editing -----------------------------------------------------------
-
-    onKeyDown(e) {
-      const ta = this.ta;
-      if (!ta) return;
-      const mod = e.metaKey || e.ctrlKey;
-
-      if (mod && (e.key === "=" || e.key === "+")) {
-        e.preventDefault();
-        this.zoomBy(1);
-        return;
-      }
-      if (mod && e.key === "-") {
-        e.preventDefault();
-        this.zoomBy(-1);
-        return;
-      }
-      if (mod && e.key === "0") {
-        e.preventDefault();
-        this.zoomBy(-this.zoom);
-        return;
-      }
-      if (e.altKey && !mod && (e.key === "z" || e.key === "Z")) {
-        e.preventDefault();
-        this.toggleWrap();
-        return;
-      }
-      if (mod && (e.key === "g" || e.key === "G")) {
-        e.preventDefault();
-        this.promptLine();
-        return;
-      }
-
-      if (e.key === "Tab") {
-        e.preventDefault();
-        this.indent(e.shiftKey);
-        return;
-      }
-
-      if (e.key === "Enter" && ta.selectionStart === ta.selectionEnd) {
-        e.preventDefault();
-        this.newline();
-        return;
-      }
-
-      if (!mod && PAIRS[e.key]) {
-        const close = PAIRS[e.key];
-        const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
-        if (sel) {
-          e.preventDefault();
-          this.replaceSelection(e.key + sel + close, 1);
-        } else if (!/[\w"'`]/.test(ta.value[ta.selectionStart] || "")) {
-          e.preventDefault();
-          this.replaceSelection(e.key + close, 1);
-        }
-        return;
-      }
-
-      if (!mod && (e.key === ")" || e.key === "]" || e.key === "}" || e.key === '"' || e.key === "'" || e.key === "`")) {
-        if (ta.selectionStart === ta.selectionEnd && ta.value[ta.selectionStart] === e.key) {
-          e.preventDefault();
-          ta.setSelectionRange(ta.selectionStart + 1, ta.selectionStart + 1);
-          this.updateStatus();
-        }
-        return;
-      }
-
-      if (e.key === "Backspace" && ta.selectionStart === ta.selectionEnd && ta.selectionStart > 0) {
-        const s = ta.selectionStart;
-        if (PAIRS[ta.value[s - 1]] && PAIRS[ta.value[s - 1]] === ta.value[s]) {
-          e.preventDefault();
-          ta.setRangeText("", s - 1, s + 1, "end");
-          this.afterEdit();
-        }
-      }
-    }
-
-    // indent adds or removes two spaces on every line the selection touches.
-    indent(outdent) {
-      const ta = this.ta;
-      const start = ta.selectionStart;
-      const end = ta.selectionEnd;
-      const value = ta.value;
-      const from = value.lastIndexOf("\n", start - 1) + 1;
-      const stop = value.indexOf("\n", end);
-      const to = stop === -1 ? value.length : stop;
-      const block = value.slice(from, to);
-      const next = block.split("\n").map((ln) => {
-        if (outdent) return ln.replace(/^( {1,2}|\t)/, "");
-        return ln.trim() === "" ? ln : "  " + ln;
-      }).join("\n");
-      ta.setRangeText(next, from, to, "preserve");
-      ta.setSelectionRange(from, to + (next.length - block.length));
-      this.afterEdit();
-    }
-
-    // newline keeps the indentation of the current line and adds one level
-    // after an opening bracket.
-    newline() {
-      const ta = this.ta;
-      const pos = ta.selectionStart;
-      const value = ta.value;
-      const from = value.lastIndexOf("\n", pos - 1) + 1;
-      const line = value.slice(from, pos);
-      const indent = (line.match(/^[ \t]*/) || [""])[0];
-      const opens = /[{[(]\s*$/.test(line);
-      const closes = /^[}\])]/.test(value[pos] || "");
-      if (opens && closes) {
-        const ins = `\n${indent}  \n${indent}`;
-        ta.setRangeText(ins, pos, pos, "end");
-        const caret = pos + 1 + indent.length + 2;
-        ta.setSelectionRange(caret, caret);
-      } else {
-        ta.setRangeText(`\n${indent}${opens ? "  " : ""}`, pos, pos, "end");
-      }
-      this.afterEdit();
-    }
-
-    replaceSelection(text, caret) {
-      const ta = this.ta;
-      const from = ta.selectionStart;
-      ta.setRangeText(text, from, ta.selectionEnd, "end");
-      const pos = from + (caret ?? text.length);
-      ta.setSelectionRange(pos, pos);
-      this.afterEdit();
-    }
-
-    afterEdit() {
-      this.ta.dispatchEvent(new Event("input", { bubbles: true }));
-      this.schedulePaint();
-    }
-
-    // ---- view preferences --------------------------------------------------
-
-    toggleWrap() {
-      this.wrap = !this.wrap;
-      this.ta.setAttribute("wrap", this.wrap ? "soft" : "off");
-      this.savePrefs();
-      const btn = document.getElementById("edStWrap");
-      if (btn) btn.textContent = this.wrap ? "wrap on" : "wrap off";
-      this.paint();
-    }
-
-    zoomBy(step) {
-      this.zoom = Math.max(-3, Math.min(6, this.zoom + step));
-      this.applyZoom();
-      this.savePrefs();
-      this.paint();
-    }
-
-    applyZoom() {
-      const editor = document.getElementById("edEditor");
-      if (editor) editor.style.setProperty("--ed-font-size", `${12.5 + this.zoom}px`);
-      const btn = document.getElementById("edStZoom");
-      if (btn) btn.textContent = `${Math.round(((12.5 + this.zoom) / 12.5) * 100)}%`;
-    }
-
-    toggleZen() {
-      const panel = document.getElementById("panel-editor");
-      if (!panel) return;
-      const on = panel.classList.toggle("zen");
-      document.body.classList.toggle("zen", on);
-      const btn = document.getElementById("edStZen");
-      if (btn) {
-        btn.textContent = on ? "exit zen" : "zen";
-        btn.classList.toggle("on", on);
-      }
-      if (this.ta) this.ta.focus();
-    }
-
-    savePrefs() {
-      try {
-        localStorage.setItem("edPrefs", JSON.stringify({ wrap: this.wrap, zoom: this.zoom }));
-      } catch {
-        // a private window may refuse storage — the view still works
-      }
-    }
-  }
-
-  // ta_height is the visible height of the textarea, used to centre a jump.
-  function ta_height(ta) {
-    return ta.clientHeight || 0;
-  }
-
-  // editorCore is the one editor surface the Code Studio uses.
-  const editorCore = new EditorCore();
   // src/editor.js
   var $2 = (id) => document.getElementById(id);
-  function esc(s) {
+  function esc2(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
   function sanitize(s) {
@@ -879,7 +1491,7 @@
     return out;
   }
   function safe(s) {
-    return esc(sanitize(s));
+    return esc2(sanitize(s));
   }
   function toast(msg, cls) {
     const t = document.createElement("div");
@@ -1086,7 +1698,7 @@
       ed.dirty = false;
       $2("edPath").value = f.path;
       $2("edContent").value = f.content || "";
-    editorCore.setFile(f.path);
+      editorCore.setFile(f.path);
       $2("edDirty").textContent = "";
       ed.tabs.push({ path: f.path, sha: f.sha256, descId: id, content: f.content || "", saved: f.content || "", dirty: false });
       ed.activeTab = f.path;
@@ -1106,7 +1718,7 @@
             ed.dirty = false;
             $2("edPath").value = f.path;
             $2("edContent").value = "";
-          editorCore.setFile(f.path);
+            editorCore.setFile(f.path);
             $2("edDirty").textContent = "";
             try {
               ed.descId = await openDescriptor(f.path);
@@ -1223,7 +1835,7 @@
     ed.dirty = tab.dirty;
     $2("edPath").value = tab.path;
     $2("edContent").value = tab.content;
-  editorCore.setFile(tab.path);
+    editorCore.setFile(tab.path);
     $2("edDirty").textContent = tab.dirty ? "\u25CF unsaved" : "";
     markOpen(tab.path);
     ctx?.renderBreadcrumbs(tab.path);
@@ -1558,7 +2170,7 @@
         const j = r.judgeScore;
         const judgeTag = typeof j === "number" && j > 0 ? `<span class="tag judge" title="${safe(r.judgeRationale || "")}">\u2605 ${Number(j).toFixed(1)}</span>` : "";
         const statusChip = r.status === "done" ? `<span class="chip ok">done</span>` : r.status === "error" ? `<span class="chip err">error</span>` : r.status ? `<span class="chip">${safe(r.status)}</span>` : "";
-        return `<div class="ed-run-item${r.id === ed.review?.runId ? " sel" : ""}" data-id="${esc(r.id)}">
+        return `<div class="ed-run-item${r.id === ed.review?.runId ? " sel" : ""}" data-id="${esc2(r.id)}">
         <span class="ck-time">${safe((r.createdAt || r.created_at || r.id).toString().slice(0, 19))}</span>
         <span class="ck-note">${safe((r.prompt || r.title || "").slice(0, 60))}</span>
         ${statusChip}${diffTag}${durTag}${judgeTag}${badge2}
@@ -1681,11 +2293,41 @@
     q.classList.remove("open");
     q.setAttribute("aria-hidden", "true");
   }
+  var edQuickSel = 0;
   function renderQuickList(q) {
     const list = $2("edQuickList");
-    const term = q.trim().toLowerCase();
-    const items = edQuickIndex.filter((f) => !term || f.path.toLowerCase().includes(term)).slice(0, 40);
-    list.innerHTML = items.map((f) => `<div class="ed-quick-item" data-path="${esc(f.path)}"><span class="ed-ico">\u25E6</span><span>${safe(f.path)}</span></div>`).join("");
+    const term = q.trim();
+    const scored = edQuickIndex.map((f) => {
+      const base = f.name || f.path.split("/").pop() || f.path;
+      const s = fuzzy(term, f.path) + fuzzy(term, base) * 2;
+      return { f, s };
+    }).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).slice(0, 40);
+    edQuickSel = 0;
+    list.innerHTML = scored.map((x, i) => {
+      const f = x.f;
+      const base = f.name || f.path.split("/").pop() || f.path;
+      const dir = f.path.slice(0, Math.max(0, f.path.length - base.length));
+      return `<div class="ed-quick-item${i === 0 ? " sel" : ""}" data-path="${esc2(f.path)}" data-i="${i}">
+      <span class="ed-ico">\u25E6</span>
+      <span class="ed-quick-name">${safe(base)}</span>
+      <span class="ed-quick-dir">${safe(dir)}</span>
+    </div>`;
+    }).join("") || `<div class="ed-quick-empty">no files match "${safe(term)}"</div>`;
+    const sel = list.querySelector(".sel");
+    if (sel) sel.scrollIntoView({ block: "nearest" });
+  }
+  function quickMove(d) {
+    const items = $2("edQuickList").querySelectorAll(".ed-quick-item");
+    if (!items.length) return;
+    edQuickSel = (edQuickSel + d + items.length) % items.length;
+    items.forEach((el2, i) => el2.classList.toggle("sel", i === edQuickSel));
+    items[edQuickSel].scrollIntoView({ block: "nearest" });
+  }
+  function quickPick() {
+    const sel = $2("edQuickList").querySelector(".ed-quick-item.sel");
+    if (!sel) return;
+    closeQuick();
+    openFile(sel.dataset.path);
   }
   var edRunId = null;
   var edStreamES = null;
@@ -1706,7 +2348,7 @@
   function renderTouched() {
     const host = document.getElementById("edTouched");
     if (!host) return;
-    host.innerHTML = edTouched.length ? edTouched.map((p) => `<button type="button" class="chip ghost-chip${edTouchedDiff.has(p) ? " from-diff" : ""}" data-path="${esc(p)}" title="open in editor${edTouchedDiff.has(p) ? " \u2014 changed in the latest run" : ""}">${safe(p)}</button>`).join("") : `<span class="tag">no files touched yet</span>`;
+    host.innerHTML = edTouched.length ? edTouched.map((p) => `<button type="button" class="chip ghost-chip${edTouchedDiff.has(p) ? " from-diff" : ""}" data-path="${esc2(p)}" title="open in editor${edTouchedDiff.has(p) ? " \u2014 changed in the latest run" : ""}">${safe(p)}</button>`).join("") : `<span class="tag">no files touched yet</span>`;
     host.querySelectorAll("button[data-path]").forEach((b) => {
       b.onclick = () => openFile(b.dataset.path);
     });
@@ -1724,7 +2366,7 @@
     const el2 = $2("edRunBot");
     if (!el2) return;
     const cur = el2.value;
-    const opts = (bots || []).map((b) => `<option value="${esc(b.id)}">${esc(b.name)} (${esc(b.route)})</option>`).join("");
+    const opts = (bots || []).map((b) => `<option value="${esc2(b.id)}">${esc2(b.name)} (${esc2(b.route)})</option>`).join("");
     el2.innerHTML = opts ? opts : `<option value="">no teammate deployed</option>`;
     if ([...el2.options].some((o) => o.value === cur)) el2.value = cur;
     const runBtn = $2("edRunBtn");
@@ -1994,7 +2636,7 @@
     try {
       const list = await edApi("GET", "/api/v1/checkpoints");
       const cps = Array.isArray(list) ? list : list && list.checkpoints || [];
-      box.innerHTML = cps.length ? cps.map((c) => `<div class="ed-check-item" data-id="${esc(c.id)}">
+      box.innerHTML = cps.length ? cps.map((c) => `<div class="ed-check-item" data-id="${esc2(c.id)}">
           <span class="tag">\u21BA</span>
           <span class="ck-note">${safe(c.note || cpNote(c))}</span>
           <span class="ck-time">${safe(c.ts || c.createdAt || "")}</span>
@@ -2156,13 +2798,15 @@
       if (ev.key === "Escape") {
         ev.preventDefault();
         closeQuick();
+      } else if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        quickMove(1);
+      } else if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        quickMove(-1);
       } else if (ev.key === "Enter") {
         ev.preventDefault();
-        const sel = $2("edQuickList").querySelector(".ed-quick-item");
-        if (sel) {
-          closeQuick();
-          openFile(sel.dataset.path);
-        }
+        quickPick();
       }
     });
     $2("edQuickList").addEventListener("click", (ev) => {
@@ -2171,11 +2815,19 @@
       closeQuick();
       openFile(item.dataset.path);
     });
+    $2("edQuickList").addEventListener("mousemove", (ev) => {
+      const item = ev.target.closest(".ed-quick-item");
+      if (!item) return;
+      const i = Number(item.dataset.i);
+      if (i !== edQuickSel) {
+        edQuickSel = i;
+        $2("edQuickList").querySelectorAll(".ed-quick-item").forEach((el2, j) => el2.classList.toggle("sel", j === i));
+      }
+    });
     window.addEventListener("code-studio:quick-open", () => {
       if (document.getElementById("panel-editor")?.classList.contains("active")) openQuick();
     });
     wireEditorKeys();
-    editorCore.attach();
     loadTree();
     restoreTabs();
     loadLatestDiff();
@@ -2191,6 +2843,10 @@
     loadDiffForRun,
     // gotoLine jumps the buffer to a 1-based line (used by the outline).
     gotoLine: (n) => ctx?.gotoLine(n),
+    save: () => saveFile(),
+    closeActiveTab: () => {
+      if (ed.activeTab) closeTab(ed.activeTab);
+    },
     refresh: async () => {
       await loadTree();
       await loadLatestDiff();
@@ -2973,192 +3629,6 @@ When a release is cut:
     };
   }
 
-  // src/power.js
-  function fuzzy(needle, hay) {
-    needle = needle.toLowerCase();
-    hay = String(hay).toLowerCase();
-    if (!needle) return 0;
-    let score = 0, ni = 0, streak = 0;
-    for (let i = 0; i < hay.length && ni < needle.length; i++) {
-      if (hay[i] === needle[ni]) {
-        ni++;
-        streak++;
-        score += 1 + streak;
-        if (i === 0 || " /-_.:".includes(hay[i - 1])) score += 5;
-      } else streak = 0;
-    }
-    return ni === needle.length ? score : -1;
-  }
-  var Palette = class {
-    // commands: [{label, hint, icon, run}]
-    constructor(opts) {
-      this.commands = opts.commands || [];
-      this.onClose = opts.onClose || (() => {
-      });
-      this.sel = 0;
-      this.results = [];
-      this.build();
-    }
-    build() {
-      this.root = document.createElement("div");
-      this.root.className = "palette-root";
-      this.root.innerHTML = `
-      <div class="palette" role="dialog" aria-label="command palette">
-        <div class="palette-in">
-          <span class="p-ico">\u2318</span>
-          <input class="p-input" placeholder="type a command\u2026" spellcheck="false" autocomplete="off">
-        </div>
-        <div class="p-list"></div>
-        <div class="p-foot">
-          <span><b>\u2191\u2193</b> navigate</span><span><b>\u21B5</b> run</span><span><b>esc</b> close</span>
-        </div>
-      </div>`;
-      document.body.appendChild(this.root);
-      this.input = this.root.querySelector(".p-input");
-      this.list = this.root.querySelector(".p-list");
-      this.input.addEventListener("input", () => this.search(this.input.value));
-      this.input.addEventListener("keydown", (e) => {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          this.move(1);
-        } else if (e.key === "ArrowUp") {
-          e.preventDefault();
-          this.move(-1);
-        } else if (e.key === "Enter") {
-          e.preventDefault();
-          this.exec();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          this.close();
-        }
-      });
-      this.root.addEventListener("mousedown", (e) => {
-        if (e.target === this.root) this.close();
-      });
-      this.search("");
-      this.input.focus();
-    }
-    setCommands(cmds) {
-      this.commands = cmds;
-      this.search(this.input.value);
-    }
-    search(q) {
-      const scored = this.commands.map((c) => ({ c, s: fuzzy(q, c.label + " " + (c.hint || "")) })).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).slice(0, 12);
-      this.results = scored.map((x) => x.c);
-      this.sel = 0;
-      this.render();
-    }
-    render() {
-      this.list.innerHTML = this.results.map((c, i) => `
-      <button type="button" class="p-item ${i === this.sel ? "sel" : ""}" data-i="${i}">
-        <span class="p-item-ico">${c.icon || "\u203A"}</span>
-        <span class="p-item-label">${c.label}</span>
-        ${c.hint ? `<span class="p-item-hint">${c.hint}</span>` : ""}
-      </button>`).join("") || `<div class="p-empty">nothing matches \u2014 try "run", "deploy", "demo"</div>`;
-      this.list.querySelectorAll("[data-i]").forEach((btn) => {
-        btn.onclick = () => {
-          this.sel = +btn.dataset.i;
-          this.exec();
-        };
-        btn.onmouseenter = () => {
-          this.sel = +btn.dataset.i;
-          this.render();
-        };
-      });
-      const sel = this.list.querySelector(".sel");
-      if (sel) sel.scrollIntoView({ block: "nearest" });
-    }
-    move(d) {
-      if (!this.results.length) return;
-      this.sel = (this.sel + d + this.results.length) % this.results.length;
-      this.render();
-    }
-    exec() {
-      const c = this.results[this.sel];
-      if (!c) return;
-      this.close();
-      c.run();
-    }
-    close() {
-      if (this.root) {
-        this.root.remove();
-        this.root = null;
-      }
-      this.onClose();
-    }
-  };
-  function boot() {
-    if (localStorage.getItem("flobot-booted")) return;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const el2 = document.createElement("div");
-    el2.className = "boot";
-    const lines = [
-      "flobot v1 \xB7 standalone \xB7 loopback only",
-      "loading roster \u2026",
-      "mounting skills library \u2026",
-      "arming routines \u2026",
-      "probing model routes \u2026",
-      "crew online."
-    ];
-    el2.innerHTML = `<div class="boot-in"><pre class="boot-lines"></pre></div>`;
-    document.body.appendChild(el2);
-    const pre = el2.querySelector(".boot-lines");
-    let i = 0;
-    const step = () => {
-      if (i < lines.length) {
-        pre.textContent += lines[i++] + "\n";
-        setTimeout(step, 160);
-      } else {
-        setTimeout(() => {
-          el2.classList.add("out");
-          localStorage.setItem("flobot-booted", "1");
-          setTimeout(() => el2.remove(), 500);
-        }, 350);
-      }
-    };
-    step();
-  }
-  function confetti() {
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const cv = document.createElement("canvas");
-    cv.className = "confetti-cv";
-    cv.width = innerWidth;
-    cv.height = innerHeight;
-    document.body.appendChild(cv);
-    const ctx2 = cv.getContext("2d");
-    const colors = ["#6366f1", "#22d3ee", "#4ee6a8", "#e879f9", "#fbbf24"];
-    const parts = Array.from({ length: 120 }, () => ({
-      x: Math.random() * cv.width,
-      y: -20 - Math.random() * 80,
-      vx: (Math.random() - 0.5) * 3,
-      vy: 2 + Math.random() * 3,
-      w: 6 + Math.random() * 6,
-      h: 3 + Math.random() * 4,
-      rot: Math.random() * Math.PI,
-      vr: (Math.random() - 0.5) * 0.3,
-      c: colors[Math.random() * colors.length | 0]
-    }));
-    const t0 = performance.now();
-    const frame = (t) => {
-      const dt = t - t0;
-      ctx2.clearRect(0, 0, cv.width, cv.height);
-      for (const p of parts) {
-        p.x += p.vx;
-        p.y += p.vy;
-        p.rot += p.vr;
-        ctx2.save();
-        ctx2.translate(p.x, p.y);
-        ctx2.rotate(p.rot);
-        ctx2.fillStyle = p.c;
-        ctx2.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
-        ctx2.restore();
-      }
-      if (dt < 2200) requestAnimationFrame(frame);
-      else cv.remove();
-    };
-    requestAnimationFrame(frame);
-  }
-
   // src/telemetry.js
   var Stats = class {
     constructor() {
@@ -3217,16 +3687,16 @@ When a release is cut:
     for (const l of String(text).split("\n")) {
       if (l.startsWith("+++") || l.startsWith("---")) continue;
       if (l.startsWith("@@")) {
-        rows.push(`<span class="dl hl">${esc2(l)}</span>`);
+        rows.push(`<span class="dl hl">${esc3(l)}</span>`);
         continue;
       }
-      if (l.startsWith("+")) rows.push(`<span class="dl add">+ ${esc2(l.slice(1))}</span>`);
-      else if (l.startsWith("-")) rows.push(`<span class="dl del">- ${esc2(l.slice(1))}</span>`);
-      else rows.push(`<span class="dl">  ${esc2(l)}</span>`);
+      if (l.startsWith("+")) rows.push(`<span class="dl add">+ ${esc3(l.slice(1))}</span>`);
+      else if (l.startsWith("-")) rows.push(`<span class="dl del">- ${esc3(l.slice(1))}</span>`);
+      else rows.push(`<span class="dl">  ${esc3(l)}</span>`);
     }
     return `<div class="diff">${rows.join("")}</div>`;
   }
-  function esc2(s) {
+  function esc3(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
   var Sfx = class {
@@ -3726,9 +4196,8 @@ When a release is cut:
   }
 
   // src/main.js
-  var $4 = (id) => document.getElementById(id);
+  var $5 = (id) => document.getElementById(id);
   var roster = { bots: [], skills: [], routines: [], messages: [], routes: [], runs: [] };
-  var integrations = [];
   var activeRun = null;
   var pollTimer = null;
   var elapsedTimer = null;
@@ -3739,6 +4208,13 @@ When a release is cut:
   var streamRetries = 0;
   var streamTimer = null;
   var streamRunId = null;
+  // streamSeen is how many events of the current run this client has already
+  // rendered. It is the resume offset: a reconnect asks for ?since=streamSeen
+  // so the replay starts exactly where rendering stopped.
+  var streamSeen = 0;
+  // streamDropped records that the server told us it gave up on us. The
+  // reconnect then must not treat the gap as completion.
+  var streamDropped = false;
   var keyFile = "~/.accounts/meta.ai";
   var secretPatterns = [
     /MODEL_API_KEY\s*[=:]\s*\S+/g,
@@ -3752,17 +4228,17 @@ When a release is cut:
     for (const re of secretPatterns) out = out.replace(re, "[REDACTED]");
     return out;
   }
-  function esc3(s) {
+  function esc4(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
   function safe2(s) {
-    return esc3(sanitize2(s));
+    return esc4(sanitize2(s));
   }
   function toast3(msg, cls) {
     const t = document.createElement("div");
     t.className = "toast" + (cls ? " " + cls : "");
     t.textContent = msg;
-    $4("toasts").appendChild(t);
+    $5("toasts").appendChild(t);
     setTimeout(() => {
       t.style.opacity = "0";
       t.style.transition = "opacity .3s";
@@ -3791,38 +4267,30 @@ When a release is cut:
   }
   function fillSelect(el2, items, label) {
     const cur = el2.value;
-    el2.innerHTML = items.map((b) => `<option value="${esc3(b.id)}">${esc3(label(b))}</option>`).join("");
+    el2.innerHTML = items.map((b) => `<option value="${esc4(b.id)}">${esc4(label(b))}</option>`).join("");
     if ([...el2.options].some((o) => o.value === cur)) el2.value = cur;
   }
   function fillRouteSelect(el2, mesh) {
     const cur = el2.value;
     const opts = ["glm", "qwen", "muse", "local"].map((id) => `<option value="${id}">${id}</option>`).join("");
-    const meshOpts = (mesh || []).map((m) => `<option value="${esc3(m.route)}">${esc3(m.route)}${m.display ? " \xB7 " + esc3(m.display) : ""}</option>`).join("");
+    const meshOpts = (mesh || []).map((m) => `<option value="${esc4(m.route)}">${esc4(m.route)}${m.display ? " \xB7 " + esc4(m.display) : ""}</option>`).join("");
     el2.innerHTML = opts + meshOpts;
     if ([...el2.options].some((o) => o.value === cur)) el2.value = cur;
   }
-  var nav = $4("nav");
+  var nav = $5("nav");
   nav.querySelectorAll("button[data-panel]").forEach((btn) => {
     btn.onclick = () => {
       nav.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       document.querySelectorAll(".panel").forEach((p2) => p2.classList.remove("active"));
-      const p = $4("panel-" + btn.dataset.panel);
+      const p = $5("panel-" + btn.dataset.panel);
       if (p) p.classList.add("active");
-      // The panel lives in the URL: a link to a panel is shareable, and a
-      // reload lands on the same panel.
-      if (location.hash.slice(1) !== btn.dataset.panel) {
-        history.replaceState(null, "", "#" + btn.dataset.panel);
-      }
     };
   });
   function gotoPanel(name) {
     const btn = nav.querySelector(`button[data-panel="${name}"]`);
     if (btn) btn.click();
   }
-  // Deep link: /#integrations opens straight into that panel.
-  const deepPanel = (location.hash || "").replace(/^#/, "");
-  if (deepPanel && nav.querySelector(`button[data-panel="${deepPanel}"]`)) gotoPanel(deepPanel);
   var meshModels = [];
   function avatarGrad(s) {
     let h = 0;
@@ -3832,678 +4300,103 @@ When a release is cut:
   }
   function avatar(name) {
     const init = (name || "?").trim().slice(0, 2).toUpperCase();
-    return `<span class="avatar" style="background:${avatarGrad(name)}">${esc3(init)}</span>`;
+    return `<span class="avatar" style="background:${avatarGrad(name)}">${esc4(init)}</span>`;
   }
   function empty(icon, text) {
-    return `<li class="empty"><span class="ico">${icon}</span>${esc3(text)}</li>`;
+    return `<li class="empty"><span class="ico">${icon}</span>${esc4(text)}</li>`;
   }
   function render2() {
-    $4("navBots").textContent = roster.bots.length;
-    $4("navRuns").textContent = (roster.runs || []).length;
-    $4("navRtn").textContent = roster.routines.length;
-    $4("navSkills").textContent = roster.skills.length;
-    $4("navInt").textContent = integrations.length;
-    $4("statBots").textContent = roster.bots.length;
-    $4("statRoutines").textContent = roster.routines.length;
-    $4("statRuns").textContent = (roster.runs || []).length;
-    $4("statMesh").textContent = meshModels.length;
-    $4("bots").innerHTML = roster.bots.map(
+    $5("navBots").textContent = roster.bots.length;
+    $5("navRuns").textContent = (roster.runs || []).length;
+    $5("navRtn").textContent = roster.routines.length;
+    $5("navSkills").textContent = roster.skills.length;
+    $5("statBots").textContent = roster.bots.length;
+    $5("statRoutines").textContent = roster.routines.length;
+    $5("statRuns").textContent = (roster.runs || []).length;
+    $5("statMesh").textContent = meshModels.length;
+    $5("bots").innerHTML = roster.bots.map(
       (b) => `<li>${avatar(b.name)}
       <div class="body">
-        <div class="title">${esc3(b.name)} <span class="chip acc">${esc3(b.role)}</span></div>
-        <div class="clip">${esc3(b.route)}${b.memory ? " \xB7 remembers: " + safe2(b.memory) : ""}</div>
+        <div class="title">${esc4(b.name)} <span class="chip acc">${esc4(b.role)}</span></div>
+        <div class="clip">${esc4(b.route)}${b.memory ? " \xB7 remembers: " + safe2(b.memory) : ""}</div>
       </div>
-      <div class="actions">${presenceHTML(b)}<span class="tag">${esc3(b.id)}</span></div></li>`
+      <div class="actions">${presenceHTML(b)}<span class="tag">${esc4(b.id)}</span></div></li>`
     ).join("") || empty("\u25CD", "No teammates yet \u2014 deploy one above.");
-    fillSelect($4("runBot"), roster.bots, (b) => `${b.name} (${b.route})`);
+    fillSelect($5("runBot"), roster.bots, (b) => `${b.name} (${b.route})`);
     window.codeStudio?.fillRunBot?.(roster.bots);
-    fillSelect($4("rtnBot"), roster.bots, (b) => b.name);
-    fillSelect($4("fromBot"), roster.bots, (b) => b.name);
-    fillSelect($4("toBot"), roster.bots, (b) => b.name);
-    fillSelect($4("rtnSkill"), roster.skills, (s) => s.name);
-    fillSelect($4("memBot"), roster.bots, (b) => b.name);
-    fillRouteSelect($4("botRoute"), meshModels);
-    $4("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
+    fillSelect($5("rtnBot"), roster.bots, (b) => b.name);
+    fillSelect($5("fromBot"), roster.bots, (b) => b.name);
+    fillSelect($5("toBot"), roster.bots, (b) => b.name);
+    fillSelect($5("rtnSkill"), roster.skills, (s) => s.name);
+    fillSelect($5("memBot"), roster.bots, (b) => b.name);
+    fillRouteSelect($5("botRoute"), meshModels);
+    $5("handoff").style.display = roster.bots.length >= 2 ? "block" : "none";
     const botName = {};
     for (const b of roster.bots) botName[b.id] = b.name;
-    $4("msgs").innerHTML = (roster.messages || []).map(
+    $5("msgs").innerHTML = (roster.messages || []).map(
       (m) => `<li>${avatar(m.from)}
       <div class="body">
-        <div class="title">${esc3(botName[m.from] || m.from)} \u2192 ${esc3(botName[m.to] || m.to)} <span class="tag">owner ${esc3(botName[m.owner_bot] || m.owner_bot)}</span></div>
+        <div class="title">${esc4(botName[m.from] || m.from)} \u2192 ${esc4(botName[m.to] || m.to)} <span class="tag">owner ${esc4(botName[m.owner_bot] || m.owner_bot)}</span></div>
         <div class="clip">${safe2(m.body)}</div>
       </div></li>`
     ).join("") || empty("\u21C4", "No handoffs yet.");
-    $4("skills").innerHTML = roster.skills.map(
+    $5("skills").innerHTML = roster.skills.map(
       (s) => `<li><span class="avatar" style="background:var(--grad)">\u2726</span>
-      <div class="body"><div class="title">${esc3(s.name)}</div><div class="clip">${esc3(s.id)}</div></div></li>`
+      <div class="body"><div class="title">${esc4(s.name)}</div><div class="clip">${esc4(s.id)}</div></div></li>`
     ).join("") || empty("\u2726", "The library is empty \u2014 write a playbook above.");
-    $4("routines").innerHTML = roster.routines.map((rt) => {
+    $5("routines").innerHTML = roster.routines.map((rt) => {
       const state2 = rt.paused ? `<span class="chip warn">paused</span>` : `<span class="chip ok">on</span>`;
-      const next = rt.next_fire ? ` \xB7 next ${esc3(rt.next_fire)}` : "";
-      // The tool policy belongs to the routine: "none" means the run can
-      // only answer in text, and that is what the kit ships.
-      const tools2 =
-        rt.tools === "none"
-          ? ` <span class="chip">text only</span>`
-          : rt.tools
-            ? ` <span class="chip">${esc3(rt.tools)}</span>`
-            : "";
+      const next = rt.next_fire ? ` \xB7 next ${esc4(rt.next_fire)}` : "";
       return `<li><span class="avatar" style="background:var(--grad)">\u21BB</span>
       <div class="body">
-        <div class="title">${esc3(rt.trigger)} ${state2}${tools2}</div>
-        <div class="clip">${esc3(rt.id)} \xB7 ${esc3(rt.last_note || "no test-run")}${next}</div>
-        <div class="rtn-edit" data-rtn-edit="${esc3(rt.id)}" hidden>
-          <input class="rtn-edit-in" value="${esc3(rt.trigger)}" aria-label="trigger" spellcheck="false">
-          <button class="ghost mini" data-rtn-save="${esc3(rt.id)}">save trigger</button>
+        <div class="title">${esc4(rt.trigger)} ${state2}</div>
+        <div class="clip">${esc4(rt.id)} \xB7 ${esc4(rt.last_note || "no test-run")}${next}</div>
+        <div class="rtn-edit" data-rtn-edit="${esc4(rt.id)}" hidden>
+          <input class="rtn-edit-in" value="${esc4(rt.trigger)}" aria-label="trigger" spellcheck="false">
+          <button class="ghost mini" data-rtn-save="${esc4(rt.id)}">save trigger</button>
         </div>
       </div>
       <div class="actions">
-        <button class="ghost" data-test="${esc3(rt.id)}">test-run</button>
-        <button class="ghost" data-en="${esc3(rt.id)}">enable</button>
-        <button class="ghost" data-pause="${esc3(rt.id)}" data-paused="${rt.paused ? "0" : "1"}">${rt.paused ? "resume" : "pause"}</button>
-        <button class="ghost" data-rtn-edit-btn="${esc3(rt.id)}">trigger</button>
+        <button class="ghost" data-test="${esc4(rt.id)}">test-run</button>
+        <button class="ghost" data-en="${esc4(rt.id)}">enable</button>
+        <button class="ghost" data-pause="${esc4(rt.id)}" data-paused="${rt.paused ? "0" : "1"}">${rt.paused ? "resume" : "pause"}</button>
+        <button class="ghost" data-rtn-edit-btn="${esc4(rt.id)}">trigger</button>
       </div></li>`;
     }).join("") || empty("\u21BB", "Nothing on the clock \u2014 arm a routine above.");
-    $4("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
-    $4("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
-    $4("routines").querySelectorAll("[data-pause]").forEach((btn) => btn.onclick = () => pauseRtn(btn.dataset.pause, btn.dataset.paused === "1"));
-    $4("routines").querySelectorAll("[data-rtn-edit-btn]").forEach((btn) => btn.onclick = () => {
-      const box = $4("routines").querySelector(`[data-rtn-edit="${btn.dataset.rtnEditBtn}"]`);
+    $5("routines").querySelectorAll("[data-test]").forEach((btn) => btn.onclick = () => testRun(btn.dataset.test));
+    $5("routines").querySelectorAll("[data-en]").forEach((btn) => btn.onclick = () => enableRtn(btn.dataset.en));
+    $5("routines").querySelectorAll("[data-pause]").forEach((btn) => btn.onclick = () => pauseRtn(btn.dataset.pause, btn.dataset.paused === "1"));
+    $5("routines").querySelectorAll("[data-rtn-edit-btn]").forEach((btn) => btn.onclick = () => {
+      const box = $5("routines").querySelector(`[data-rtn-edit="${btn.dataset.rtnEditBtn}"]`);
       if (box) {
         box.hidden = !box.hidden;
         box.querySelector("input")?.focus();
       }
     });
-    $4("routines").querySelectorAll("[data-rtn-save]").forEach((btn) => btn.onclick = () => saveRtnTrigger(btn.dataset.rtnSave));
-    const tb = $4("routes").querySelector("tbody");
+    $5("routines").querySelectorAll("[data-rtn-save]").forEach((btn) => btn.onclick = () => saveRtnTrigger(btn.dataset.rtnSave));
+    const tb = $5("routes").querySelector("tbody");
     tb.innerHTML = (roster.routes || []).map(
-      (r) => `<tr><td>${esc3(r.id)}</td><td>${esc3(r.role)}</td><td>${esc3(r.model)}</td><td class="tag">${esc3(r.purpose)}</td></tr>`
+      (r) => `<tr><td>${esc4(r.id)}</td><td>${esc4(r.role)}</td><td>${esc4(r.model)}</td><td class="tag">${esc4(r.purpose)}</td></tr>`
     ).join("");
     const fmtTime = (ts) => {
       if (!ts) return "";
       const d = new Date(ts);
       return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     };
-    $4("runHistory").innerHTML = (roster.runs || []).slice(0, 20).map((r) => {
+    $5("runHistory").innerHTML = (roster.runs || []).slice(0, 20).map((r) => {
       const chip = r.status === "done" ? "ok" : r.status === "running" ? "acc" : "err";
       return `<li>
       <div class="body">
-        <div class="title"><button class="linklike" data-run="${esc3(r.id)}">${esc3(r.id.slice(0, 8))}</button> <span class="chip ${chip}">${esc3(r.status)}</span>${r.created_at ? ` <span class="tag">${esc3(fmtTime(r.created_at))}</span>` : ""}</div>
-        <div class="clip">${esc3(botName[r.bot_id] || r.bot_id || "\u2014")} \xB7 ${esc3(r.intent)}${r.error ? " \xB7 " + esc3(r.error) : ""}</div>
+        <div class="title"><button class="linklike" data-run="${esc4(r.id)}">${esc4(r.id.slice(0, 8))}</button> <span class="chip ${chip}">${esc4(r.status)}</span>${r.created_at ? ` <span class="tag">${esc4(fmtTime(r.created_at))}</span>` : ""}</div>
+        <div class="clip">${esc4(botName[r.bot_id] || r.bot_id || "\u2014")} \xB7 ${esc4(r.intent)}${r.error ? " \xB7 " + esc4(r.error) : ""}</div>
       </div></li>`;
     }).join("") || empty("\u25B6", "Nothing has run yet. Give it a mission.");
-    $4("runHistory").querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
+    $5("runHistory").querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
       clearLog();
       stopPoll();
       activeRun = null;
       startStream(btn.dataset.run);
     });
-    renderIntegrations();
-  }
-  // ---- integrations -------------------------------------------------------
-  var intProviders = [];
-  var intAuthModes = [];
-  var intFilter = "all";
-  var intSheetKind = "";
-  function intProvider(kind) {
-    return intProviders.find((p) => p.kind === kind) || {
-      kind: kind, label: kind, blurb: "", glyph: "∞",
-      default_auth: "bearer", auth_modes: ["bearer"], steps: []
-    };
-  }
-  function ago(ts) {
-    if (!ts) return "never";
-    const t = Date.parse(ts);
-    if (isNaN(t)) return "never";
-    const s = Math.max(0, (Date.now() - t) / 1000);
-    if (s < 60) return Math.floor(s) + "s ago";
-    if (s < 3600) return Math.floor(s / 60) + "m ago";
-    if (s < 86400) return Math.floor(s / 3600) + "h ago";
-    return Math.floor(s / 86400) + "d ago";
-  }
-  function intStatusChip(st) {
-    const map = {
-      ok: ["ok", "live"],
-      idle: ["ghost-chip", "idle"],
-      error: ["err", "rejected"],
-      unbound: ["warn", "no routine"]
-    };
-    const m = map[st] || ["ghost-chip", st || "idle"];
-    return `<span class="chip ${m[0]}">${esc3(m[1])}</span>`;
-  }
-  function renderIntGallery() {
-    const host = $4("intGallery");
-    if (!host) return;
-    host.innerHTML = intProviders.map((p) => `
-      <button type="button" class="int-tile" data-int-connect="${esc3(p.kind)}">
-        <span class="int-glyph">${esc3(p.glyph || "∞")}</span>
-        <span class="int-tile-text">
-          <span class="int-tile-name">${esc3(p.label)}</span>
-          <span class="int-tile-blurb">${esc3(p.blurb || "")}</span>
-        </span>
-        <span class="int-tile-go">Connect →</span>
-      </button>`).join("");
-    host.querySelectorAll("[data-int-connect]").forEach((b) => (b.onclick = () => openIntSheet(b.dataset.intConnect)));
-  }
-  // ---- use cases: ten ready-made automations on the local model -------------
-  var intUseCases = [];
-  var ucGlyphs = {
-    triage: "⌖", chatops: "✆", "on-call": "⚠", release: "↥",
-    billing: "$", inbox: "✉", home: "⌂", ci: "⚙", workflow: "⇄", capability: "⚿"
-  };
-  function intUseCase(id) {
-    return intUseCases.find((u) => u.id === id) || null;
-  }
-  function renderIntUseCases() {
-    const host = $4("ucGallery");
-    if (!host) return;
-    host.innerHTML = intUseCases.map((u) => `
-      <button type="button" class="int-tile uc-tile" data-uc="${esc3(u.id)}">
-        <span class="int-glyph">${esc3(ucGlyphs[u.category] || "•")}</span>
-        <span class="int-tile-text">
-          <span class="int-tile-name">${esc3(u.name)}</span>
-          <span class="int-tile-blurb">${esc3(u.blurb)}</span>
-          <span class="int-tile-tags">
-            <span class="chip ghost-chip">${esc3(u.provider)}</span>
-            <span class="chip ghost-chip">${esc3(u.route)}</span>
-          </span>
-        </span>
-        <span class="int-tile-go">Set up →</span>
-      </button>`).join("");
-    host.querySelectorAll("[data-uc]").forEach((b) => (b.onclick = () => openUcSheet(b.dataset.uc)));
-  }
-  function openUcSheet(id) {
-    const u = intUseCase(id);
-    if (!u) {
-      toast3("use case not loaded — refresh the panel", "err");
-      return;
-    }
-    $4("intSheetGlyph").textContent = ucGlyphs[u.category] || "•";
-    $4("intSheetTitle").textContent = u.name;
-    $4("intSheetBlurb").textContent = u.blurb;
-    const existing = integrations
-      .map((i) => `<option value="${esc3(i.id)}">${esc3(i.name)} — ${esc3(i.kind)}</option>`)
-      .join("");
-    $4("intSheetBody").innerHTML = `
-      <div class="int-form">
-        <div class="int-kv"><span class="int-k">fires from</span><span class="int-v">${esc3(u.provider)} · ${esc3(u.auth_mode)}</span></div>
-        <div class="int-kv"><span class="int-k">runs on</span><span class="int-v">${esc3(u.route)} · this Mac's model</span></div>
-        <label class="int-field"><span>teammate name</span>
-          <input id="ucBotName" value="${esc3(u.bot_name || "")}">
-        </label>
-        <label class="int-field"><span>connect to</span>
-          <select id="ucExisting">
-            <option value="">create a new ${esc3(u.provider)} connection</option>
-            ${existing}
-          </select>
-        </label>
-        <div class="int-field"><span>playbook</span>
-          <pre class="int-snippet">${esc3(u.playbook || "")}</pre>
-        </div>
-        <ol class="int-steps">${(u.steps || []).map((s) => `<li>${esc3(s)}</li>`).join("")}</ol>
-        <div class="int-form-actions">
-          <button type="button" class="ghost" data-int-close="1">cancel</button>
-          <button type="button" class="primary" id="ucActivate">Set it up</button>
-        </div>
-      </div>`;
-    $4("intSheetBody").querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
-    $4("ucActivate").onclick = async () => {
-      try {
-        const existingId = $4("ucExisting").value;
-        const res = await api2("POST", `/api/v1/usecases/${encodeURIComponent(u.id)}/activate`, {
-          name: ($4("ucBotName").value || "").trim(),
-          integration_id: existingId,
-          create_integration: !existingId
-        });
-        renderUcReady(u, res);
-        await refreshInt();
-      } catch (e) {
-        showErr(e.message);
-      }
-    };
-    $4("intSheet").hidden = false;
-  }
-  function renderUcReady(u, res) {
-    const in2 = (res && res.integration) || {};
-    const rt = (res && res.routine) || {};
-    const bot = (res && res.bot) || {};
-    const url = (res && res.url) || "";
-    const secret = (res && res.secret) || "";
-    $4("intSheetTitle").textContent = u.name + " is live";
-    $4("intSheetBlurb").textContent = `${bot.name || u.bot_name} · routine ${(rt.id || "").slice(0, 8)} · ${u.route} model${rt.worktree ? " · own worktree" : ""}`;
-    const secretBlock = secret
-      ? `
-        <div class="int-secret-row">
-          <div class="int-kv"><span class="int-k">secret <em>shown once</em></span><span class="int-v int-mono" id="intReadySecret">${esc3(secret)}</span></div>
-          <button type="button" class="ghost" data-int-copytext="secret">copy secret</button>
-        </div>`
-      : "";
-    $4("intSheetBody").innerHTML = `
-      <div class="int-ready">
-        <div class="int-secret-row">
-          <div class="int-kv"><span class="int-k">webhook URL</span><span class="int-v int-mono" id="intReadyUrl">${esc3(url)}</span></div>
-          <button type="button" class="ghost" data-int-copytext="url">copy URL</button>
-        </div>
-        ${secretBlock}
-        <ol class="int-steps">${(u.steps || []).map((s) => `<li>${esc3(s)}</li>`).join("")}</ol>
-        <div class="int-form-actions">
-          <button type="button" class="ghost" data-int-close="1">done</button>
-          <button type="button" class="primary" data-uc-test="${esc3(in2.id || "")}">Send a test event</button>
-        </div>
-      </div>`;
-    const body = $4("intSheetBody");
-    body.querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
-    body.querySelectorAll("[data-int-copytext]").forEach((b) => (b.onclick = () => {
-      const el = document.getElementById(b.dataset.intCopytext === "url" ? "intReadyUrl" : "intReadySecret");
-      if (el) copyInt(el.textContent);
-    }));
-    body.querySelectorAll("[data-uc-test]").forEach((b) => (b.onclick = async () => {
-      const id = b.dataset.ucTest;
-      if (!id) return;
-      try {
-        const out = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/test`, { event: u.event || "" });
-        const fired = out && out.fired ? out.fired : 0;
-        if (fired > 0) {
-          toast3(`test event fired ${fired} routine${fired === 1 ? "" : "s"} — the answer lands in the run log`, "ok");
-        } else {
-          toast3("nothing fired — the routine may still be warming up", "err");
-        }
-        await refreshInt();
-      } catch (e) {
-        toast3(safe2(e.message), "err");
-      }
-    }));
-  }
-  function renderIntegrations() {
-    const host = $4("integrations");
-    if (!host) return;
-    const cnt = $4("intCount");
-    if (cnt) cnt.textContent = integrations.length + " connected";
-    const picks = (roster.routines || [])
-      .map((rt) => `<option value="${esc3(rt.id)}">${esc3(rt.id.slice(0, 8))} — ${esc3(rt.trigger || "manual")}</option>`)
-      .join("");
-    host.innerHTML = integrations.map((in2) => {
-      const p = in2.provider || intProvider(in2.kind);
-      const bound = (in2.routines || []).map((rt) => `
-        <span class="int-chip" title="trigger: ${esc3(rt.trigger || "manual")}">
-          ${esc3(rt.id.slice(0, 8))}
-          <button type="button" class="int-x" data-int-unbind="${esc3(rt.id)}" title="unbind">×</button>
-        </span>`).join("");
-      const last = (in2.events || [])[0];
-      return `
-      <div class="int-card">
-        <div class="int-card-head">
-          <span class="int-glyph">${esc3(p.glyph || "∞")}</span>
-          <div class="int-card-id">
-            <div class="int-card-name">${esc3(in2.name)}<span class="chip ghost-chip">${esc3(in2.auth_mode || "bearer")}</span> ${intStatusChip(in2.status)}</div>
-            <div class="int-card-sub">${esc3(in2.detail || p.blurb || "")}</div>
-          </div>
-          <span class="spacer"></span>
-          <div class="int-actions">
-            <button type="button" class="ghost" data-int-copyurl="${esc3(in2.id)}">copy URL</button>
-            <button type="button" class="ghost" data-int-test="${esc3(in2.id)}">test</button>
-            <button type="button" class="ghost" data-int-rotate="${esc3(in2.id)}">rotate</button>
-            <button type="button" class="ghost danger" data-int-del="${esc3(in2.id)}">remove</button>
-          </div>
-        </div>
-        <div class="int-grid">
-          <div class="int-kv"><span class="int-k">URL</span><span class="int-v int-mono int-url" title="${esc3(in2.url || "")}" id="intUrl-${esc3(in2.id)}">${esc3(in2.url || "")}</span></div>
-          <div class="int-kv"><span class="int-k">secret</span><span class="int-v int-mono">${esc3(in2.secret_hint || "")}</span></div>
-          <div class="int-kv"><span class="int-k">fires</span><span class="int-v num">${in2.fire_count || 0}</span></div>
-          <div class="int-kv"><span class="int-k">last</span><span class="int-v">${esc3(ago(in2.last_fired_at))}</span></div>
-        </div>
-        <div class="int-routines">
-          <span class="int-k">routines</span>
-          ${bound || `<span class="tag">none — a fired event would have nothing to run</span>`}
-          <span class="spacer"></span>
-          <select class="int-pick" data-int-bind="${esc3(in2.id)}">
-            <option value="">bind a routine…</option>
-            ${picks}
-          </select>
-        </div>
-        ${last ? `<div class="int-last"><span class="int-mono">${esc3(last.note || "")}</span><span class="tag">${esc3(ago(last.created_at))}</span></div>` : ""}
-      </div>`;
-    }).join("") || `
-      <div class="int-empty">
-        <span class="int-glyph">⚡</span>
-        <p>No service connected yet.</p>
-        <p class="sub">Pick one above — Gmail, Slack, GitHub, or your own script.</p>
-      </div>`;
-    host.querySelectorAll("[data-int-copyurl]").forEach((b) => (b.onclick = () => copyInt(b.dataset.intCopyurl)));
-    host.querySelectorAll("[data-int-test]").forEach((b) => (b.onclick = () => testInt(b.dataset.intTest)));
-    host.querySelectorAll("[data-int-rotate]").forEach((b) => (b.onclick = () => rotateInt(b.dataset.intRotate)));
-    host.querySelectorAll("[data-int-del]").forEach((b) => (b.onclick = () => deleteInt(b.dataset.intDel, b)));
-    host.querySelectorAll("[data-int-unbind]").forEach((b) => (b.onclick = () => unbindRoutine(b.dataset.intUnbind)));
-    host.querySelectorAll("[data-int-bind]").forEach((sel) => (sel.onchange = () => bindRoutineToInt(sel.dataset.intBind, sel.value)));
-    renderIntEvents();
-  }
-  function renderIntEvents() {
-    const host = $4("intEvents");
-    if (!host) return;
-    const rows = [];
-    integrations.forEach((in2) => (in2.events || []).forEach((ev) => rows.push({ ev: ev, name: in2.name })));
-    rows.sort((a, b) => String(b.ev.created_at || "").localeCompare(String(a.ev.created_at || "")));
-    const filters = ["all", "fired", "rejected", "ignored", "error"];
-    const fhost = $4("intEvFilters");
-    if (fhost) {
-      fhost.innerHTML = filters
-        .map((f) => `<button type="button" class="chip ghost-chip ${intFilter === f ? "sel" : ""}" data-int-filter="${esc3(f)}">${esc3(f)}</button>`)
-        .join("");
-      fhost.querySelectorAll("[data-int-filter]").forEach((b) => (b.onclick = () => {
-        intFilter = b.dataset.intFilter;
-        renderIntEvents();
-      }));
-    }
-    const shown = rows.filter((r) => intFilter === "all" || (r.ev.status || "fired") === intFilter).slice(0, 60);
-    host.innerHTML = shown.map((r) => {
-      const st = r.ev.status || "fired";
-      const cls = st === "fired" ? "ok" : st === "rejected" ? "err" : "warn";
-      return `
-      <div class="int-ev">
-        <span class="int-ev-dot ${cls}"></span>
-        <span class="int-ev-name">${esc3(r.name)}</span>
-        <span class="chip ${cls}">${esc3(st)}</span>
-        <span class="int-ev-note">${esc3(r.ev.note || "")}</span>
-        <span class="spacer"></span>
-        ${r.ev.run_id ? `<button type="button" class="linklike" data-run="${esc3(r.ev.run_id)}">${esc3(r.ev.run_id.slice(0, 8))}</button>` : ""}
-        <span class="tag">${esc3(ago(r.ev.created_at))}</span>
-      </div>`;
-    }).join("") || `
-      <div class="int-empty">
-        <span class="int-glyph">◷</span>
-        <p>No events yet.</p>
-        <p class="sub">Send a test event from a connected service — the log lands here.</p>
-      </div>`;
-    host.querySelectorAll("[data-run]").forEach((btn) => (btn.onclick = () => {
-      clearLog();
-      stopPoll();
-      activeRun = null;
-      startStream(btn.dataset.run);
-    }));
-  }
-  async function copyInt(idOrText) {
-    const el = idOrText && idOrText.charAt(0) === "#" ? null : document.getElementById("intUrl-" + idOrText);
-    const text = el ? el.textContent : idOrText;
-    try {
-      await navigator.clipboard.writeText(text);
-      toast3("copied to clipboard", "ok");
-    } catch (e) {
-      toast3("copy failed — select the text and copy it by hand", "err");
-    }
-  }
-  async function testInt(id) {
-    try {
-      const res = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/test`, {});
-      const fired = res && res.fired ? res.fired : 0;
-      if (fired > 0) {
-        toast3(`test event fired ${fired} routine${fired === 1 ? "" : "s"}`, "ok");
-      } else {
-        toast3("nothing fired — bind and enable a routine first", "err");
-      }
-      await refreshInt();
-    } catch (e) {
-      toast3(safe2(e.message), "err");
-    }
-  }
-  async function rotateInt(id) {
-    try {
-      const res = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/rotate`, {});
-      const in2 = (res && res.integration) || {};
-      toast3("secret rotated — the old one stops working now", "ok");
-      renderIntSheetReady(in2, (res && res.url) || "", true);
-      await refreshInt();
-    } catch (e) {
-      toast3(safe2(e.message), "err");
-    }
-  }
-  async function bindRoutineToInt(id, routineId) {
-    const rid = (routineId || "").trim();
-    if (!rid) return;
-    try {
-      await api2("POST", `/api/v1/routines/${encodeURIComponent(rid)}/integration`, { integration_id: id });
-      toast3("routine bound — events fire it now", "ok");
-      await refreshInt();
-    } catch (e) {
-      toast3(safe2(e.message), "err");
-    }
-  }
-  async function unbindRoutine(routineId) {
-    try {
-      await api2("POST", `/api/v1/routines/${encodeURIComponent(routineId)}/integration`, { integration_id: "" });
-      toast3("routine unbound", "ok");
-      await refreshInt();
-    } catch (e) {
-      toast3(safe2(e.message), "err");
-    }
-  }
-  async function deleteInt(id, btn) {
-    if (btn && btn.dataset.armed !== "1") {
-      btn.dataset.armed = "1";
-      btn.textContent = "confirm remove";
-      btn.classList.add("danger-armed");
-      setTimeout(() => {
-        if (!btn.isConnected) return;
-        btn.dataset.armed = "";
-        btn.textContent = "remove";
-        btn.classList.remove("danger-armed");
-      }, 4000);
-      return;
-    }
-    try {
-      await api2("DELETE", `/api/v1/integrations/${encodeURIComponent(id)}`);
-      toast3("integration removed — its secret stops working", "ok");
-      await refreshInt();
-    } catch (e) {
-      toast3(safe2(e.message), "err");
-    }
-  }
-  function openIntSheet(kind) {
-    intSheetKind = kind;
-    const p = intProvider(kind);
-    $4("intSheetGlyph").textContent = p.glyph || "∞";
-    $4("intSheetTitle").textContent = "Connect " + (p.label || kind);
-    $4("intSheetBlurb").textContent = p.blurb || "";
-    renderIntSheetForm(p);
-    $4("intSheet").hidden = false;
-    setTimeout(() => {
-      const f = $4("intSheetName");
-      if (f) f.focus();
-    }, 30);
-  }
-  function closeIntSheet() {
-    $4("intSheet").hidden = true;
-    $4("intSheetBody").innerHTML = "";
-  }
-  function renderIntSheetForm(p) {
-    const modes = (p.auth_modes || ["bearer"]).map((id) => {
-      const m = intAuthModes.find((x) => x.id === id) || { id: id, label: id, hint: "" };
-      const sel = id === (p.default_auth || "bearer") ? " selected" : "";
-      return `<option value="${esc3(m.id)}"${sel}>${esc3(m.label)}</option>`;
-    }).join("");
-    $4("intSheetBody").innerHTML = `
-      <div class="int-form">
-        <label class="int-field"><span>name</span>
-          <input id="intSheetName" placeholder="work inbox" value="${esc3(p.kind === "webhook" ? "" : p.label || "")}">
-        </label>
-        <label class="int-field"><span>detail <em>optional</em></span>
-          <input id="intSheetDetail" placeholder="${esc3(p.kind === "gmail" ? "label: inbox" : "what this watches")}">
-        </label>
-        <label class="int-field"><span>authentication</span>
-          <select id="intSheetAuth">${modes}</select>
-          <small id="intSheetAuthHint"></small>
-        </label>
-        <ol class="int-steps">
-          ${(p.steps || []).map((s) => `<li>${esc3(s)}</li>`).join("")}
-        </ol>
-        <div class="int-form-actions">
-          <button type="button" class="ghost" data-int-close="1">cancel</button>
-          <button type="button" class="primary" id="createInt">Create integration</button>
-        </div>
-      </div>`;
-    const sel = $4("intSheetAuth");
-    const hint = () => {
-      const m = intAuthModes.find((x) => x.id === sel.value);
-      const h = $4("intSheetAuthHint");
-      if (h) h.textContent = m ? m.hint : "";
-    };
-    sel.onchange = hint;
-    hint();
-    $4("intSheetBody").querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
-    $4("createInt").onclick = async () => {
-      try {
-        const name = ($4("intSheetName").value || "").trim();
-        if (!name) throw new Error("give it a name");
-        const res = await api2("POST", "/api/v1/integrations", {
-          kind: intSheetKind,
-          name: name,
-          detail: ($4("intSheetDetail").value || "").trim(),
-          auth_mode: $4("intSheetAuth").value
-        });
-        const in2 = (res && res.integration) || {};
-        renderIntSheetReady(in2, (res && res.url) || "");
-        await refreshInt();
-      } catch (e) {
-        showErr(e.message);
-      }
-    };
-  }
-  function intSnippets(kind, url, secret, authMode) {
-    const out = {};
-    const auth = authMode === "query"
-      ? `?key=${secret}`
-      : "";
-    const target = url + auth;
-    if (authMode === "bearer" || authMode === "query") {
-      out.curl = [
-        `curl -X POST "${target}"`,
-        `  -H "Content-Type: application/json"`,
-        authMode === "query" ? "" : `  -H "Authorization: Bearer ${secret}"`,
-        `  -d '{"text":"hello from flobot"}'`
-      ].filter(Boolean).join(" \\\n");
-    } else {
-      out.curl = [
-        `curl -X POST "${url}"`,
-        `  -H "Content-Type: application/json"`,
-        authMode === "hmac" ? `  -H "X-Hub-Signature-256: sha256=<hmac of the body>"` : "",
-        authMode === "slack" ? `  -H "X-Slack-Signature: v0=<signature>"` : "",
-        authMode === "stripe" ? `  -H "Stripe-Signature: t=<ts>,v1=<signature>"` : "",
-        authMode === "standard" ? `  -H "webhook-signature: v1,<signature>"` : "",
-        `  -d '{"text":"hello from flobot"}'`
-      ].filter(Boolean).join(" \\\n");
-    }
-    out.javascript = [
-      `await fetch("${target}", {`,
-      `  method: "POST",`,
-      authMode === "query" ? `  headers: { "Content-Type": "application/json" },` : `  headers: { "Content-Type": "application/json", "Authorization": "Bearer ${secret}" },`,
-      `  body: JSON.stringify({ text: "hello from flobot" })`,
-      `});`
-    ].join("\n");
-    out.python = [
-      `import requests`,
-      ``,
-      `requests.post("${target}",`,
-      authMode === "query" ? `    headers={},` : `    headers={"Authorization": "Bearer ${secret}"},`,
-      `    json={"text": "hello from flobot"})`
-    ].join("\n");
-    if (kind === "gmail") {
-      out["apps script"] = [
-        `function doPost(e) {`,
-        `  const body = JSON.parse(e.postData.contents || "{}");`,
-        `  UrlFetchApp.fetch("${url}", {`,
-        `    method: "post",`,
-        `    contentType: "application/json",`,
-        `    headers: { Authorization: "Bearer ${secret}" },`,
-        `    payload: JSON.stringify({ text: body.subject + "\\n" + body.snippet })`,
-        `  });`,
-        `}`
-      ].join("\n");
-    }
-    if (kind === "telegram") {
-      out["set webhook"] = [
-        `curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook"`,
-        `  -H "Content-Type: application/json"`,
-        `  -d '{"url":"${url}?key=${secret}"}'`
-      ].join("\n");
-    }
-    if (kind === "github") {
-      out["repo config"] = [
-        `{`,
-        `  "url": "${url}",`,
-        `  "content_type": "json",`,
-        `  "secret": "${secret}",`,
-        `  "insecure_ssl": "0"`,
-        `}`
-      ].join("\n");
-    }
-    return out;
-  }
-  function renderIntSheetReady(in2, url, rotated) {
-    const p = intProvider(in2.kind);
-    const secret = in2.secret || "";
-    const target = in2.auth_mode === "query" ? url + "?key=" + secret : url;
-    const snippets = intSnippets(in2.kind, url, secret, in2.auth_mode || "bearer");
-    const keys = Object.keys(snippets);
-    $4("intSheetGlyph").textContent = p.glyph || "∞";
-    $4("intSheetTitle").textContent = (rotated ? "New secret for " : "") + (p.label || in2.kind);
-    $4("intSheetBlurb").textContent = rotated
-      ? "The old secret is dead. Paste the new one into " + (p.label || in2.kind) + "."
-      : "Copy the URL and the secret into " + (p.label || in2.kind) + ", then send a test event.";
-    $4("intSheetBody").innerHTML = `
-      <div class="int-ready">
-        <div class="int-secret-row">
-          <div class="int-kv"><span class="int-k">webhook URL</span><span class="int-v int-mono" id="intReadyUrl">${esc3(target)}</span></div>
-          <button type="button" class="ghost" data-int-copytext="url">copy URL</button>
-        </div>
-        <div class="int-secret-row">
-          <div class="int-kv"><span class="int-k">secret <em>shown once</em></span><span class="int-v int-mono" id="intReadySecret">${esc3(secret)}</span></div>
-          <button type="button" class="ghost" data-int-copytext="secret">copy secret</button>
-        </div>
-        <div class="int-tabs">
-          ${keys.map((k, i) => `<button type="button" class="int-tab ${i === 0 ? "sel" : ""}" data-int-snippet="${esc3(k)}">${esc3(k)}</button>`).join("")}
-        </div>
-        <pre class="int-snippet" id="intSnippet">${esc3(snippets[keys[0]])}</pre>
-        <div class="int-form-actions">
-          <button type="button" class="ghost" data-int-close="1">done</button>
-          <button type="button" class="primary" data-int-test="${esc3(in2.id)}">Send a test event</button>
-        </div>
-      </div>`;
-    const body = $4("intSheetBody");
-    body.querySelectorAll("[data-int-close]").forEach((b) => (b.onclick = closeIntSheet));
-    body.querySelectorAll("[data-int-test]").forEach((b) => (b.onclick = () => testInt(b.dataset.intTest)));
-    body.querySelectorAll("[data-int-copytext]").forEach((b) => (b.onclick = () => {
-      const el = document.getElementById(b.dataset.intCopytext === "url" ? "intReadyUrl" : "intReadySecret");
-      if (!el) return;
-      copyInt(el.textContent);
-    }));
-    body.querySelectorAll("[data-int-snippet]").forEach((b) => (b.onclick = () => {
-      body.querySelectorAll("[data-int-snippet]").forEach((x) => x.classList.remove("sel"));
-      b.classList.add("sel");
-      const pre = $4("intSnippet");
-      if (pre) pre.textContent = snippets[b.dataset.intSnippet] || "";
-    }));
-  }
-  async function refreshInt() {
-    try {
-      const [res, provs, ucs] = await Promise.all([
-        api2("GET", "/api/v1/integrations"),
-        api2("GET", "/api/v1/integrations/providers").catch(() => null),
-        api2("GET", "/api/v1/usecases").catch(() => null)
-      ]);
-      integrations = (res && res.integrations) || [];
-      if (provs) {
-        intProviders = provs.providers || [];
-        intAuthModes = provs.auth_modes || [];
-        renderIntGallery();
-      }
-      if (ucs) {
-        intUseCases = ucs.usecases || [];
-        renderIntUseCases();
-      }
-      renderIntegrations();
-      render2();
-    } catch (e) {
-      toast3(safe2(e.message), "err");
-    }
   }
   async function refresh2() {
     roster = await api2("GET", "/api/v1/roster");
@@ -4512,7 +4405,7 @@ When a release is cut:
     renderHero();
   }
   async function saveRtnTrigger(id) {
-    const box = $4("routines").querySelector(`[data-rtn-edit="${id}"]`);
+    const box = $5("routines").querySelector(`[data-rtn-edit="${id}"]`);
     const input = box?.querySelector(".rtn-edit-in");
     const trigger = (input?.value || "").trim();
     if (!trigger) {
@@ -4532,27 +4425,27 @@ When a release is cut:
     try {
       const res = await api2("GET", "/api/v1/mesh/models");
       meshModels = res.ok ? res.models || [] : [];
-      $4("meshCount").textContent = res.ok ? `${meshModels.length} ready` : `unavailable (${res.reason || "amesh-web unreachable"})`;
+      $5("meshCount").textContent = res.ok ? `${meshModels.length} ready` : `unavailable (${res.reason || "amesh-web unreachable"})`;
     } catch (e) {
       meshModels = [];
-      $4("meshCount").textContent = `unavailable (${e.message})`;
+      $5("meshCount").textContent = `unavailable (${e.message})`;
     }
-    $4("meshModels").innerHTML = meshModels.map(
+    $5("meshModels").innerHTML = meshModels.map(
       (m) => `<li><span class="avatar" style="background:var(--grad)">\u25C8</span>
       <div class="body">
-        <div class="title">${esc3(m.route)}</div>
-        <div class="clip">${esc3(m.display || m.model)}${m.context_tokens ? " \xB7 " + m.context_tokens + " ctx" : ""}</div>
+        <div class="title">${esc4(m.route)}</div>
+        <div class="clip">${esc4(m.display || m.model)}${m.context_tokens ? " \xB7 " + m.context_tokens + " ctx" : ""}</div>
       </div></li>`
     ).join("") || empty("\u25C8", "No mesh models ready \u2014 the rack is dark.");
     render2();
   }
   var hubData = { hubs: [], models: [] };
   async function loadHubs() {
-    const statusEl = $4("hubsStatus");
-    const listEl = $4("hubList");
-    const modelsEl = $4("hubModels");
-    const countEl = $4("modelCount");
-    const navEl = $4("navHubs");
+    const statusEl = $5("hubsStatus");
+    const listEl = $5("hubList");
+    const modelsEl = $5("hubModels");
+    const countEl = $5("modelCount");
+    const navEl = $5("navHubs");
     try {
       const res = await api2("GET", "/api/v1/hubs");
       hubData.hubs = res.hubs || [];
@@ -4571,11 +4464,11 @@ When a release is cut:
       listEl.innerHTML = hubData.hubs.map((h) => {
         const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
         const def = h.default ? `<span class="chip acc">default</span>` : "";
-        const ver = h.hub_version ? `<span class="tag">${esc3(h.hub_version)}</span>` : "";
-        return `<div class="hub-card" data-name="${esc3(h.name)}" title="inspect ${esc3(h.name)}">
-        <div class="hub-title"><span class="avatar" style="background:var(--grad)">\u25C8</span><span class="hub-name">${esc3(h.name)}</span>${def}${wg}${ver}</div>
-        <div class="hub-url">${esc3(h.url)}</div>
-        <div class="hub-meta">${h.controller_url ? `controller ${esc3(h.controller_url)}` : ""}${h.wg_status && h.wg_status.ip ? ` \xB7 wg ${esc3(h.wg_status.ip)}` : ""}<span class="hub-drill tag">inspect \u203A</span></div>
+        const ver = h.hub_version ? `<span class="tag">${esc4(h.hub_version)}</span>` : "";
+        return `<div class="hub-card" data-name="${esc4(h.name)}" title="inspect ${esc4(h.name)}">
+        <div class="hub-title"><span class="avatar" style="background:var(--grad)">\u25C8</span><span class="hub-name">${esc4(h.name)}</span>${def}${wg}${ver}</div>
+        <div class="hub-url">${esc4(h.url)}</div>
+        <div class="hub-meta">${h.controller_url ? `controller ${esc4(h.controller_url)}` : ""}${h.wg_status && h.wg_status.ip ? ` \xB7 wg ${esc4(h.wg_status.ip)}` : ""}<span class="hub-drill tag">inspect \u203A</span></div>
       </div>`;
       }).join("") || empty("\u25C8", "No hubs joined \u2014 run 'amesh join <hub-url>' to enrol.");
       listEl.querySelectorAll(".hub-card").forEach((card) => {
@@ -4585,13 +4478,13 @@ When a release is cut:
     if (modelsEl) {
       modelsEl.innerHTML = hubData.models.map((m) => {
         const st = m.state === "ready" ? `<span class="chip ok">ready</span>` : `<span class="chip">stopped</span>`;
-        const loc = m.location === "local" ? `<span class="tag">local</span>` : `<span class="tag">${esc3(m.location)}</span>`;
-        const backend = m.backend ? `<span class="tag">${esc3(m.backend)}</span>` : "";
+        const loc = m.location === "local" ? `<span class="tag">local</span>` : `<span class="tag">${esc4(m.location)}</span>`;
+        const backend = m.backend ? `<span class="tag">${esc4(m.backend)}</span>` : "";
         const shared = m.shared ? `<span class="chip acc" title="shared on the mesh">\u25C8 shared</span>` : "";
         const routes = m.route_count > 0 ? `<span class="tag">${m.route_count} route${m.route_count === 1 ? "" : "s"}</span>` : "";
-        const startBtn = m.state !== "ready" ? `<button type="button" class="ghost mini" data-start="${esc3(m.id)}" title="warm ${esc3(m.display)}">\u25B6 start</button>` : "";
-        return `<div class="hub-model" data-state="${esc3(m.state)}">
-        <div class="hub-model-name">${esc3(m.display || m.id)}</div>
+        const startBtn = m.state !== "ready" ? `<button type="button" class="ghost mini" data-start="${esc4(m.id)}" title="warm ${esc4(m.display)}">\u25B6 start</button>` : "";
+        return `<div class="hub-model" data-state="${esc4(m.state)}">
+        <div class="hub-model-name">${esc4(m.display || m.id)}</div>
         <div class="hub-model-meta">${loc}${st}${backend}${shared}${routes}${m.context_tokens ? ` \xB7 ${m.context_tokens} ctx` : ""}</div>
         <div class="spacer"></div>${startBtn}
       </div>`;
@@ -4622,7 +4515,7 @@ When a release is cut:
     }
   }
   async function runDoctor() {
-    const bar = $4("hubDoctor");
+    const bar = $5("hubDoctor");
     if (!bar) return;
     bar.hidden = false;
     bar.innerHTML = `<span class="tag">running amesh doctor\u2026</span>`;
@@ -4637,43 +4530,47 @@ When a release is cut:
         <span class="tag">${ok} ok</span>
         <span class="tag">${warn} warn</span>
         <span class="tag">${err} err</span>
-        <span class="tag">default hub ${esc3(d.default_hub || "\u2014")}</span>
+        <span class="tag">default hub ${esc4(d.default_hub || "\u2014")}</span>
       </div>
       <div class="hub-doctor-checks">${checks.map(
-        (c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`
+        (c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc4(c.status)}</span><span class="hub-check-id">${esc4(c.id)}</span><span class="hub-check-msg">${esc4(c.message)}</span></div>`
       ).join("") || `<span class="tag">no checks</span>`}</div>`;
     } catch (e) {
       bar.innerHTML = `<span class="tag err">doctor failed: ${safe2(e.message)}</span>`;
     }
   }
   async function openHubDetail(name) {
-    const el2 = $4("hubDetail");
+    const el2 = $5("hubDetail");
     if (!el2) return;
     el2.hidden = false;
-    $4("hubDetailName").textContent = name;
-    $4("hubDetailBody").innerHTML = `<span class="tag">inspecting ${esc3(name)}\u2026</span>`;
+    $5("hubDetailName").textContent = name;
+    $5("hubDetailBody").innerHTML = `<span class="tag">inspecting ${esc4(name)}\u2026</span>`;
     try {
       const d = await api2("GET", "/api/v1/hubs/" + encodeURIComponent(name));
       const h = d.hub || {};
       const checks = d.checks || [];
       const wg = h.wg_up ? `<span class="chip ok">wg up</span>` : `<span class="chip err">wg down</span>`;
       const def = h.default ? `<span class="chip acc">default</span>` : "";
-      $4("hubDetailBody").innerHTML = `
-      <div class="hub-detail-row"><span class="tag">url</span><code>${esc3(h.url || "")}</code></div>
-      ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc3(h.controller_url)}</code></div>` : ""}
-      ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc3(h.fingerprint)}</code></div>` : ""}
-      ${h.wg_status && h.wg_status.ip ? `<div class="hub-detail-row"><span class="tag">wg ip</span><code>${esc3(h.wg_status.ip)}</code></div>` : ""}
+      $5("hubDetailBody").innerHTML = `
+      <div class="hub-detail-row"><span class="tag">url</span><code>${esc4(h.url || "")}</code></div>
+      ${h.controller_url ? `<div class="hub-detail-row"><span class="tag">controller</span><code>${esc4(h.controller_url)}</code></div>` : ""}
+      ${h.fingerprint ? `<div class="hub-detail-row"><span class="tag">fingerprint</span><code>${esc4(h.fingerprint)}</code></div>` : ""}
+      ${h.wg_status && h.wg_status.ip ? `<div class="hub-detail-row"><span class="tag">wg ip</span><code>${esc4(h.wg_status.ip)}</code></div>` : ""}
       <div class="hub-detail-row"><span class="tag">status</span>${wg}${def}</div>
       <h4>Health checks</h4>
-      ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc3(c.status)}</span><span class="hub-check-id">${esc3(c.id)}</span><span class="hub-check-msg">${esc3(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
+      ${checks.map((c) => `<div class="hub-check ${c.status}"><span class="chip ${c.status === "ok" ? "ok" : c.status === "error" ? "err" : "warn"}">${esc4(c.status)}</span><span class="hub-check-id">${esc4(c.id)}</span><span class="hub-check-msg">${esc4(c.message)}</span></div>`).join("") || `<span class="tag">no health checks for this hub</span>`}
     `;
     } catch (e) {
-      $4("hubDetailBody").innerHTML = `<span class="tag err">${safe2(e.message)}</span>`;
+      $5("hubDetailBody").innerHTML = `<span class="tag err">${safe2(e.message)}</span>`;
     }
   }
   var openTools = /* @__PURE__ */ new Map();
+  // deltaNodes holds the live bubble of each turn whose answer is still
+  // arriving as deltas, keyed by turn id. It is what makes a long answer look
+  // like typing instead of a hang.
+  var deltaNodes = /* @__PURE__ */ new Map();
   function logEl() {
-    return $4("log");
+    return $5("log");
   }
   function appendEvent(e) {
     const log = logEl();
@@ -4681,9 +4578,39 @@ When a release is cut:
     stats.bump(kind);
     let node;
     switch (kind) {
-      case "content":
-        node = evDiv("content", "content", e.text);
-        break;
+      case "delta": {
+        const key = String(e.turn_id || 0);
+        let live = deltaNodes.get(key);
+        if (!live) {
+          live = evDiv("content", "content", "");
+          deltaNodes.set(key, live);
+          log.appendChild(live);
+          stampEvent(live, "content");
+        }
+        if (e.text) live.appendChild(document.createTextNode(sanitize2(e.text)));
+        if (autoScroll) log.scrollTop = log.scrollHeight;
+        return;
+      }
+      case "content": {
+        const key = String(e.turn_id || 0);
+        const live = deltaNodes.get(key);
+        if (!live) {
+          node = evDiv("content", "content", e.text);
+          break;
+        }
+        // The full message is authoritative. Replace the accumulated fragments
+        // instead of appending to them, so a fragment lost to a drop cannot
+        // leave a hole in the transcript.
+        live.textContent = "";
+        const k = document.createElement("span");
+        k.className = "k";
+        k.textContent = "content";
+        live.appendChild(k);
+        if (e.text) live.appendChild(document.createTextNode(" " + sanitize2(e.text)));
+        deltaNodes.delete(key);
+        if (autoScroll) log.scrollTop = log.scrollHeight;
+        return;
+      }
       case "thinking":
         node = thinkingEl(e.text);
         break;
@@ -4709,6 +4636,7 @@ When a release is cut:
         break;
       case "done":
         node = evDiv("done", "done", e.text);
+        deltaNodes.clear();
         sfx.done();
         renderTimeline();
         checkAllSteps();
@@ -4869,7 +4797,7 @@ When a release is cut:
     evCount = 0;
     updateStats();
     planSteps = null;
-    $4("timeline").hidden = true;
+    $5("timeline").hidden = true;
   }
   function startElapsed() {
     runStart = Date.now();
@@ -4877,7 +4805,7 @@ When a release is cut:
     const tick = () => {
       if (!runStart) return;
       const s = Math.floor((Date.now() - runStart) / 1e3);
-      const el2 = $4("elapsed");
+      const el2 = $5("elapsed");
       if (el2) el2.textContent = s < 60 ? s + "s" : Math.floor(s / 60) + "m " + s % 60 + "s";
     };
     tick();
@@ -4899,6 +4827,20 @@ When a release is cut:
       return;
     }
     if (!ev || typeof ev !== "object") return;
+    if (ev.kind === "heartbeat") {
+      // A keepalive carries no state. It exists so an idle connection is not
+      // mistaken for a dead one; rendering it would put noise in the log.
+      return;
+    }
+    if (ev.kind === "stream_dropped") {
+      // The server gave up on us because we fell behind. This is a truncation,
+      // not completion: resume from the last event we actually have instead of
+      // showing a half answer as if it were finished.
+      streamDropped = true;
+      setStreamState("reconnecting");
+      return;
+    }
+    streamSeen++;
     appendEvent(ev);
   }
   function feedStreamLine(chunk) {
@@ -4922,7 +4864,12 @@ When a release is cut:
       clearTimeout(streamTimer);
       streamTimer = null;
     }
-    const url = streamRunId ? "/api/stream?run=" + encodeURIComponent(streamRunId) : "/api/stream";
+    const qs = [];
+    if (streamRunId) qs.push("run=" + encodeURIComponent(streamRunId));
+    // Resume, do not re-render: the server replays from this offset, so a
+    // reconnect after a drop yields no duplicate and no gap.
+    if (streamSeen > 0) qs.push("since=" + streamSeen);
+    const url = "/api/stream" + (qs.length ? "?" + qs.join("&") : "");
     const ctrl = new AbortController();
     streamES = ctrl;
     fetch(url, { signal: ctrl.signal }).then((res) => {
@@ -4955,8 +4902,8 @@ When a release is cut:
     });
   }
   function setStreamState(state2) {
-    const el2 = $4("streamState");
-    const pill = $4("streamPill");
+    const el2 = $5("streamState");
+    const pill = $5("streamPill");
     if (el2) el2.textContent = state2;
     if (pill) {
       pill.classList.remove("live", "reconnecting");
@@ -4970,6 +4917,8 @@ When a release is cut:
       streamTimer = null;
     }
     streamBuf = "";
+    streamSeen = 0;
+    streamDropped = false;
     connectStream();
     if (runId) startElapsed();
     else {
@@ -4991,6 +4940,8 @@ When a release is cut:
     }
     streamOpen = false;
     streamRunId = null;
+    streamSeen = 0;
+    streamDropped = false;
     setStreamState("idle");
   }
   function stopPoll() {
@@ -5000,41 +4951,41 @@ When a release is cut:
     }
   }
   function renderMissions() {
-    $4("missionGrid").innerHTML = MISSIONS.map((m, i) => `<button type="button" class="mission" data-mission="${i}">
+    $5("missionGrid").innerHTML = MISSIONS.map((m, i) => `<button type="button" class="mission" data-mission="${i}">
        <span class="m-ico">${m.icon}</span>
-       <span class="m-title">${esc3(m.title)}</span>
-       <span class="m-desc">${esc3(m.prompt)}</span>
+       <span class="m-title">${esc4(m.title)}</span>
+       <span class="m-desc">${esc4(m.prompt)}</span>
      </button>`).join("");
-    $4("missionGrid").querySelectorAll("[data-mission]").forEach((btn) => {
+    $5("missionGrid").querySelectorAll("[data-mission]").forEach((btn) => {
       btn.onclick = () => {
         const m = MISSIONS[+btn.dataset.mission];
-        $4("prompt").value = m.prompt;
-        $4("intent").value = m.intent;
-        $4("prompt").focus();
+        $5("prompt").value = m.prompt;
+        $5("intent").value = m.intent;
+        $5("prompt").focus();
         toast3(`mission loaded: ${m.title}`, "ok");
       };
     });
   }
   function renderSkillTemplates() {
-    $4("skillTemplates").innerHTML = SKILL_TEMPLATES.map((t, i) => `<button type="button" class="mission" data-tpl="${i}">
+    $5("skillTemplates").innerHTML = SKILL_TEMPLATES.map((t, i) => `<button type="button" class="mission" data-tpl="${i}">
        <span class="m-ico">\u2726</span>
-       <span class="m-title">${esc3(t.name)}</span>
-       <span class="m-desc">${esc3(t.body.split("\n").slice(1).join(" ").trim().slice(0, 120))}\u2026</span>
+       <span class="m-title">${esc4(t.name)}</span>
+       <span class="m-desc">${esc4(t.body.split("\n").slice(1).join(" ").trim().slice(0, 120))}\u2026</span>
      </button>`).join("");
-    $4("skillTemplates").querySelectorAll("[data-tpl]").forEach((btn) => {
+    $5("skillTemplates").querySelectorAll("[data-tpl]").forEach((btn) => {
       btn.onclick = () => {
         const t = SKILL_TEMPLATES[+btn.dataset.tpl];
-        $4("skillName").value = t.name;
-        $4("skillBody").value = t.body;
+        $5("skillName").value = t.name;
+        $5("skillBody").value = t.body;
         toast3(`template loaded: ${t.name}`, "ok");
       };
     });
   }
   function renderRtnTriggers() {
-    $4("rtnTriggers").innerHTML = ROUTINE_TRIGGERS.map((t) => `<button type="button" class="chip ghost-chip" data-trig="${esc3(t.value)}">${esc3(t.label)}</button>`).join("");
-    $4("rtnTriggers").querySelectorAll("[data-trig]").forEach((btn) => {
+    $5("rtnTriggers").innerHTML = ROUTINE_TRIGGERS.map((t) => `<button type="button" class="chip ghost-chip" data-trig="${esc4(t.value)}">${esc4(t.label)}</button>`).join("");
+    $5("rtnTriggers").querySelectorAll("[data-trig]").forEach((btn) => {
       btn.onclick = () => {
-        $4("rtnTrigger").value = btn.dataset.trig;
+        $5("rtnTrigger").value = btn.dataset.trig;
       };
     });
   }
@@ -5046,15 +4997,15 @@ When a release is cut:
     return t.content.firstElementChild;
   }
   setInterval(() => {
-    $4("tsEpm").textContent = stats.perMin();
-    $4("tsTools").textContent = stats.tools();
-    $4("tsErrs").textContent = stats.errs();
-    $4("tsTotal").textContent = stats.total();
+    $5("tsEpm").textContent = stats.perMin();
+    $5("tsTools").textContent = stats.tools();
+    $5("tsErrs").textContent = stats.errs();
+    $5("tsTotal").textContent = stats.total();
   }, 1e3);
   function renderTimeline() {
     const events = [...logEl().querySelectorAll(".ev")].map((r) => ({ kind: r.dataset.kind }));
     const segs = timeline(events);
-    const tl = $4("timeline");
+    const tl = $5("timeline");
     if (!segs.length) {
       tl.hidden = true;
       return;
@@ -5062,13 +5013,13 @@ When a release is cut:
     tl.hidden = false;
     tl.innerHTML = segs.map((s) => `<div class="tl-seg tl-${s.p}" style="flex:${Math.max(s.frac * 100, 4)}" title="${Math.round(s.frac * 100)}% ${s.p}"></div>`).join("");
   }
-  $4("sfxToggle").onclick = () => {
+  $5("sfxToggle").onclick = () => {
     sfx.on = !sfx.on;
-    $4("sfxToggle").textContent = sfx.on ? "\u266A on" : "\u266A off";
-    $4("sfxToggle").classList.toggle("sel", sfx.on);
+    $5("sfxToggle").textContent = sfx.on ? "\u266A on" : "\u266A off";
+    $5("sfxToggle").classList.toggle("sel", sfx.on);
     if (sfx.on) sfx.tick();
   };
-  $4("shareRun").onclick = async () => {
+  $5("shareRun").onclick = async () => {
     const events = [...logEl().querySelectorAll(".ev")].map((r) => {
       const ev = { kind: r.dataset.kind };
       const k = r.querySelector(".k");
@@ -5108,27 +5059,27 @@ When a release is cut:
   function updateStats() {
     const log = logEl();
     const visible = [...log.querySelectorAll(".ev")].filter((r) => r.style.display !== "none").length;
-    $4("logStats").textContent = `${visible} events`;
+    $5("logStats").textContent = `${visible} events`;
   }
-  $4("logFilters").querySelectorAll("[data-f]").forEach((btn) => {
+  $5("logFilters").querySelectorAll("[data-f]").forEach((btn) => {
     btn.onclick = () => {
-      $4("logFilters").querySelectorAll("[data-f]").forEach((b) => b.classList.remove("sel"));
+      $5("logFilters").querySelectorAll("[data-f]").forEach((b) => b.classList.remove("sel"));
       btn.classList.add("sel");
       logFilter = btn.dataset.f;
       applyFilter();
     };
   });
-  $4("tsToggle").onclick = () => {
+  $5("tsToggle").onclick = () => {
     showTs = !showTs;
-    $4("tsToggle").classList.toggle("sel", showTs);
+    $5("tsToggle").classList.toggle("sel", showTs);
     applyFilter();
   };
-  $4("autoScroll").onclick = () => {
+  $5("autoScroll").onclick = () => {
     autoScroll = !autoScroll;
-    $4("autoScroll").classList.toggle("sel", autoScroll);
+    $5("autoScroll").classList.toggle("sel", autoScroll);
     if (autoScroll) logEl().scrollTop = logEl().scrollHeight;
   };
-  $4("copyLog").onclick = async () => {
+  $5("copyLog").onclick = async () => {
     const lines = [...logEl().querySelectorAll(".ev")].map((r) => r.textContent.trim()).join("\n");
     try {
       await navigator.clipboard.writeText(lines);
@@ -5148,7 +5099,7 @@ When a release is cut:
   }
   function renderSpark() {
     const runs = roster.runs || [];
-    $4("sparkCard").hidden = runs.length === 0;
+    $5("sparkCard").hidden = runs.length === 0;
     if (!runs.length) return;
     const now = Date.now();
     const buckets = new Array(24).fill(0);
@@ -5159,17 +5110,17 @@ When a release is cut:
       if (h >= 0 && h < 24) buckets[23 - h]++;
     }
     const max = Math.max(...buckets, 1);
-    $4("spark").innerHTML = buckets.map((n, i) => `<div class="spark-col" title="${n} run${n === 1 ? "" : "s"}">
+    $5("spark").innerHTML = buckets.map((n, i) => `<div class="spark-col" title="${n} run${n === 1 ? "" : "s"}">
        <div class="spark-bar" style="height:${Math.max(4, n / max * 100)}%"></div>
        <div class="spark-lbl">${i === 23 ? "now" : i === 0 ? "-24h" : ""}</div>
      </div>`).join("");
   }
   function renderHero() {
     const empty2 = roster.bots.length === 0;
-    $4("heroCard").hidden = !empty2;
+    $5("heroCard").hidden = !empty2;
     if (!empty2) return;
-    $4("heroDeploy").onclick = () => gotoPanel("bots");
-    $4("heroDemo").onclick = playDemoRun;
+    $5("heroDeploy").onclick = () => gotoPanel("bots");
+    $5("heroDemo").onclick = playDemoRun;
   }
   var palette = null;
   function paletteCommands() {
@@ -5184,31 +5135,59 @@ When a release is cut:
       } },
       { label: "Go to Routines", icon: "\u21BB", hint: "panel", run: () => gotoPanel("routines") },
       { label: "Go to Skills", icon: "\u2726", hint: "panel", run: () => gotoPanel("skills") },
-      { label: "Go to Integrations", icon: "\u221E", hint: "panel", run: () => gotoPanel("integrations") },
       { label: "Go to Routes", icon: "\u21C4", hint: "panel", run: () => gotoPanel("routes") },
       { label: "Go to Model health", icon: "\u2665", hint: "panel", run: () => gotoPanel("health") },
       { label: "Watch a demo run", icon: "\u25B6", hint: "demo", run: playDemoRun },
       { label: "Run the pulse check", icon: "\u2665", hint: "health", run: () => {
         gotoPanel("health");
-        $4("probeBtn").click();
+        $5("probeBtn").click();
       } },
-      { label: "Copy the console", icon: "\u29C9", hint: "log", run: () => $4("copyLog").click() }
+      { label: "Copy the console", icon: "\u29C9", hint: "log", run: () => $5("copyLog").click() },
+      // ---- Code Studio editor commands ----
+      { label: "Editor: go to line", icon: "\u2195", hint: "\u2318G", run: () => {
+        gotoPanel("editor");
+        editorCore.promptLine();
+      } },
+      { label: "Editor: find in file", icon: "\u2315", hint: "\u2318F", run: () => {
+        gotoPanel("editor");
+        document.getElementById("edFindInput")?.focus();
+      } },
+      { label: "Editor: save file", icon: "\u2913", hint: "\u2318S", run: () => {
+        gotoPanel("editor");
+        window.codeStudio?.save();
+      } },
+      { label: "Editor: close tab", icon: "\u2715", hint: "\u2318W", run: () => {
+        gotoPanel("editor");
+        window.codeStudio?.closeActiveTab();
+      } },
+      { label: "Editor: toggle word wrap", icon: "\u21A9", hint: "\u2325Z", run: () => {
+        gotoPanel("editor");
+        editorCore.toggleWrap();
+      } },
+      { label: "Editor: toggle zen mode", icon: "\u25EB", hint: "\u2318\u2325Z", run: () => {
+        gotoPanel("editor");
+        editorCore.toggleZen();
+      } },
+      { label: "Editor: keyboard shortcuts", icon: "?", hint: "help", run: () => {
+        gotoPanel("editor");
+        editorCore.showHelp();
+      } }
     ];
     for (const m of MISSIONS) {
       cmds.push({ label: `Mission: ${m.title}`, icon: m.icon, hint: m.intent, run: () => {
         gotoPanel("run");
-        $4("prompt").value = m.prompt;
-        $4("intent").value = m.intent;
-        $4("prompt").focus();
+        $5("prompt").value = m.prompt;
+        $5("intent").value = m.intent;
+        $5("prompt").focus();
         toast3(`mission loaded: ${m.title}`, "ok");
       } });
     }
     for (const b of roster.bots) {
       cmds.push({ label: `Run with ${b.name}`, icon: "\u25B6", hint: b.role, run: () => {
         gotoPanel("run");
-        fillSelect($4("runBot"), roster.bots, (x) => `${x.name} (${x.route})`);
-        $4("runBot").value = b.id;
-        $4("prompt").focus();
+        fillSelect($5("runBot"), roster.bots, (x) => `${x.name} (${x.route})`);
+        $5("runBot").value = b.id;
+        $5("prompt").focus();
       } });
     }
     for (const s of roster.skills) {
@@ -5263,7 +5242,7 @@ When a release is cut:
     stopStream();
     clearLog();
     gotoPanel("run");
-    $4("runWho").textContent = "demo \xB7 scripted replay";
+    $5("runWho").textContent = "demo \xB7 scripted replay";
     startElapsed();
     demoCancel = playDemo(appendEvent, () => {
       demoCancel = null;
@@ -5272,23 +5251,23 @@ When a release is cut:
       startStream(null);
     });
   }
-  $4("demoBtn").onclick = playDemoRun;
+  $5("demoBtn").onclick = playDemoRun;
   function require2(id, msg) {
-    const el2 = $4(id);
+    const el2 = $5(id);
     const v = String(el2 ? el2.value : "").trim();
     if (!v) throw new Error(msg);
     return v;
   }
   function markField(id) {
-    const el2 = $4(id);
+    const el2 = $5(id);
     if (!el2) return;
     el2.classList.add("invalid");
     setTimeout(() => el2.classList.remove("invalid"), 1200);
   }
-  $4("createBot").onclick = async () => {
+  $5("createBot").onclick = async () => {
     try {
       const name = require2("botName", "give the teammate a name");
-      await api2("POST", "/api/v1/bots", { name, role: $4("botRole").value.trim() || "coder", route: $4("botRoute").value });
+      await api2("POST", "/api/v1/bots", { name, role: $5("botRole").value.trim() || "coder", route: $5("botRoute").value });
       toast3("teammate deployed", "ok");
       await refresh2();
     } catch (e) {
@@ -5296,12 +5275,12 @@ When a release is cut:
       markField("botName");
     }
   };
-  $4("memBtn").onclick = async () => {
+  $5("memBtn").onclick = async () => {
     try {
       const bot = require2("memBot", "deploy a teammate first");
       const note = require2("memNote", "what should it remember?");
       await api2("POST", "/api/v1/bots/" + bot + "/remember", { note });
-      $4("memNote").value = "";
+      $5("memNote").value = "";
       toast3("burned into memory", "ok");
       await refresh2();
     } catch (e) {
@@ -5309,7 +5288,7 @@ When a release is cut:
       markField("memNote");
     }
   };
-  $4("createSkill").onclick = async () => {
+  $5("createSkill").onclick = async () => {
     try {
       const name = require2("skillName", "give the playbook a name");
       const body = require2("skillBody", "write the playbook body");
@@ -5321,35 +5300,24 @@ When a release is cut:
       markField("skillName");
     }
   };
-  $4("createRtn").onclick = async () => {
+  $5("createRtn").onclick = async () => {
     try {
       const bot = require2("rtnBot", "deploy a teammate first");
       const skill = require2("rtnSkill", "add a playbook first");
-      await api2("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $4("rtnTrigger").value.trim() || "manual" });
+      await api2("POST", "/api/v1/routines", { bot_id: bot, skill_id: skill, trigger: $5("rtnTrigger").value.trim() || "manual" });
       toast3("routine armed", "ok");
       await refresh2();
     } catch (e) {
       showErr(e.message);
     }
   };
-  $4("intRefresh").onclick = () => {
-    refreshInt().catch((e) => showErr(e.message));
-  };
-  $4("intSheetClose").onclick = closeIntSheet;
-  document.querySelectorAll("[data-int-close]").forEach((el) => (el.onclick = closeIntSheet));
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") {
-      const sheet = $4("intSheet");
-      if (sheet && !sheet.hidden) closeIntSheet();
-    }
-  });
-  $4("sendHandoff").onclick = async () => {
+  $5("sendHandoff").onclick = async () => {
     try {
       const from = require2("fromBot", "deploy a teammate first");
       const to = require2("toBot", "deploy a recipient teammate first");
       if (from === to) throw new Error("pick two different teammates");
       const body = require2("handoffBody", "what is the work item?");
-      const out = await api2("POST", "/api/v1/handoff", { from, to, body, run: $4("handoffRun").checked });
+      const out = await api2("POST", "/api/v1/handoff", { from, to, body, run: $5("handoffRun").checked });
       toast3("handoff away", "ok");
       await refresh2();
       if (out.run && out.run.id) {
@@ -5364,17 +5332,17 @@ When a release is cut:
       markField("handoffBody");
     }
   };
-  $4("runBtn").onclick = async () => {
+  $5("runBtn").onclick = async () => {
     try {
       const bot = require2("runBot", "deploy a teammate first");
       const prompt = require2("prompt", "type a prompt for the run");
       const run = await api2("POST", "/api/v1/runs", {
         bot_id: bot,
         prompt,
-        intent: $4("intent").value,
-        yolo: $4("yolo").checked,
-        verify: $4("verify").checked,
-        worktree: $4("worktree").value
+        intent: $5("intent").value,
+        yolo: $5("yolo").checked,
+        verify: $5("verify").checked,
+        worktree: $5("worktree").value
       });
       clearLog();
       stopPoll();
@@ -5387,10 +5355,10 @@ When a release is cut:
       markField("prompt");
     }
   };
-  $4("prompt").addEventListener("keydown", (ev) => {
+  $5("prompt").addEventListener("keydown", (ev) => {
     if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
       ev.preventDefault();
-      $4("runBtn").click();
+      $5("runBtn").click();
     }
   });
   async function testRun(id) {
@@ -5426,38 +5394,603 @@ When a release is cut:
       showErr(e.message);
     }
   }
-  $4("probeBtn").onclick = async () => {
+  $5("probeBtn").onclick = async () => {
     try {
       const h = await api2("GET", "/api/v1/health/models");
-      const tb = $4("health").querySelector("tbody");
+      const tb = $5("health").querySelector("tbody");
       tb.innerHTML = (h.probes || []).map((p) => {
         const mm = p.qwen_mismatch ? " qwen_mismatch" : "";
-        return `<tr><td>${esc3(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc3((p.ids || []).join(", "))}</td><td class="tag">${esc3(p.error || "")}${mm}</td></tr>`;
+        return `<tr><td>${esc4(p.id)}</td><td>${p.ok ? `<span class="chip ok">ok</span>` : `<span class="chip err">fail</span>`}</td><td>${esc4((p.ids || []).join(", "))}</td><td class="tag">${esc4(p.error || "")}${mm}</td></tr>`;
       }).join("") || `<tr><td colspan="4" class="tag">no probes returned</td></tr>`;
     } catch (e) {
       showErr(e.message);
     }
   };
   refresh2().catch((e) => showErr(e.message));
-  refreshInt().catch((e) => showErr(e.message));
   loadMesh().catch((e) => showErr(e.message));
   loadHubs().catch((e) => showErr(e.message));
   renderMissions();
+  refreshInt().catch((e) => showErr(e.message));
+  var intProviders = [];
+  var intAuthModes = [];
+  var intFilter = "all";
+  var intSheetKind = "";
+  function intProvider(kind) {
+    return intProviders.find((p) => p.kind === kind) || {
+      kind,
+      label: kind,
+      blurb: "",
+      glyph: "\u221E",
+      default_auth: "bearer",
+      auth_modes: ["bearer"],
+      steps: []
+    };
+  }
+  function ago(ts) {
+    if (!ts) return "never";
+    const t = Date.parse(ts);
+    if (isNaN(t)) return "never";
+    const s = Math.max(0, (Date.now() - t) / 1e3);
+    if (s < 60) return Math.floor(s) + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  }
+  function intStatusChip(st) {
+    const map = {
+      ok: ["ok", "live"],
+      idle: ["ghost-chip", "idle"],
+      error: ["err", "rejected"],
+      unbound: ["warn", "no routine"]
+    };
+    const m = map[st] || ["ghost-chip", st || "idle"];
+    return `<span class="chip ${m[0]}">${esc4(m[1])}</span>`;
+  }
+  function renderIntGallery() {
+    const host = $4("intGallery");
+    if (!host) return;
+    host.innerHTML = intProviders.map((p) => `
+    <button type="button" class="int-tile" data-int-connect="${esc4(p.kind)}">
+      <span class="int-glyph">${esc4(p.glyph || "\u221E")}</span>
+      <span class="int-tile-text">
+        <span class="int-tile-name">${esc4(p.label)}</span>
+        <span class="int-tile-blurb">${esc4(p.blurb || "")}</span>
+      </span>
+      <span class="int-tile-go">Connect \u2192</span>
+    </button>`).join("");
+    host.querySelectorAll("[data-int-connect]").forEach((b) => b.onclick = () => openIntSheet(b.dataset.intConnect));
+  }
+  var intUseCases = [];
+  var ucGlyphs = {
+    triage: "\u2316",
+    chatops: "\u2706",
+    "on-call": "\u26A0",
+    release: "\u21A5",
+    billing: "$",
+    inbox: "\u2709",
+    home: "\u2302",
+    ci: "\u2699",
+    workflow: "\u21C4",
+    capability: "\u26BF"
+  };
+  function intUseCase(id) {
+    return intUseCases.find((u) => u.id === id) || null;
+  }
+  function renderIntUseCases() {
+    const host = $4("ucGallery");
+    if (!host) return;
+    host.innerHTML = intUseCases.map((u) => `
+    <button type="button" class="int-tile uc-tile" data-uc="${esc4(u.id)}">
+      <span class="int-glyph">${esc4(ucGlyphs[u.category] || "\u2022")}</span>
+      <span class="int-tile-text">
+        <span class="int-tile-name">${esc4(u.name)}</span>
+        <span class="int-tile-blurb">${esc4(u.blurb)}</span>
+        <span class="int-tile-tags">
+          <span class="chip ghost-chip">${esc4(u.provider)}</span>
+          <span class="chip ghost-chip">${esc4(u.route)}</span>
+        </span>
+      </span>
+      <span class="int-tile-go">Set up \u2192</span>
+    </button>`).join("");
+    host.querySelectorAll("[data-uc]").forEach((b) => b.onclick = () => openUcSheet(b.dataset.uc));
+  }
+  function openUcSheet(id) {
+    const u = intUseCase(id);
+    if (!u) {
+      toast3("use case not loaded \u2014 refresh the panel", "err");
+      return;
+    }
+    $4("intSheetGlyph").textContent = ucGlyphs[u.category] || "\u2022";
+    $4("intSheetTitle").textContent = u.name;
+    $4("intSheetBlurb").textContent = u.blurb;
+    const existing = integrations.map((i) => `<option value="${esc4(i.id)}">${esc4(i.name)} \u2014 ${esc4(i.kind)}</option>`).join("");
+    $4("intSheetBody").innerHTML = `
+    <div class="int-form">
+      <div class="int-kv"><span class="int-k">fires from</span><span class="int-v">${esc4(u.provider)} \xB7 ${esc4(u.auth_mode)}</span></div>
+      <div class="int-kv"><span class="int-k">runs on</span><span class="int-v">${esc4(u.route)} \xB7 this Mac's model</span></div>
+      <label class="int-field"><span>teammate name</span>
+        <input id="ucBotName" value="${esc4(u.bot_name || "")}">
+      </label>
+      <label class="int-field"><span>connect to</span>
+        <select id="ucExisting">
+          <option value="">create a new ${esc4(u.provider)} connection</option>
+          ${existing}
+        </select>
+      </label>
+      <div class="int-field"><span>playbook</span>
+        <pre class="int-snippet">${esc4(u.playbook || "")}</pre>
+      </div>
+      <ol class="int-steps">${(u.steps || []).map((s) => `<li>${esc4(s)}</li>`).join("")}</ol>
+      <div class="int-form-actions">
+        <button type="button" class="ghost" data-int-close="1">cancel</button>
+        <button type="button" class="primary" id="ucActivate">Set it up</button>
+      </div>
+    </div>`;
+    $4("intSheetBody").querySelectorAll("[data-int-close]").forEach((b) => b.onclick = closeIntSheet);
+    $4("ucActivate").onclick = async () => {
+      try {
+        const existingId = $4("ucExisting").value;
+        const res = await api2("POST", `/api/v1/usecases/${encodeURIComponent(u.id)}/activate`, {
+          name: ($4("ucBotName").value || "").trim(),
+          integration_id: existingId,
+          create_integration: !existingId
+        });
+        renderUcReady(u, res);
+        await refreshInt();
+      } catch (e) {
+        showErr(e.message);
+      }
+    };
+    $4("intSheet").hidden = false;
+  }
+  function renderUcReady(u, res) {
+    const in2 = res && res.integration || {};
+    const rt = res && res.routine || {};
+    const bot = res && res.bot || {};
+    const url = res && res.url || "";
+    const secret = res && res.secret || "";
+    $4("intSheetTitle").textContent = u.name + " is live";
+    $4("intSheetBlurb").textContent = `${bot.name || u.bot_name} \xB7 routine ${(rt.id || "").slice(0, 8)} \xB7 ${u.route} model${rt.worktree ? " \xB7 own worktree" : ""}`;
+    const secretBlock = secret ? `
+      <div class="int-secret-row">
+        <div class="int-kv"><span class="int-k">secret <em>shown once</em></span><span class="int-v int-mono" id="intReadySecret">${esc4(secret)}</span></div>
+        <button type="button" class="ghost" data-int-copytext="secret">copy secret</button>
+      </div>` : "";
+    $4("intSheetBody").innerHTML = `
+    <div class="int-ready">
+      <div class="int-secret-row">
+        <div class="int-kv"><span class="int-k">webhook URL</span><span class="int-v int-mono" id="intReadyUrl">${esc4(url)}</span></div>
+        <button type="button" class="ghost" data-int-copytext="url">copy URL</button>
+      </div>
+      ${secretBlock}
+      <ol class="int-steps">${(u.steps || []).map((s) => `<li>${esc4(s)}</li>`).join("")}</ol>
+      <div class="int-form-actions">
+        <button type="button" class="ghost" data-int-close="1">done</button>
+        <button type="button" class="primary" data-uc-test="${esc4(in2.id || "")}">Send a test event</button>
+      </div>
+    </div>`;
+    const body = $4("intSheetBody");
+    body.querySelectorAll("[data-int-close]").forEach((b) => b.onclick = closeIntSheet);
+    body.querySelectorAll("[data-int-copytext]").forEach((b) => b.onclick = () => {
+      const el2 = document.getElementById(b.dataset.intCopytext === "url" ? "intReadyUrl" : "intReadySecret");
+      if (el2) copyInt(el2.textContent);
+    });
+    body.querySelectorAll("[data-uc-test]").forEach((b) => b.onclick = async () => {
+      const id = b.dataset.ucTest;
+      if (!id) return;
+      try {
+        const out = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/test`, { event: u.event || "" });
+        const fired = out && out.fired ? out.fired : 0;
+        if (fired > 0) {
+          toast3(`test event fired ${fired} routine${fired === 1 ? "" : "s"} \u2014 the answer lands in the run log`, "ok");
+        } else {
+          toast3("nothing fired \u2014 the routine may still be warming up", "err");
+        }
+        await refreshInt();
+      } catch (e) {
+        toast3(safe2(e.message), "err");
+      }
+    });
+  }
+  function renderIntegrations() {
+    const host = $4("integrations");
+    if (!host) return;
+    const cnt = $4("intCount");
+    if (cnt) cnt.textContent = integrations.length + " connected";
+    const picks = (roster.routines || []).map((rt) => `<option value="${esc4(rt.id)}">${esc4(rt.id.slice(0, 8))} \u2014 ${esc4(rt.trigger || "manual")}</option>`).join("");
+    host.innerHTML = integrations.map((in2) => {
+      const p = in2.provider || intProvider(in2.kind);
+      const bound = (in2.routines || []).map((rt) => `
+      <span class="int-chip" title="trigger: ${esc4(rt.trigger || "manual")}">
+        ${esc4(rt.id.slice(0, 8))}
+        <button type="button" class="int-x" data-int-unbind="${esc4(rt.id)}" title="unbind">\xD7</button>
+      </span>`).join("");
+      const last = (in2.events || [])[0];
+      return `
+    <div class="int-card">
+      <div class="int-card-head">
+        <span class="int-glyph">${esc4(p.glyph || "\u221E")}</span>
+        <div class="int-card-id">
+          <div class="int-card-name">${esc4(in2.name)}<span class="chip ghost-chip">${esc4(in2.auth_mode || "bearer")}</span> ${intStatusChip(in2.status)}</div>
+          <div class="int-card-sub">${esc4(in2.detail || p.blurb || "")}</div>
+        </div>
+        <span class="spacer"></span>
+        <div class="int-actions">
+          <button type="button" class="ghost" data-int-copyurl="${esc4(in2.id)}">copy URL</button>
+          <button type="button" class="ghost" data-int-test="${esc4(in2.id)}">test</button>
+          <button type="button" class="ghost" data-int-rotate="${esc4(in2.id)}">rotate</button>
+          <button type="button" class="ghost danger" data-int-del="${esc4(in2.id)}">remove</button>
+        </div>
+      </div>
+      <div class="int-grid">
+        <div class="int-kv"><span class="int-k">URL</span><span class="int-v int-mono int-url" title="${esc4(in2.url || "")}" id="intUrl-${esc4(in2.id)}">${esc4(in2.url || "")}</span></div>
+        <div class="int-kv"><span class="int-k">secret</span><span class="int-v int-mono">${esc4(in2.secret_hint || "")}</span></div>
+        <div class="int-kv"><span class="int-k">fires</span><span class="int-v num">${in2.fire_count || 0}</span></div>
+        <div class="int-kv"><span class="int-k">last</span><span class="int-v">${esc4(ago(in2.last_fired_at))}</span></div>
+      </div>
+      <div class="int-routines">
+        <span class="int-k">routines</span>
+        ${bound || `<span class="tag">none \u2014 a fired event would have nothing to run</span>`}
+        <span class="spacer"></span>
+        <select class="int-pick" data-int-bind="${esc4(in2.id)}">
+          <option value="">bind a routine\u2026</option>
+          ${picks}
+        </select>
+      </div>
+      ${last ? `<div class="int-last"><span class="int-mono">${esc4(last.note || "")}</span><span class="tag">${esc4(ago(last.created_at))}</span></div>` : ""}
+    </div>`;
+    }).join("") || `
+    <div class="int-empty">
+      <span class="int-glyph">\u26A1</span>
+      <p>No service connected yet.</p>
+      <p class="sub">Pick one above \u2014 Gmail, Slack, GitHub, or your own script.</p>
+    </div>`;
+    host.querySelectorAll("[data-int-copyurl]").forEach((b) => b.onclick = () => copyInt(b.dataset.intCopyurl));
+    host.querySelectorAll("[data-int-test]").forEach((b) => b.onclick = () => testInt(b.dataset.intTest));
+    host.querySelectorAll("[data-int-rotate]").forEach((b) => b.onclick = () => rotateInt(b.dataset.intRotate));
+    host.querySelectorAll("[data-int-del]").forEach((b) => b.onclick = () => deleteInt(b.dataset.intDel, b));
+    host.querySelectorAll("[data-int-unbind]").forEach((b) => b.onclick = () => unbindRoutine(b.dataset.intUnbind));
+    host.querySelectorAll("[data-int-bind]").forEach((sel) => sel.onchange = () => bindRoutineToInt(sel.dataset.intBind, sel.value));
+    renderIntEvents();
+  }
+  function renderIntEvents() {
+    const host = $4("intEvents");
+    if (!host) return;
+    const rows = [];
+    integrations.forEach((in2) => (in2.events || []).forEach((ev) => rows.push({ ev, name: in2.name })));
+    rows.sort((a, b) => String(b.ev.created_at || "").localeCompare(String(a.ev.created_at || "")));
+    const filters = ["all", "fired", "rejected", "ignored", "error"];
+    const fhost = $4("intEvFilters");
+    if (fhost) {
+      fhost.innerHTML = filters.map((f) => `<button type="button" class="chip ghost-chip ${intFilter === f ? "sel" : ""}" data-int-filter="${esc4(f)}">${esc4(f)}</button>`).join("");
+      fhost.querySelectorAll("[data-int-filter]").forEach((b) => b.onclick = () => {
+        intFilter = b.dataset.intFilter;
+        renderIntEvents();
+      });
+    }
+    const shown = rows.filter((r) => intFilter === "all" || (r.ev.status || "fired") === intFilter).slice(0, 60);
+    host.innerHTML = shown.map((r) => {
+      const st = r.ev.status || "fired";
+      const cls = st === "fired" ? "ok" : st === "rejected" ? "err" : "warn";
+      return `
+    <div class="int-ev">
+      <span class="int-ev-dot ${cls}"></span>
+      <span class="int-ev-name">${esc4(r.name)}</span>
+      <span class="chip ${cls}">${esc4(st)}</span>
+      <span class="int-ev-note">${esc4(r.ev.note || "")}</span>
+      <span class="spacer"></span>
+      ${r.ev.run_id ? `<button type="button" class="linklike" data-run="${esc4(r.ev.run_id)}">${esc4(r.ev.run_id.slice(0, 8))}</button>` : ""}
+      <span class="tag">${esc4(ago(r.ev.created_at))}</span>
+    </div>`;
+    }).join("") || `
+    <div class="int-empty">
+      <span class="int-glyph">\u25F7</span>
+      <p>No events yet.</p>
+      <p class="sub">Send a test event from a connected service \u2014 the log lands here.</p>
+    </div>`;
+    host.querySelectorAll("[data-run]").forEach((btn) => btn.onclick = () => {
+      clearLog();
+      stopPoll();
+      activeRun = null;
+      startStream(btn.dataset.run);
+    });
+  }
+  async function copyInt(idOrText) {
+    const el2 = idOrText && idOrText.charAt(0) === "#" ? null : document.getElementById("intUrl-" + idOrText);
+    const text = el2 ? el2.textContent : idOrText;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast3("copied to clipboard", "ok");
+    } catch (e) {
+      toast3("copy failed \u2014 select the text and copy it by hand", "err");
+    }
+  }
+  async function testInt(id) {
+    try {
+      const res = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/test`, {});
+      const fired = res && res.fired ? res.fired : 0;
+      if (fired > 0) {
+        toast3(`test event fired ${fired} routine${fired === 1 ? "" : "s"}`, "ok");
+      } else {
+        toast3("nothing fired \u2014 bind and enable a routine first", "err");
+      }
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function rotateInt(id) {
+    try {
+      const res = await api2("POST", `/api/v1/integrations/${encodeURIComponent(id)}/rotate`, {});
+      const in2 = res && res.integration || {};
+      toast3("secret rotated \u2014 the old one stops working now", "ok");
+      renderIntSheetReady(in2, res && res.url || "", true);
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function bindRoutineToInt(id, routineId) {
+    const rid = (routineId || "").trim();
+    if (!rid) return;
+    try {
+      await api2("POST", `/api/v1/routines/${encodeURIComponent(rid)}/integration`, { integration_id: id });
+      toast3("routine bound \u2014 events fire it now", "ok");
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function unbindRoutine(routineId) {
+    try {
+      await api2("POST", `/api/v1/routines/${encodeURIComponent(routineId)}/integration`, { integration_id: "" });
+      toast3("routine unbound", "ok");
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  async function deleteInt(id, btn) {
+    if (btn && btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.textContent = "confirm remove";
+      btn.classList.add("danger-armed");
+      setTimeout(() => {
+        if (!btn.isConnected) return;
+        btn.dataset.armed = "";
+        btn.textContent = "remove";
+        btn.classList.remove("danger-armed");
+      }, 4e3);
+      return;
+    }
+    try {
+      await api2("DELETE", `/api/v1/integrations/${encodeURIComponent(id)}`);
+      toast3("integration removed \u2014 its secret stops working", "ok");
+      await refreshInt();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
+  function openIntSheet(kind) {
+    intSheetKind = kind;
+    const p = intProvider(kind);
+    $4("intSheetGlyph").textContent = p.glyph || "\u221E";
+    $4("intSheetTitle").textContent = "Connect " + (p.label || kind);
+    $4("intSheetBlurb").textContent = p.blurb || "";
+    renderIntSheetForm(p);
+    $4("intSheet").hidden = false;
+    setTimeout(() => {
+      const f = $4("intSheetName");
+      if (f) f.focus();
+    }, 30);
+  }
+  function closeIntSheet() {
+    $4("intSheet").hidden = true;
+    $4("intSheetBody").innerHTML = "";
+  }
+  function renderIntSheetForm(p) {
+    const modes = (p.auth_modes || ["bearer"]).map((id) => {
+      const m = intAuthModes.find((x) => x.id === id) || { id, label: id, hint: "" };
+      const sel2 = id === (p.default_auth || "bearer") ? " selected" : "";
+      return `<option value="${esc4(m.id)}"${sel2}>${esc4(m.label)}</option>`;
+    }).join("");
+    $4("intSheetBody").innerHTML = `
+    <div class="int-form">
+      <label class="int-field"><span>name</span>
+        <input id="intSheetName" placeholder="work inbox" value="${esc4(p.kind === "webhook" ? "" : p.label || "")}">
+      </label>
+      <label class="int-field"><span>detail <em>optional</em></span>
+        <input id="intSheetDetail" placeholder="${esc4(p.kind === "gmail" ? "label: inbox" : "what this watches")}">
+      </label>
+      <label class="int-field"><span>authentication</span>
+        <select id="intSheetAuth">${modes}</select>
+        <small id="intSheetAuthHint"></small>
+      </label>
+      <ol class="int-steps">
+        ${(p.steps || []).map((s) => `<li>${esc4(s)}</li>`).join("")}
+      </ol>
+      <div class="int-form-actions">
+        <button type="button" class="ghost" data-int-close="1">cancel</button>
+        <button type="button" class="primary" id="createInt">Create integration</button>
+      </div>
+    </div>`;
+    const sel = $4("intSheetAuth");
+    const hint = () => {
+      const m = intAuthModes.find((x) => x.id === sel.value);
+      const h = $4("intSheetAuthHint");
+      if (h) h.textContent = m ? m.hint : "";
+    };
+    sel.onchange = hint;
+    hint();
+    $4("intSheetBody").querySelectorAll("[data-int-close]").forEach((b) => b.onclick = closeIntSheet);
+    $4("createInt").onclick = async () => {
+      try {
+        const name = ($4("intSheetName").value || "").trim();
+        if (!name) throw new Error("give it a name");
+        const res = await api2("POST", "/api/v1/integrations", {
+          kind: intSheetKind,
+          name,
+          detail: ($4("intSheetDetail").value || "").trim(),
+          auth_mode: $4("intSheetAuth").value
+        });
+        const in2 = res && res.integration || {};
+        renderIntSheetReady(in2, res && res.url || "");
+        await refreshInt();
+      } catch (e) {
+        showErr(e.message);
+      }
+    };
+  }
+  function intSnippets(kind, url, secret, authMode) {
+    const out = {};
+    const auth = authMode === "query" ? `?key=${secret}` : "";
+    const target = url + auth;
+    if (authMode === "bearer" || authMode === "query") {
+      out.curl = [
+        `curl -X POST "${target}"`,
+        `  -H "Content-Type: application/json"`,
+        authMode === "query" ? "" : `  -H "Authorization: Bearer ${secret}"`,
+        `  -d '{"text":"hello from flobot"}'`
+      ].filter(Boolean).join(" \\\n");
+    } else {
+      out.curl = [
+        `curl -X POST "${url}"`,
+        `  -H "Content-Type: application/json"`,
+        authMode === "hmac" ? `  -H "X-Hub-Signature-256: sha256=<hmac of the body>"` : "",
+        authMode === "slack" ? `  -H "X-Slack-Signature: v0=<signature>"` : "",
+        authMode === "stripe" ? `  -H "Stripe-Signature: t=<ts>,v1=<signature>"` : "",
+        authMode === "standard" ? `  -H "webhook-signature: v1,<signature>"` : "",
+        `  -d '{"text":"hello from flobot"}'`
+      ].filter(Boolean).join(" \\\n");
+    }
+    out.javascript = [
+      `await fetch("${target}", {`,
+      `  method: "POST",`,
+      authMode === "query" ? `  headers: { "Content-Type": "application/json" },` : `  headers: { "Content-Type": "application/json", "Authorization": "Bearer ${secret}" },`,
+      `  body: JSON.stringify({ text: "hello from flobot" })`,
+      `});`
+    ].join("\n");
+    out.python = [
+      `import requests`,
+      ``,
+      `requests.post("${target}",`,
+      authMode === "query" ? `    headers={},` : `    headers={"Authorization": "Bearer ${secret}"},`,
+      `    json={"text": "hello from flobot"})`
+    ].join("\n");
+    if (kind === "gmail") {
+      out["apps script"] = [
+        `function doPost(e) {`,
+        `  const body = JSON.parse(e.postData.contents || "{}");`,
+        `  UrlFetchApp.fetch("${url}", {`,
+        `    method: "post",`,
+        `    contentType: "application/json",`,
+        `    headers: { Authorization: "Bearer ${secret}" },`,
+        `    payload: JSON.stringify({ text: body.subject + "\\n" + body.snippet })`,
+        `  });`,
+        `}`
+      ].join("\n");
+    }
+    if (kind === "telegram") {
+      out["set webhook"] = [
+        `curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook"`,
+        `  -H "Content-Type: application/json"`,
+        `  -d '{"url":"${url}?key=${secret}"}'`
+      ].join("\n");
+    }
+    if (kind === "github") {
+      out["repo config"] = [
+        `{`,
+        `  "url": "${url}",`,
+        `  "content_type": "json",`,
+        `  "secret": "${secret}",`,
+        `  "insecure_ssl": "0"`,
+        `}`
+      ].join("\n");
+    }
+    return out;
+  }
+  function renderIntSheetReady(in2, url, rotated) {
+    const p = intProvider(in2.kind);
+    const secret = in2.secret || "";
+    const target = in2.auth_mode === "query" ? url + "?key=" + secret : url;
+    const snippets = intSnippets(in2.kind, url, secret, in2.auth_mode || "bearer");
+    const keys = Object.keys(snippets);
+    $4("intSheetGlyph").textContent = p.glyph || "\u221E";
+    $4("intSheetTitle").textContent = (rotated ? "New secret for " : "") + (p.label || in2.kind);
+    $4("intSheetBlurb").textContent = rotated ? "The old secret is dead. Paste the new one into " + (p.label || in2.kind) + "." : "Copy the URL and the secret into " + (p.label || in2.kind) + ", then send a test event.";
+    $4("intSheetBody").innerHTML = `
+    <div class="int-ready">
+      <div class="int-secret-row">
+        <div class="int-kv"><span class="int-k">webhook URL</span><span class="int-v int-mono" id="intReadyUrl">${esc4(target)}</span></div>
+        <button type="button" class="ghost" data-int-copytext="url">copy URL</button>
+      </div>
+      <div class="int-secret-row">
+        <div class="int-kv"><span class="int-k">secret <em>shown once</em></span><span class="int-v int-mono" id="intReadySecret">${esc4(secret)}</span></div>
+        <button type="button" class="ghost" data-int-copytext="secret">copy secret</button>
+      </div>
+      <div class="int-tabs">
+        ${keys.map((k, i) => `<button type="button" class="int-tab ${i === 0 ? "sel" : ""}" data-int-snippet="${esc4(k)}">${esc4(k)}</button>`).join("")}
+      </div>
+      <pre class="int-snippet" id="intSnippet">${esc4(snippets[keys[0]])}</pre>
+      <div class="int-form-actions">
+        <button type="button" class="ghost" data-int-close="1">done</button>
+        <button type="button" class="primary" data-int-test="${esc4(in2.id)}">Send a test event</button>
+      </div>
+    </div>`;
+    const body = $4("intSheetBody");
+    body.querySelectorAll("[data-int-close]").forEach((b) => b.onclick = closeIntSheet);
+    body.querySelectorAll("[data-int-test]").forEach((b) => b.onclick = () => testInt(b.dataset.intTest));
+    body.querySelectorAll("[data-int-copytext]").forEach((b) => b.onclick = () => {
+      const el2 = document.getElementById(b.dataset.intCopytext === "url" ? "intReadyUrl" : "intReadySecret");
+      if (!el2) return;
+      copyInt(el2.textContent);
+    });
+    body.querySelectorAll("[data-int-snippet]").forEach((b) => b.onclick = () => {
+      body.querySelectorAll("[data-int-snippet]").forEach((x) => x.classList.remove("sel"));
+      b.classList.add("sel");
+      const pre = $4("intSnippet");
+      if (pre) pre.textContent = snippets[b.dataset.intSnippet] || "";
+    });
+  }
+  async function refreshInt() {
+    try {
+      const [res, provs, ucs] = await Promise.all([
+        api2("GET", "/api/v1/integrations"),
+        api2("GET", "/api/v1/integrations/providers").catch(() => null),
+        api2("GET", "/api/v1/usecases").catch(() => null)
+      ]);
+      integrations = res && res.integrations || [];
+      if (provs) {
+        intProviders = provs.providers || [];
+        intAuthModes = provs.auth_modes || [];
+        renderIntGallery();
+      }
+      if (ucs) {
+        intUseCases = ucs.usecases || [];
+        renderIntUseCases();
+      }
+      renderIntegrations();
+      render2();
+    } catch (e) {
+      toast3(safe2(e.message), "err");
+    }
+  }
   renderSkillTemplates();
   renderRtnTriggers();
   boot();
+  editorCore.attach();
   vibe();
   startStream(null);
   bootSupervision();
-  var meshRefreshBtn = $4("meshRefresh");
+  var meshRefreshBtn = $5("meshRefresh");
   if (meshRefreshBtn) meshRefreshBtn.onclick = () => loadMesh().catch((e) => showErr(e.message));
-  var hubsRefreshBtn = $4("hubsRefresh");
+  var hubsRefreshBtn = $5("hubsRefresh");
   if (hubsRefreshBtn) hubsRefreshBtn.onclick = () => loadHubs().catch((e) => showErr(e.message));
-  var hubsDoctorBtn = $4("hubsDoctor");
+  var hubsDoctorBtn = $5("hubsDoctor");
   if (hubsDoctorBtn) hubsDoctorBtn.onclick = () => runDoctor().catch((e) => showErr(e.message));
-  var hubDetailCloseBtn = $4("hubDetailClose");
+  var hubDetailCloseBtn = $5("hubDetailClose");
   if (hubDetailCloseBtn) hubDetailCloseBtn.onclick = () => {
-    const el2 = $4("hubDetail");
+    const el2 = $5("hubDetail");
     if (el2) el2.hidden = true;
   };
   (function() {

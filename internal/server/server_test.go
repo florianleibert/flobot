@@ -822,7 +822,9 @@ func TestRememberAndRunWithMemory(t *testing.T) {
 	got := postJSON(t, ts, "/api/v1/bots/"+bot["id"].(string)+"/remember", map[string]any{
 		"note": "always write tests first",
 	})
-	if got["memory"] != "always write tests first" {
+	// Memory is a fact list: one bulleted line per fact, so a second fact
+	// appends instead of overwriting the first.
+	if got["memory"] != "- always write tests first" {
 		t.Fatalf("memory = %v", got["memory"])
 	}
 	// Empty note is rejected.

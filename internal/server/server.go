@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/florianleibert/flobot/internal/amesh"
 	"github.com/florianleibert/flobot/internal/checkpoint"
+	"github.com/florianleibert/flobot/internal/eval"
 	"github.com/florianleibert/flobot/internal/executor"
 	"github.com/florianleibert/flobot/internal/queue"
 	"github.com/florianleibert/flobot/internal/routes"
@@ -60,6 +60,10 @@ type Server struct {
 	ameshAddr string
 	// sched fires enabled "every <duration>" routines. Nil until StartScheduler.
 	sched *schedule.Scheduler
+	// fireGate holds the durable occurrence ledger, the per-routine rate
+	// limit, the recursion guard and the global stop. Built on first use.
+	fireGate *fireGate
+	gateOnce sync.Once
 	// cancels holds the cancel func for each running run so a client can
 	// stop a runaway run; spawn deletes its entry when the run finishes.
 	cancels   map[string]context.CancelFunc
@@ -70,6 +74,11 @@ type Server struct {
 
 	hubOnce sync.Once
 	hub     *hub
+
+	// evalOnce guards the lazily-loaded operator-verdict store (M7). Verdicts
+	// live in their own file so a lost label never blocks startup.
+	evalOnce sync.Once
+	verdicts *eval.Verdicts
 
 	// ws is the lazily-initialized workspace view over workDir (Code Studio).
 	ws   *workspace.Workspace
@@ -271,8 +280,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/bots/{id}", s.updateBot)
 	mux.HandleFunc("DELETE /api/v1/bots/{id}", s.deleteBot)
 	mux.HandleFunc("POST /api/v1/bots/{id}/remember", s.rememberBot)
+	mux.HandleFunc("GET /api/v1/bots/{id}/memory", s.botMemory)
+	mux.HandleFunc("POST /api/v1/bots/{id}/memory", s.addBotMemory)
+	mux.HandleFunc("PATCH /api/v1/bots/{id}/memory", s.patchBotMemory)
+	mux.HandleFunc("DELETE /api/v1/bots/{id}/memory/{index}", s.removeBotMemory)
+	mux.HandleFunc("POST /api/v1/bots/{id}/memory/cap", s.setBotMemoryCap)
+	mux.HandleFunc("POST /api/v1/bots/{id}/log", s.logBotWork)
 	mux.HandleFunc("POST /api/v1/handoff", s.handoff)
 	mux.HandleFunc("POST /api/v1/skills", s.createSkill)
+	mux.HandleFunc("POST /api/v1/skills/contract", s.createSkillContract)
+	mux.HandleFunc("GET /api/v1/skills/{id}", s.getSkill)
+	mux.HandleFunc("PATCH /api/v1/skills/{id}", s.patchSkill)
+	mux.HandleFunc("POST /api/v1/skills/{id}/approve", s.approveSkill)
+	mux.HandleFunc("POST /api/v1/runs/{id}/skill-draft", s.draftSkillFromRun)
 	mux.HandleFunc("DELETE /api/v1/skills/{id}", s.deleteSkill)
 	mux.HandleFunc("POST /api/v1/routines", s.createRoutine)
 	mux.HandleFunc("PATCH /api/v1/routines/{id}", s.patchRoutine)
@@ -345,6 +365,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/integrations/{id}/rotate", s.rotateIntegration)
 	mux.HandleFunc("GET /api/v1/integrations/{id}/events", s.integrationEventsHandler)
 	mux.HandleFunc("POST /api/v1/routines/{id}/integration", s.bindIntegration)
+	mux.HandleFunc("GET /api/v1/fires", s.listFires)
+	mux.HandleFunc("POST /api/v1/fires/stop", s.stopFires)
+	mux.HandleFunc("POST /api/v1/fires/resume", s.resumeFires)
+	mux.HandleFunc("GET /api/v1/eval/replay", s.replayRuns)
+	mux.HandleFunc("GET /api/v1/eval/verdicts", s.listVerdicts)
+	mux.HandleFunc("POST /api/v1/runs/{id}/verdict", s.recordVerdict)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	return sameOrigin(mux)
 }
@@ -390,62 +416,23 @@ func (s *Server) fireables() []schedule.Fireable {
 	return out
 }
 
-// fireRoutine spawns a fresh ask-intent run for a scheduled routine. The
-// skill body is prepended as the how-to. Errors are returned to the
-// scheduler, which skips and retries next tick.
+// fireRoutine is the scheduler's fire callback. It hands the occurrence to the
+// one dispatch path, which validates it, claims its identity and spawns at most
+// one run. Errors are returned to the scheduler, which backs off; a skip is not
+// an error and must not back off.
 func (s *Server) fireRoutine(f schedule.Fired) error {
 	rt, err := s.store.GetRoutine(f.RoutineID, Actor)
 	if err != nil {
 		return err
 	}
-	if rt.Paused {
-		return nil
+	id := f.ID
+	if id == "" {
+		// A scheduler that did not stamp an identity still gets dedupe: the
+		// occurrence is the routine plus its scheduled instant.
+		id = schedule.FireID(rt.ID, rt.Trigger, time.Now())
 	}
-	bot, err := s.store.GetBot(f.BotID, Actor)
-	if err != nil {
-		return fmt.Errorf("routine %s bot: %w", f.RoutineID, err)
-	}
-	// Re-fire guard: if the bot's previous routine run is still going
-	// (e.g. hung on a slow route), skip this tick rather than piling up
-	// concurrent runs for the same bot.
-	if s.store.HasRunningRun(bot.ID) {
-		return nil
-	}
-	sk, err := s.store.GetSkill(f.SkillID, Actor)
-	if err != nil {
-		return fmt.Errorf("routine %s skill: %w", f.RoutineID, err)
-	}
-	// Bound route resolution: a hung amesh-web must not stall the
-	// scheduler tick forever (it runs on context.Background()).
-	ctx, cancel := context.WithTimeout(context.Background(), amesh.FetchBudget)
-	defer cancel()
-	pin, cfgOverride, err := s.resolveRoute(ctx, bot.Route)
-	if err != nil {
-		return fmt.Errorf("routine %s route: %w", f.RoutineID, err)
-	}
-	prompt := "Scheduled routine fire. Follow the skill how-to.\n\n" + sk.Body
-	run, err := s.store.CreateRun(Actor, bot.ID, prompt, "ask", false, false, "", pin, bot.Route)
-	if err != nil {
-		return fmt.Errorf("routine %s run: %w", f.RoutineID, err)
-	}
-	s.spawn(run, executor.Request{
-		Prompt:         prompt,
-		SkillBody:      sk.Body,
-		Pin:            pin,
-		Intent:         "ask",
-		Route:          bot.Route,
-		Dir:            s.workDirNow(),
-		ConfigOverride: cfgOverride,
-	})
-	s.hub.publish(store.Event{Kind: "routine_fire", Text: rt.ID})
-	// Record the fire on the routine: the store keeps LastRun/LastNote, not
-	// the run itself, and the card reads them. LastRun also feeds
-	// fireables().LastFire so a fired cron routine does not re-fire in the
-	// same minute.
-	if _, err := s.store.TestRun(rt.ID, rt.Owner, run.ID, "scheduled fire "+run.ID); err != nil {
-		return fmt.Errorf("routine %s record fire: %w", rt.ID, err)
-	}
-	return nil
+	_, err = s.dispatchFire(fireRequest{Routine: rt, FireID: id, Scheduled: true})
+	return err
 }
 
 func (s *Server) ListenAndServe(addr string) error {
@@ -522,11 +509,16 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) roster(w http.ResponseWriter, _ *http.Request) {
+	bots := s.store.ListBots(Actor)
+	views := make([]store.BotView, 0, len(bots))
+	for _, b := range bots {
+		views = append(views, b.View())
+	}
 	writeJSON(w, map[string]any{
 		"schema":       "flobot.v1",
 		"actor":        Actor,
 		"install_free": true,
-		"bots":         s.store.ListBots(Actor),
+		"bots":         views,
 		"skills":       s.store.ListSkills(Actor),
 		"routines":     routineViews(s.store.ListRoutines(Actor), time.Now()),
 		"messages":     s.store.ListMessages(Actor),
@@ -770,7 +762,7 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, err)
 		return
 	}
-	prompt := "Test-run the following skill. Ask/read only; do not mutate the workspace.\n\n" + sk.Body
+	prompt := "Test-run the following skill. Ask/read only; do not mutate the workspace.\n\n" + sk.Contract().Render()
 	run, err := s.store.CreateRun(Actor, bot.ID, prompt, "ask", false, false, "", pin, bot.Route)
 	if err != nil {
 		s.httpError(w, err)
@@ -784,7 +776,7 @@ func (s *Server) testRun(w http.ResponseWriter, r *http.Request) {
 	s.persist()
 	s.spawn(run, executor.Request{
 		Prompt:         prompt,
-		SkillBody:      sk.Body,
+		SkillBody:      sk.Contract().Render(),
 		Pin:            pin,
 		Intent:         "ask",
 		Yolo:           false,
@@ -1049,12 +1041,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if intent == "" {
 		intent = "code"
 	}
-	// Prepend the bot's memory note so a teammate remembers its role
-	// across runs (Grok Bot-style). Memory is prompt text, never a secret.
-	prompt := body.Prompt
-	if bot.Memory != "" {
-		prompt = "Teammate memory (you said to remember this):\n" + bot.Memory + "\n\n" + prompt
-	}
+	// Prepend the bot's memory so a teammate remembers its facts and what it
+	// did recently (Grok Bot-style). Memory is prompt text, never a secret.
+	// The skill index follows: one line per live skill, no bodies, so the
+	// model knows what it can ask for without paying for every procedure.
+	prompt := store.MemoryPrompt(bot) + s.store.SkillIndex(Actor) + body.Prompt
 	// A project or a tag scopes the mission: the agent is told exactly
 	// which files and folders it may touch.
 	scopeRoot, scopePaths, scopeLabel, scopeErr := s.scopeFor(body.Project, body.Tag)
@@ -1136,6 +1127,11 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 	// Live diff: poll this run's tree so the review pane fills while the
 	// agent is still working. The poller stops with the run's context.
 	s.startLiveDiff(ctx, run.ID)
+	// Heartbeat: a run that goes quiet for minutes is indistinguishable from a
+	// hung one. Publishing progress on a fixed interval is what lets the UI say
+	// "still working" instead of showing nothing, and it is the channel a
+	// cooperative cancel could be delivered on.
+	s.startHeartbeat(ctx, run.ID)
 	// Pre-run git snapshot (single choke point: createRun, handoff,
 	// testRun, fireRoutine). Fail-closed: snapshot errors never block
 	// the run, they only disable diff review for it. Runs in its own
@@ -1244,146 +1240,6 @@ func (s *Server) wasStopped(id string) bool {
 	s.cancelsMu.Lock()
 	defer s.cancelsMu.Unlock()
 	return s.stopped[id]
-}
-
-// stream is the NDJSON event feed. It replays the events of the run given
-// by ?run= (if any), then forwards live executor events until the client
-// disconnects. A disconnect or reconnect never affects the server or other
-// clients.
-func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
-	fl, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// Flush the headers now so the client's request returns immediately,
-	// even before the first event arrives.
-	fl.Flush()
-
-	// Subscribe before replaying so no event can slip between the replay
-	// snapshot and the subscription: anything appended after the snapshot
-	// is re-read from the store below and emitted as a tail.
-	ch, cancel := s.hub.subscribe()
-	defer cancel()
-
-	// drain discards anything already queued on ch so the tail re-read
-	// below is the sole source for pre-live events (no duplicates).
-	drain := func() {
-		for {
-			select {
-			case <-ch:
-			default:
-				return
-			}
-		}
-	}
-
-	// Replay the tail of a specific run so a reconnecting client catches up.
-	// ?since=N skips the first N events (the client already has them),
-	// letting a dropped connection resume instead of re-rendering.
-	if id := strings.TrimSpace(r.URL.Query().Get("run")); id != "" {
-		since := 0
-		if v := strings.TrimSpace(r.URL.Query().Get("since")); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				since = n
-			}
-		}
-		if run, err := s.store.GetRun(id, Actor); err == nil {
-			if since > len(run.Events) {
-				since = len(run.Events)
-			}
-			for _, ev := range run.Events[since:] {
-				if !writeNDJSON(w, ev) {
-					return
-				}
-			}
-			fl.Flush()
-			// Events appended between the snapshot above and the drain are
-			// re-read from the store and emitted as a tail; the live channel
-			// covers everything after the drain.
-			drain()
-			if run2, err := s.store.GetRun(id, Actor); err == nil {
-				for _, ev := range run2.Events[len(run.Events):] {
-					if !writeNDJSON(w, ev) {
-						return
-					}
-				}
-				fl.Flush()
-			}
-		}
-	}
-
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case ev, ok := <-ch:
-			if !ok {
-				return
-			}
-			if err := enc.Encode(ev); err != nil {
-				return
-			}
-			fl.Flush()
-		}
-	}
-}
-
-func writeNDJSON(w http.ResponseWriter, ev store.Event) bool {
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	return enc.Encode(ev) == nil
-}
-
-// hub fans executor events out to every connected /api/stream client.
-// Each subscriber owns a buffered channel; a slow or gone client is
-// dropped without blocking the publisher or the other clients.
-type hub struct {
-	mu   sync.Mutex
-	next uint64
-	subs map[uint64]chan store.Event
-}
-
-func newHub() *hub {
-	return &hub{subs: make(map[uint64]chan store.Event)}
-}
-
-func (h *hub) subscribe() (<-chan store.Event, func()) {
-	h.mu.Lock()
-	h.next++
-	id := h.next
-	ch := make(chan store.Event, 64)
-	h.subs[id] = ch
-	h.mu.Unlock()
-	cancel := func() {
-		h.mu.Lock()
-		if c, ok := h.subs[id]; ok {
-			delete(h.subs, id)
-			close(c)
-		}
-		h.mu.Unlock()
-	}
-	return ch, cancel
-}
-
-func (h *hub) publish(ev store.Event) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for id, ch := range h.subs {
-		select {
-		case ch <- ev:
-		default:
-			// Slow client: drop the event and the client rather than
-			// block the publisher.
-			delete(h.subs, id)
-			close(ch)
-		}
-	}
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
