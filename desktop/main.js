@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, shell, ipcMain, Notification, dialog } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, Notification, dialog, Tray, Menu, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -21,6 +21,17 @@ let baseUrl = null;
 let quitting = false;
 let restartTimer = null;
 let restartAttempt = 0;
+let tray = null;
+
+// unseenRuns is the "what happened while you were away" count. It is shown as
+// the dock badge and as the tray title, and cleared when the window is focused
+// — the point is that you learn about a finished run without having watched it.
+let unseenRuns = 0;
+
+// Runs that finish within this window are announced as one notification.
+// Three routines firing at 09:00 must not produce three banners.
+const NOTIFY_COALESCE_MS = 1500;
+let pendingNotify = null;
 
 function flobotBinary() {
   // Packaged: binary lives in Resources/flobot
@@ -277,6 +288,10 @@ function createWindow() {
 
   win.loadURL(baseUrl);
   win.on('closed', () => (win = null));
+  // Looking at the window is what clears the badge: the count exists to tell
+  // you about runs you did not watch, so it must not outlive your attention.
+  win.on('focus', () => setUnseen(0));
+  win.webContents.on('did-finish-load', () => refreshTrayMenu());
 }
 
 // --- workspace folder picker (Code Studio) ----------------------------------
@@ -297,27 +312,127 @@ ipcMain.handle('flobot:pick-folder', async () => {
 
 // --- run-completion notifications (Code Studio AC-2e) ----------------------
 
-// notifyRunEnd shows an OS notification only when the window is not
-// focused (flow-protection: no interruption while the user is watching
-// the run). Payload carries only {status, files} — never content, never
-// secrets. Clicking the notification focuses the window.
-ipcMain.on('flobot:run-end', (_evt, payload) => {
-  if (!win || win.isFocused()) return; // silent while focused
-  const status = payload && payload.status || 'done';
-  const files = Number(payload && payload.files) || 0;
-  const label = status === 'error' ? 'failed'
-    : status === 'stopped' ? 'stopped' : 'finished';
-  const body = files > 0
-    ? `run ${label} · ${files} file${files === 1 ? '' : 's'} changed — review the diff`
-    : `run ${label}`;
+// setUnseen updates the dock badge and tray title. A count of zero clears both:
+// the badge means "something happened that you have not looked at", so it must
+// disappear the moment you look.
+function setUnseen(n) {
+  unseenRuns = Math.max(0, n);
+  try {
+    if (app.dock) app.dock.setBadge(unseenRuns > 0 ? String(unseenRuns) : '');
+  } catch {}
+  if (tray) {
+    try { tray.setTitle(unseenRuns > 0 ? String(unseenRuns) : ''); } catch {}
+  }
+}
+
+function focusWindow() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+// showRunNotification announces a batch of finished runs in one banner.
+// Payload carries only counts and statuses — never content, never secrets.
+function showRunNotification(batch) {
+  const failed = batch.filter((r) => r.status === 'error').length;
+  const stopped = batch.filter((r) => r.status === 'stopped').length;
+  const done = batch.length - failed - stopped;
+  const files = batch.reduce((n, r) => n + (Number(r.files) || 0), 0);
+
+  let body;
+  if (batch.length === 1) {
+    const status = batch[0].status;
+    const label = status === 'error' ? 'failed' : status === 'stopped' ? 'stopped' : 'finished';
+    body = files > 0
+      ? `run ${label} · ${files} file${files === 1 ? '' : 's'} changed — review the diff`
+      : `run ${label}`;
+  } else {
+    const parts = [];
+    if (done > 0) parts.push(`${done} finished`);
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (stopped > 0) parts.push(`${stopped} stopped`);
+    body = `${batch.length} runs: ${parts.join(', ')}`;
+    if (files > 0) body += ` · ${files} files changed`;
+  }
+
   try {
     const n = new Notification({ title: 'flobot', body, silent: false });
     n.on('click', () => {
-      if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+      focusWindow();
+      setUnseen(0);
+    });
+    n.on('failed', (_e, err) => {
+      // A swallowed notification failure is how "it told me nothing" becomes a
+      // mystery. Log it so the reason is recoverable.
+      log('notification failed', String(err));
     });
     n.show();
-  } catch {}
+  } catch (err) {
+    log('notification threw', String(err));
+  }
+}
+
+// notifyRunEnd shows an OS notification only when the window is not focused
+// (flow-protection: no interruption while the user is watching the run).
+// Payload carries only {status, files} — never content, never secrets.
+// Clicking the notification focuses the window.
+ipcMain.on('flobot:run-end', (_evt, payload) => {
+  const status = (payload && payload.status) || 'done';
+  const files = Number(payload && payload.files) || 0;
+  if (win && win.isFocused()) {
+    // You watched it happen; nothing to tell you about.
+    return;
+  }
+  setUnseen(unseenRuns + 1);
+  if (!pendingNotify) pendingNotify = [];
+  pendingNotify.push({ status, files });
+  if (pendingNotify.length === 1) {
+    setTimeout(() => {
+      const batch = pendingNotify || [];
+      pendingNotify = null;
+      if (batch.length) showRunNotification(batch);
+    }, NOTIFY_COALESCE_MS);
+  }
 });
+
+// --- tray -------------------------------------------------------------------
+
+// The tray keeps the count visible when the dock is hidden or the app is in the
+// background, and gives a one-click way back to the window.
+function createTray() {
+  if (tray) return;
+  try {
+    // A template image so macOS tints it for light and dark menu bars. An empty
+    // image is a valid template: the title carries the count.
+    const img = nativeImage.createEmpty();
+    img.setTemplateImage(true);
+    tray = new Tray(img);
+    tray.setToolTip('flobot');
+    tray.on('click', () => {
+      focusWindow();
+      setUnseen(0);
+    });
+    refreshTrayMenu();
+  } catch (err) {
+    log('tray unavailable', String(err));
+    tray = null;
+  }
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  try {
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: unseenRuns > 0 ? `${unseenRuns} run${unseenRuns === 1 ? '' : 's'} since you looked` : 'No new runs', enabled: false },
+      { type: 'separator' },
+      { label: 'Open flobot', click: () => { focusWindow(); setUnseen(0); } },
+      { label: 'Clear badge', click: () => setUnseen(0) },
+      { type: 'separator' },
+      { label: 'Quit flobot', click: () => app.quit() },
+    ]));
+  } catch {}
+}
 
 // --- app lifecycle ----------------------------------------------------------
 
@@ -347,6 +462,7 @@ if (!app.requestSingleInstanceLock()) {
       return;
     }
     createWindow();
+    createTray();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

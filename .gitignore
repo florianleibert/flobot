@@ -15,6 +15,9 @@ secrets/
 tmp/
 /vendor/
 .flocode-worklock
+# local work-thread runtime state (SQLite db + WAL)
+.flocode/workthreads/
+.flocode/worktrees/
 # runtime-generated run ledgers (app appends a row per run)
 docs/ccpm-runs.md
 cmd/flobot/docs/ccpm-runs.md

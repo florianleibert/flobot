@@ -106,9 +106,7 @@ func (s *Server) startThreadRun(r *http.Request, th store.Thread, bot store.Bot,
 	if intent == "" {
 		intent = "code"
 	}
-	if bot.Memory != "" {
-		prompt = "Teammate memory (you said to remember this):\n" + bot.Memory + "\n\n" + prompt
-	}
+	prompt = store.MemoryPrompt(bot) + prompt
 	run, err := s.store.CreateRun(Actor, bot.ID, prompt, intent, yolo, verify, th.ID, pin, bot.Route)
 	if err != nil {
 		return store.Run{}, err

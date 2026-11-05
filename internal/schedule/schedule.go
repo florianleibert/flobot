@@ -73,6 +73,10 @@ type Fired struct {
 	RoutineID string
 	BotID     string
 	SkillID   string
+	// ID is the occurrence identity (see FireID). Two observations of the same
+	// scheduled occurrence carry the same ID, which is what lets the server
+	// refuse to run it twice.
+	ID string
 }
 
 // Scheduler ticks and fires due routines. It never fires a routine twice
@@ -91,6 +95,10 @@ type Scheduler struct {
 	fails  map[string]int
 	stop   chan struct{}
 	stopMu sync.Mutex
+	// seen remembers which occurrence identities already fired, so a tick
+	// that observes the same occurrence twice (a slow tick, a restart, a
+	// clock step) cannot spawn it twice.
+	seen *Dedupe
 }
 
 // New returns a scheduler. Call Start to begin ticking.
@@ -101,7 +109,15 @@ func New() *Scheduler {
 		last:  make(map[string]time.Time),
 		spec:  make(map[string]*CronSpec),
 		fails: make(map[string]int),
+		seen:  NewDedupe(0),
 	}
+}
+
+// MarkSeen reports whether the occurrence identity was new, recording it. It is
+// the scheduler's own last line of defence against a double fire; the server
+// keeps an independent record so a restart cannot replay an occurrence either.
+func (s *Scheduler) MarkSeen(id string) bool {
+	return s.seen.Mark(id)
 }
 
 // Due returns the fireable routines that are due now. Two trigger shapes
@@ -137,7 +153,12 @@ func (s *Scheduler) Due(items []Fireable) []Fired {
 		if c, ok := s.spec[it.RoutineID]; ok {
 			// Cron: due when the scheduled minute has arrived since last fire.
 			if nxt, ok := c.Next(last); ok && !now.Before(nxt) {
-				out = append(out, Fired{RoutineID: it.RoutineID, BotID: it.BotID, SkillID: it.SkillID})
+				out = append(out, Fired{
+					RoutineID: it.RoutineID,
+					BotID:     it.BotID,
+					SkillID:   it.SkillID,
+					ID:        FireID(it.RoutineID, it.Trigger, nxt),
+				})
 				// Advance last to the scheduled minute now so a fire that
 				// outlives one tick cannot re-fire in the same minute before
 				// MarkFired runs (MarkFired lands on the same truncated
@@ -151,7 +172,15 @@ func (s *Scheduler) Due(items []Fireable) []Fired {
 			continue
 		}
 		if now.Sub(last) >= d {
-			out = append(out, Fired{RoutineID: it.RoutineID, BotID: it.BotID, SkillID: it.SkillID})
+			out = append(out, Fired{
+				RoutineID: it.RoutineID,
+				BotID:     it.BotID,
+				SkillID:   it.SkillID,
+				// The occurrence is the interval boundary that came due, not
+				// the instant the ticker noticed it: two ticks that both see
+				// the same boundary must produce the same identity.
+				ID: FireID(it.RoutineID, it.Trigger, last.Add(d)),
+			})
 		}
 	}
 	return out
@@ -197,6 +226,12 @@ func (s *Scheduler) Start(ctx context.Context, list func() []Fireable, fire func
 				return
 			case <-t.C:
 				for _, f := range s.Due(list()) {
+					// One occurrence fires once. Due() already advances the
+					// schedule, but a restart or a clock step can hand us the
+					// same identity again; refuse it here rather than spawn.
+					if !s.MarkSeen(f.ID) {
+						continue
+					}
 					go func(f Fired) {
 						if err := fire(f); err == nil {
 							s.MarkFired(f.RoutineID)

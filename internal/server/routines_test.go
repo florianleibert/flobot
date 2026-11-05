@@ -195,3 +195,27 @@ func TestRosterManualRoutineHasNoNextFire(t *testing.T) {
 		t.Fatalf("next_fire = %v, want absent for a manual routine", next)
 	}
 }
+
+// TestPatchRoutineCannotArmWithoutATestRun checks the safety gate: a routine
+// starts paused and can only be armed after it has been test-run. PATCH must
+// not be a way around that gate — otherwise a never-reviewed routine fires on
+// the first inbound event.
+func TestPatchRoutineCannotArmWithoutATestRun(t *testing.T) {
+	ts, id := newRoutineServer(t, "manual")
+
+	res := patchJSONStatus(t, ts, "/api/v1/routines/"+id, map[string]any{
+		"paused": false,
+	})
+	if res.code == http.StatusOK {
+		t.Fatalf("a never test-run routine was armed by PATCH: %s", res.body)
+	}
+	if !strings.Contains(res.body, "test-run") {
+		t.Fatalf("body = %s, want the test-run requirement", res.body)
+	}
+
+	// The routine must still be paused.
+	rt := findRoutine(t, ts, id)
+	if rt["paused"] != true {
+		t.Fatalf("paused = %v, want true", rt["paused"])
+	}
+}

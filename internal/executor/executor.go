@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/florianleibert/flobot/internal/sandbox"
 )
 
 const (
@@ -76,6 +78,10 @@ type Exec struct {
 	Bin     string
 	Environ func() []string
 	Home    string
+
+	// scrub caches the event scrubber built from Environ, so the secret value
+	// set is computed once rather than per run.
+	scrub *sandbox.Scrubber
 }
 
 // FindBinary returns FLOCODE_BIN, then PATH flocode, then the flocode2 tree.
@@ -241,11 +247,23 @@ func (e *Exec) run(ctx context.Context, req Request, reqEnv []string, emit func(
 	}()
 
 	var events []Event
+	// Scrub secret values out of every event before it becomes an event: once
+	// text is in the state file, the SSE stream and the UI, removing it is no
+	// longer possible.
+	//
+	// The scrubber is built from what this process KNOWS, not from what it
+	// passed: the allowlist deliberately withholds most credentials from the
+	// child, and a withheld value can still appear in output (a tool reading a
+	// config file, an error quoting one). Scrubbing only the injected set would
+	// leave exactly those values unprotected.
+	scrubber := e.scrubber()
 	rd := bufio.NewReaderSize(stdout, 64<<10)
 	for {
 		line, err := readLine(rd, 256<<10)
 		if len(line) > 0 {
 			if ev, ok := parseLine(line); ok {
+				ev.Text = scrubber.Scrub(ev.Text)
+				ev.Tool = scrubber.Scrub(ev.Tool)
 				events = append(events, ev)
 				emit(ev)
 			}
@@ -367,7 +385,10 @@ func (e *Exec) childEnv(route string, verify bool) []string {
 	} else {
 		base = os.Environ()
 	}
-	out := append([]string(nil), base...)
+	// Narrow to the allowlist first: a token exported in the operator's shell
+	// must not silently become available to a scheduled routine. The values
+	// flobot injects itself are added after, so they are never filtered.
+	out := sandbox.AllowEnv(base, nil)
 	if !envHas(out, "FLOCODE_LOG_LEVEL") {
 		out = append(out, "FLOCODE_LOG_LEVEL=info")
 	}
@@ -378,6 +399,26 @@ func (e *Exec) childEnv(route string, verify bool) []string {
 		}
 	}
 	return out
+}
+
+// scrubber builds the event scrubber from the parent environment, which is the
+// set that actually holds credentials. It is cached per Exec because the value
+// set does not change between runs.
+func (e *Exec) scrubber() *sandbox.Scrubber {
+	if e != nil && e.scrub != nil {
+		return e.scrub
+	}
+	var env []string
+	if e != nil && e.Environ != nil {
+		env = e.Environ()
+	} else {
+		env = os.Environ()
+	}
+	s := sandbox.ScrubEnvValues(env)
+	if e != nil {
+		e.scrub = s
+	}
+	return s
 }
 
 func (e *Exec) home() string {

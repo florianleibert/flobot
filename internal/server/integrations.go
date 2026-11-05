@@ -11,7 +11,6 @@
 package server
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -24,9 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/florianleibert/flobot/internal/executor"
+	"github.com/florianleibert/flobot/internal/schedule"
 	"github.com/florianleibert/flobot/internal/store"
-	"github.com/florianleibert/flobot/internal/threads"
 )
 
 // maxFireBody bounds the webhook body flobot reads. Provider payloads are
@@ -485,7 +483,7 @@ func (s *Server) fireIntegration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := eventText(in.Kind, raw)
-	runs, fired, err := s.fireBoundRoutines(in, text, "fired")
+	runs, fired, err := s.fireBoundRoutines(in, text, "fired", deliveryIDFrom(r))
 	if err != nil {
 		// No routine is bound: the event is still real, so it is recorded
 		// and the caller is told exactly what to do.
@@ -547,7 +545,9 @@ func (s *Server) testIntegration(w http.ResponseWriter, r *http.Request) {
 		payload = []byte(raw)
 	}
 	text := eventText(in.Kind, payload)
-	runs, fired, err := s.fireBoundRoutines(in, text, "test")
+	// A test event has no provider delivery id: it is deliberately a fresh
+	// occurrence every time the operator presses the button.
+	runs, fired, err := s.fireBoundRoutines(in, text, "test", "")
 	if err != nil {
 		s.recordFireEvent(in, store.IntegrationEvent{Status: "ignored", Note: clipNote("test event: " + err.Error())})
 		writeJSON(w, map[string]any{
@@ -581,7 +581,14 @@ func (s *Server) testIntegration(w http.ResponseWriter, r *http.Request) {
 
 // fireBoundRoutines starts one run per routine bound to the integration and
 // records the fire. It returns the run ids and how many routines fired.
-func (s *Server) fireBoundRoutines(in store.Integration, text, status string) ([]string, int, error) {
+//
+// deliveryID is the provider's own id for this delivery (X-GitHub-Delivery,
+// webhook-id, Stripe's event id). It is what makes a retried delivery one
+// occurrence instead of two runs: a provider that did not see our 2xx sends the
+// same id again, and the ledger refuses it. An empty deliveryID means the
+// provider gave us nothing to dedupe on, so the fire runs — a missing id must
+// never swallow a real event.
+func (s *Server) fireBoundRoutines(in store.Integration, text, status, deliveryID string) ([]string, int, error) {
 	routines := s.store.RoutinesForIntegration(in.ID)
 	if len(routines) == 0 {
 		return nil, 0, fmt.Errorf("integration %q has no routines bound", in.ID)
@@ -592,7 +599,8 @@ func (s *Server) fireBoundRoutines(in store.Integration, text, status string) ([
 		if rt.Paused {
 			continue
 		}
-		runID, err := s.fireRoutineFromIntegration(rt, text)
+		fireID := schedule.EventFireID(rt.ID, deliveryID)
+		runID, err := s.dispatchFire(fireRequest{Routine: rt, FireID: fireID, EventText: text})
 		if err != nil {
 			s.recordFireEvent(in, store.IntegrationEvent{
 				RoutineID: rt.ID,
@@ -602,10 +610,38 @@ func (s *Server) fireBoundRoutines(in store.Integration, text, status string) ([
 			})
 			continue
 		}
+		if runID == "" {
+			// Skipped: paused, duplicate, rate-limited, or not dispatchable.
+			// The reason is on the routine's card and in the stream; the
+			// integration history records that this delivery ran nothing.
+			s.recordFireEvent(in, store.IntegrationEvent{
+				RoutineID: rt.ID,
+				Status:    "ignored",
+				Note:      clipNote(status + ": no run (duplicate, paused, busy or rate-limited)"),
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			})
+			continue
+		}
 		runs = append(runs, runID)
 		fired++
+		s.recordIntegrationFire(rt, runID, text)
 	}
 	return runs, fired, nil
+}
+
+// recordIntegrationFire appends the "fired" event to the integration's history.
+func (s *Server) recordIntegrationFire(rt store.Routine, runID, eventText string) {
+	in, _ := s.integrations.Integration(rt.IntegrationID)
+	if in.ID == "" {
+		return
+	}
+	_ = s.integrations.RecordEvent(in, store.IntegrationEvent{
+		RoutineID: rt.ID,
+		RunID:     runID,
+		Status:    "fired",
+		Note:      clipNote(eventText),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // recordFireEvent appends one event to an integration's history.
@@ -616,54 +652,22 @@ func (s *Server) recordFireEvent(in store.Integration, ev store.IntegrationEvent
 	_ = s.integrations.RecordEvent(in, ev)
 }
 
-// fireRoutineFromIntegration spawns one run for a routine bound to an
-// integration. The event text is prepended as context so the agent knows why
-// it is running. It records a fire event on the integration.
-func (s *Server) fireRoutineFromIntegration(rt store.Routine, eventText string) (string, error) {
-	if s.store.HasRunningRun(rt.BotID) {
-		return "", fmt.Errorf("routine %s bot %s already running", rt.ID, rt.BotID)
+// deliveryIDFrom reads the provider's delivery id from the request headers.
+// Every scheme names it differently; all of them are stable across a retry of
+// the same delivery, which is the only property that matters here.
+func deliveryIDFrom(r *http.Request) string {
+	for _, h := range []string{
+		"webhook-id",          // standard-webhooks
+		"X-GitHub-Delivery",   // GitHub
+		"X-Gitlab-Event-UUID", // GitLab
+		"X-Request-Id",        // Slack (retry-stable)
+		"X-Sentry-Request-Id", // Sentry
+	} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			return v
+		}
 	}
-	bot, err := s.store.GetBot(rt.BotID, Actor)
-	if err != nil {
-		return "", err
-	}
-	pin, cfgOverride, err := s.resolveRoute(context.Background(), bot.Route)
-	if err != nil {
-		return "", err
-	}
-	prompt := "Automation fire from an external integration.\n\n" + eventText
-	if sk, err := s.store.GetSkill(rt.SkillID, Actor); err == nil {
-		prompt = "Automation fire from an external integration.\n\nEvent:\n" + eventText + "\n\nFollow this skill how-to:\n" + sk.Body
-	}
-	run, err := s.store.CreateRun(Actor, bot.ID, prompt, "ask", false, false, rt.Worktree, pin, bot.Route)
-	if err != nil {
-		return "", err
-	}
-	s.spawn(run, executor.Request{
-		Prompt:         prompt,
-		SkillBody:      "",
-		Pin:            pin,
-		Intent:         "ask",
-		Tools:          rt.Tools,
-		Route:          bot.Route,
-		Worktree:       threads.WorktreeName(rt.Worktree),
-		Dir:            s.workDirNow(),
-		ConfigOverride: cfgOverride,
-	})
-	if _, err := s.store.TestRun(rt.ID, Actor, run.ID, "integration fire "+run.ID); err != nil {
-		return run.ID, err
-	}
-	in, _ := s.integrations.Integration(rt.IntegrationID)
-	if in.ID != "" {
-		_ = s.integrations.RecordEvent(in, store.IntegrationEvent{
-			RoutineID: rt.ID,
-			RunID:     run.ID,
-			Status:    "fired",
-			Note:      clipNote(eventText),
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		})
-	}
-	return run.ID, nil
+	return ""
 }
 
 // authenticateFire checks the caller's credential against the integration's
@@ -773,7 +777,10 @@ func verifyStandardSignature(secret string, h http.Header, body []byte) bool {
 	mac.Write([]byte(id + "." + ts + "."))
 	mac.Write(body)
 	want := mac.Sum(nil)
-	for _, part := range strings.Split(header, ",") {
+	// standard-webhooks sends a space-separated list of "v1,<base64>" entries
+	// ("v1,AAAA v1,BBBB"), one per signing secret. Splitting on "," breaks
+	// every valid signature in half, so split on whitespace.
+	for _, part := range strings.Fields(header) {
 		part = strings.TrimSpace(part)
 		if !strings.HasPrefix(part, "v1,") {
 			continue

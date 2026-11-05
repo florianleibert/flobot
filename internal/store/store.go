@@ -14,7 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/florianleibert/flobot/internal/memory"
 	"github.com/florianleibert/flobot/internal/routes"
+	"github.com/florianleibert/flobot/internal/skills"
 )
 
 // ActorLocal is the standalone web actor (no pairing session).
@@ -35,24 +37,96 @@ const (
 	idRandSize = 8
 )
 
-// Bot is a named teammate. Memory is a short role note.
+// Bot is a named teammate.
+//
+// Memory is the bot's durable facts, one per line ("- fact"). It rides in
+// every prompt, so it is bounded by MemoryCap; a fact that does not fit is
+// refused with an error naming the usage rather than clipped. Log is the dated
+// record of what the bot actually did, which is what lets it answer "what did
+// you do last week" without being told.
 type Bot struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	Route     string `json:"route"`
-	Memory    string `json:"memory,omitempty"`
-	Owner     string `json:"-"`
-	CreatedAt string `json:"created_at"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Role      string            `json:"role"`
+	Route     string            `json:"route"`
+	Memory    string            `json:"memory,omitempty"`
+	MemoryCap int               `json:"memory_cap,omitempty"`
+	Log       []memory.LogEntry `json:"log,omitempty"`
+	Owner     string            `json:"-"`
+	CreatedAt string            `json:"created_at"`
+}
+
+// Facts returns the bot's memory as a parsed, bounded fact set.
+func (b Bot) Facts() memory.Facts {
+	return memory.ParseFacts(b.Memory, b.MemoryCap)
+}
+
+// WorkLog returns the bot's dated work log.
+func (b Bot) WorkLog() memory.Log {
+	return memory.NewLog(b.Log)
+}
+
+// BotView is a Bot plus its memory accounting, so the UI can show "3 of 4 KB"
+// without re-deriving the budget. The embedded Bot flattens into the same JSON
+// object.
+type BotView struct {
+	Bot
+	MemoryUsed    int `json:"memory_used"`
+	MemoryCap     int `json:"memory_cap"`
+	MemoryPercent int `json:"memory_percent"`
+}
+
+// View wraps a bot with its memory accounting.
+func (b Bot) View() BotView {
+	f := b.Facts()
+	return BotView{
+		Bot:           b,
+		MemoryUsed:    f.Used(),
+		MemoryCap:     f.Cap(),
+		MemoryPercent: f.Percent(),
+	}
 }
 
 // Skill is a reviewable how-to. Never live from a raw recording.
+//
+// Body is the legacy free-text form and stays the fallback for skills authored
+// before the contract existed. WhenToUse/Procedure/Pitfalls/Verification make it
+// a contract: the prompt index carries only Name + WhenToUse, and the rest is
+// fetched on demand.
+//
+// Status gates liveness. A skill drafted from a run is StatusDraft: it is inert
+// until a person approves it, so a recording can never become policy by itself.
 type Skill struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Body    string `json:"body"`
-	Version int    `json:"version"`
-	Owner   string `json:"-"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Body         string `json:"body"`
+	WhenToUse    string `json:"when_to_use,omitempty"`
+	Procedure    string `json:"procedure,omitempty"`
+	Pitfalls     string `json:"pitfalls,omitempty"`
+	Verification string `json:"verification,omitempty"`
+	Status       string `json:"status,omitempty"`
+	// DraftedFrom is the run a draft was learned from, for provenance.
+	DraftedFrom string `json:"drafted_from,omitempty"`
+	Version     int    `json:"version"`
+	Owner       string `json:"-"`
+}
+
+// Live reports whether the skill may reach a prompt or fire a routine. An empty
+// status is live: every skill that existed before drafts did is already trusted.
+func (sk Skill) Live() bool {
+	return sk.Status == "" || sk.Status == skills.StatusLive
+}
+
+// Contract returns the structured view used for prompt assembly.
+func (sk Skill) Contract() skills.Contract {
+	return skills.Contract{
+		Name:         sk.Name,
+		WhenToUse:    sk.WhenToUse,
+		Procedure:    sk.Procedure,
+		Pitfalls:     sk.Pitfalls,
+		Verification: sk.Verification,
+		Body:         sk.Body,
+	}
 }
 
 // ToolsNone is the tool policy that exposes no tools at all: the run can
@@ -87,6 +161,11 @@ type Routine struct {
 	// text" sometimes returns the tool call instead of the answer, so
 	// the policy belongs to the routine, not to the playbook's wording.
 	Tools string `json:"tools,omitempty"`
+	// TimeoutSeconds bounds one attempt of this routine's run. Zero means
+	// the default (10 minutes). A routine that watches a slow service needs
+	// a longer attempt than an interactive question; one that must never
+	// hang needs a shorter one.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
 // Message is a bus item. OwnerBot encodes single-owner-per-stage.
@@ -300,20 +379,16 @@ func (s *Store) ListBots(actor string) []Bot {
 	return out
 }
 
+// Remember appends one fact to a bot's memory. It is the plain-language
+// surface ("remember this"); MemoryAdd is the same operation with the fact
+// index exposed. A fact that does not fit is refused with the usage rather than
+// clipped, so nothing is silently lost.
 func (s *Store) Remember(id, actor, note string) (Bot, error) {
-	bot, err := s.ownedBot(id, actor)
-	if err != nil {
-		return Bot{}, err
-	}
 	note = strings.TrimSpace(note)
 	if note == "" {
 		return Bot{}, fmt.Errorf("memory note required")
 	}
-	bot.Memory = clip(note)
-	s.mu.Lock()
-	s.bots[id] = bot
-	s.mu.Unlock()
-	return bot, nil
+	return s.MemoryAdd(id, actor, note)
 }
 
 func (s *Store) CreateSkill(owner, name, body string) (Skill, error) {
@@ -439,6 +514,13 @@ func (s *Store) UpdateRoutine(id, actor string, trigger *string, paused *bool) (
 		rt.Trigger = t
 	}
 	if paused != nil {
+		// Arming a routine still needs the test-run proof. EnableRoutine and
+		// SetRoutinePause both refuse a routine that was never test-run; PATCH
+		// must not be a way around that gate.
+		if !*paused && rt.Paused && rt.LastRun == "" {
+			s.mu.Unlock()
+			return Routine{}, fmt.Errorf("test-run required before enable")
+		}
 		rt.Paused = *paused
 	}
 	s.routines[id] = rt
