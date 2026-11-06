@@ -2332,6 +2332,9 @@ ${indent}${opens ? "  " : ""}`, pos, pos, "end");
   var edRunId = null;
   var edStreamES = null;
   var edStreamBuf = "";
+  var edStreamSeen = 0;
+  var edStreamRetries = 0;
+  var edStreamTimer = null;
   var edTouched = [];
   var edTouchedDiff = /* @__PURE__ */ new Set();
   var edTouchedRe = /(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]{1,6}/g;
@@ -2397,6 +2400,8 @@ ${indent}${opens ? "  " : ""}`, pos, pos, "end");
       edRunId = run.id;
       edTouched.length = 0;
       edTouchedDiff.clear();
+      edStreamSeen = 0;
+      edStreamRetries = 0;
       renderTouched();
       $2("edStopBtn").disabled = false;
       setRunStatus("working\u2026", "working");
@@ -2473,19 +2478,26 @@ ${indent}${opens ? "  " : ""}`, pos, pos, "end");
   function edConnectStream(runId) {
     if (edStreamES) {
       try {
-        edStreamES.close();
+        edStreamES.abort();
       } catch {
       }
       edStreamES = null;
     }
+    if (edStreamTimer) {
+      clearTimeout(edStreamTimer);
+      edStreamTimer = null;
+    }
+    const qs = ["run=" + encodeURIComponent(runId)];
+    if (edStreamSeen > 0) qs.push("since=" + edStreamSeen);
     const ctrl = new AbortController();
     edStreamES = ctrl;
-    fetch("/api/stream?run=" + encodeURIComponent(runId), { signal: ctrl.signal }).then((res) => {
+    fetch("/api/stream?" + qs.join("&"), { signal: ctrl.signal }).then((res) => {
       if (!res.ok) throw new Error("stream " + res.status);
+      edStreamRetries = 0;
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       const pump = () => reader.read().then(({ done, value }) => {
-        if (done) return;
+        if (done) throw new Error("eof");
         edStreamBuf += dec.decode(value, { stream: true });
         let idx;
         while ((idx = edStreamBuf.indexOf("\n")) >= 0) {
@@ -2497,7 +2509,11 @@ ${indent}${opens ? "  " : ""}`, pos, pos, "end");
       });
       return pump();
     }).catch((e) => {
-      if (e.name !== "AbortError") console.warn("stream:", e.message);
+      if (e.name === "AbortError") return;
+      edStreamES = null;
+      edStreamRetries++;
+      const delay = Math.min(1e3 * 2 ** edStreamRetries, 15e3);
+      edStreamTimer = setTimeout(() => edConnectStream(runId), delay);
     });
   }
   function renderBrief(prompt, runId) {
@@ -2559,6 +2575,13 @@ ${indent}${opens ? "  " : ""}`, pos, pos, "end");
       return;
     }
     if (!ev || typeof ev !== "object") return;
+    if (ev.kind === "heartbeat") {
+      return;
+    }
+    if (ev.kind === "stream_dropped") {
+      return;
+    }
+    if (ev.seq > edStreamSeen) edStreamSeen = ev.seq;
     const box = $2("edStream");
     if (!box) return;
     const kind = ev.kind || "";
@@ -2609,6 +2632,12 @@ ${indent}${opens ? "  " : ""}`, pos, pos, "end");
   function notifyRunDone(status, runId) {
     const panelActive = document.getElementById("panel-editor")?.classList.contains("active");
     if (panelActive && !document.hidden) return;
+    const files = Number(ed.review?.diffSummary?.files) || 0;
+    const bridge = typeof window !== "undefined" ? window.flobotDesktop : null;
+    if (bridge && typeof bridge.notifyRunEnd === "function") {
+      bridge.notifyRunEnd({ status, files });
+      return;
+    }
     if (typeof Notification === "undefined") return;
     try {
       if (Notification.permission === "granted") {
@@ -4208,12 +4237,7 @@ When a release is cut:
   var streamRetries = 0;
   var streamTimer = null;
   var streamRunId = null;
-  // streamSeen is how many events of the current run this client has already
-  // rendered. It is the resume offset: a reconnect asks for ?since=streamSeen
-  // so the replay starts exactly where rendering stopped.
   var streamSeen = 0;
-  // streamDropped records that the server told us it gave up on us. The
-  // reconnect then must not treat the gap as completion.
   var streamDropped = false;
   var keyFile = "~/.accounts/meta.ai";
   var secretPatterns = [
@@ -4565,10 +4589,6 @@ When a release is cut:
     }
   }
   var openTools = /* @__PURE__ */ new Map();
-  // deltaNodes holds the live bubble of each turn whose answer is still
-  // arriving as deltas, keyed by turn id. It is what makes a long answer look
-  // like typing instead of a hang.
-  var deltaNodes = /* @__PURE__ */ new Map();
   function logEl() {
     return $5("log");
   }
@@ -4578,39 +4598,9 @@ When a release is cut:
     stats.bump(kind);
     let node;
     switch (kind) {
-      case "delta": {
-        const key = String(e.turn_id || 0);
-        let live = deltaNodes.get(key);
-        if (!live) {
-          live = evDiv("content", "content", "");
-          deltaNodes.set(key, live);
-          log.appendChild(live);
-          stampEvent(live, "content");
-        }
-        if (e.text) live.appendChild(document.createTextNode(sanitize2(e.text)));
-        if (autoScroll) log.scrollTop = log.scrollHeight;
-        return;
-      }
-      case "content": {
-        const key = String(e.turn_id || 0);
-        const live = deltaNodes.get(key);
-        if (!live) {
-          node = evDiv("content", "content", e.text);
-          break;
-        }
-        // The full message is authoritative. Replace the accumulated fragments
-        // instead of appending to them, so a fragment lost to a drop cannot
-        // leave a hole in the transcript.
-        live.textContent = "";
-        const k = document.createElement("span");
-        k.className = "k";
-        k.textContent = "content";
-        live.appendChild(k);
-        if (e.text) live.appendChild(document.createTextNode(" " + sanitize2(e.text)));
-        deltaNodes.delete(key);
-        if (autoScroll) log.scrollTop = log.scrollHeight;
-        return;
-      }
+      case "content":
+        node = evDiv("content", "content", e.text);
+        break;
       case "thinking":
         node = thinkingEl(e.text);
         break;
@@ -4636,7 +4626,6 @@ When a release is cut:
         break;
       case "done":
         node = evDiv("done", "done", e.text);
-        deltaNodes.clear();
         sfx.done();
         renderTimeline();
         checkAllSteps();
@@ -4828,19 +4817,14 @@ When a release is cut:
     }
     if (!ev || typeof ev !== "object") return;
     if (ev.kind === "heartbeat") {
-      // A keepalive carries no state. It exists so an idle connection is not
-      // mistaken for a dead one; rendering it would put noise in the log.
       return;
     }
     if (ev.kind === "stream_dropped") {
-      // The server gave up on us because we fell behind. This is a truncation,
-      // not completion: resume from the last event we actually have instead of
-      // showing a half answer as if it were finished.
       streamDropped = true;
       setStreamState("reconnecting");
       return;
     }
-    streamSeen++;
+    if (ev.seq > streamSeen) streamSeen = ev.seq;
     appendEvent(ev);
   }
   function feedStreamLine(chunk) {
@@ -4866,8 +4850,6 @@ When a release is cut:
     }
     const qs = [];
     if (streamRunId) qs.push("run=" + encodeURIComponent(streamRunId));
-    // Resume, do not re-render: the server replays from this offset, so a
-    // reconnect after a drop yields no duplicate and no gap.
     if (streamSeen > 0) qs.push("since=" + streamSeen);
     const url = "/api/stream" + (qs.length ? "?" + qs.join("&") : "");
     const ctrl = new AbortController();

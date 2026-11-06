@@ -1168,20 +1168,19 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 		}()
 		<-snapDone
 		res := s.runBackend(ctx, req, func(ev executor.Event) {
-			_ = s.store.AppendEvent(run.ID, Actor, store.Event{
+			stored := store.Event{
 				Kind:    ev.Kind,
 				TurnID:  ev.TurnID,
 				Text:    ev.Text,
 				Tool:    ev.Tool,
 				IsError: ev.IsError,
-			})
-			s.hub.publish(store.Event{
-				Kind:    ev.Kind,
-				TurnID:  ev.TurnID,
-				Text:    ev.Text,
-				Tool:    ev.Tool,
-				IsError: ev.IsError,
-			})
+			}
+			_ = s.store.AppendEvent(run.ID, Actor, stored)
+			// Publish the event as it was stored, seq included. The seq is what
+			// a client resumes from, so a live frame without one would leave the
+			// client unable to say where it stopped. AppendEvent stamps the seq
+			// on its own copy, so it is read back rather than assumed.
+			s.hub.publish(s.storedEvent(run.ID, stored))
 			// Capture the result contract (taskclient backend) for the
 			// run summary: confidence, tests, requires_human_review.
 			if ev.Kind == "result_contract" {
@@ -1214,6 +1213,30 @@ func (s *Server) spawn(run store.Run, req executor.Request) {
 		s.judgeRun(run, req)
 		s.hub.publish(store.Event{Kind: "run_status", Text: status})
 	}()
+}
+
+// storedEvent returns ev as the store recorded it, seq included.
+//
+// AppendEvent stamps the seq on its own copy, so the stored sequence is read
+// back rather than reconstructed. A live frame carries the same seq as the
+// replayed one, which is what lets a client resume from a frame it received
+// live without skipping or repeating anything.
+//
+// The event being published is the newest one in its run, so the tail of the
+// stored sequence is the only place it can be. A mismatch means AppendEvent
+// refused it (the run is at maxEvents and the event was not terminal); it is
+// then published unstamped, because it has no place in the replay sequence and
+// must not advance a client's resume offset.
+func (s *Server) storedEvent(runID string, ev store.Event) store.Event {
+	events, err := s.store.ListEvents(runID, Actor)
+	if err != nil || len(events) == 0 {
+		return ev
+	}
+	last := events[len(events)-1]
+	if last.Kind != ev.Kind || last.Text != ev.Text || last.TurnID != ev.TurnID {
+		return ev
+	}
+	return last
 }
 
 // stopRun cancels a running run's executor context, killing its process

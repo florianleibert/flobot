@@ -57,8 +57,12 @@ var (
 // disconnects. A disconnect or reconnect never affects the server or other
 // clients.
 //
-// ?since=N skips the first N events of that run, so a client that was dropped
+// ?since=N skips every event whose seq is <= N, so a client that was dropped
 // resumes exactly where it stopped: no duplicate, no gap.
+//
+// N is a seq, not a count of frames the client has seen. The hub coalesces
+// consecutive deltas, so the two sequences differ; resuming from a frame count
+// would skip events whenever an answer streamed.
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
@@ -98,18 +102,30 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if run, err := s.store.GetRun(id, Actor); err == nil {
-			if since > len(run.Events) {
-				since = len(run.Events)
-			}
-			for _, ev := range run.Events[since:] {
+			for _, ev := range run.Events {
+				if ev.Seq <= since {
+					continue
+				}
 				if !writeNDJSON(w, ev) {
 					return
 				}
 			}
 			fl.Flush()
 			drain()
-			if run2, err := s.store.GetRun(id, Actor); err == nil && len(run2.Events) > len(run.Events) {
-				for _, ev := range run2.Events[len(run.Events):] {
+			// Anything appended between the snapshot and the subscription is
+			// re-read here. The boundary is the snapshot's last seq, not its
+			// length: the two agree for an append-only run, but a run that hit
+			// maxEvents overwrites its final slot, so a length comparison would
+			// miss the terminal event.
+			last := 0
+			if n := len(run.Events); n > 0 {
+				last = run.Events[n-1].Seq
+			}
+			if run2, err := s.store.GetRun(id, Actor); err == nil {
+				for _, ev := range run2.Events {
+					if ev.Seq <= last || ev.Seq <= since {
+						continue
+					}
 					if !writeNDJSON(w, ev) {
 						return
 					}

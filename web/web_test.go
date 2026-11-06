@@ -166,3 +166,80 @@ func TestStylesStyleUseCases(t *testing.T) {
 		}
 	}
 }
+// TestAppRoutesRunEndThroughDesktopBridge pins the notification wiring.
+//
+// The main process owns coalescing, the dock badge and the tray count, and it
+// only hears about a finished run through the preload bridge. A renderer that
+// calls the browser Notification API directly bypasses all three, which is
+// exactly the defect this test exists to prevent: the coalescing code was
+// reachable, correct and never called.
+func TestAppRoutesRunEndThroughDesktopBridge(t *testing.T) {
+	for _, needle := range []string{"flobotDesktop", "notifyRunEnd"} {
+		if !strings.Contains(AppJS, needle) {
+			t.Errorf("app.js does not reference %q; run-end never reaches the main process", needle)
+		}
+	}
+	// The bridge must be preferred over the browser API, not merely present.
+	bridge := strings.Index(AppJS, "notifyRunEnd")
+	browser := strings.Index(AppJS, "Notification.permission")
+	if bridge < 0 || browser < 0 {
+		t.Fatalf("missing bridge (%d) or browser fallback (%d)", bridge, browser)
+	}
+	if bridge > browser {
+		t.Errorf("app.js consults the browser Notification API before the desktop bridge")
+	}
+}
+
+// TestAppResumesStreamsFromSeq pins the resume contract on both stream readers.
+//
+// Every reader must send ?since= and must take the offset from the event's seq.
+// A reader that resumes from a count of frames it has rendered indexes the
+// frame sequence with a number from the event sequence: the hub coalesces
+// deltas, so after an answer streams the replay starts too early and re-renders
+// events the user already saw.
+func TestAppResumesStreamsFromSeq(t *testing.T) {
+	if n := strings.Count(AppJS, "since="); n < 2 {
+		t.Errorf("app.js builds a ?since= resume URL %d time(s), want at least 2 (main feed and Code rail)", n)
+	}
+	if !strings.Contains(AppJS, "ev.seq") {
+		t.Errorf("app.js never reads ev.seq; the resume offset is not in the event sequence")
+	}
+	// A frame-counting offset is the defect: it must not be what is sent.
+	if regexp.MustCompile(`since="\s*\+\s*streamSeen\s*\+\s*"`).MatchString(AppJS) &&
+		!strings.Contains(AppJS, "ev.seq > streamSeen") {
+		t.Errorf("app.js counts frames for its resume offset instead of tracking seq")
+	}
+}
+
+// TestAppFiltersHeartbeatsOnEveryReader pins that keepalives never render.
+//
+// The server sends heartbeats so an idle connection is not mistaken for a dead
+// one. A reader that renders them puts a heartbeat row in the log every few
+// seconds; a reader that treats one as data can also mistake it for progress.
+func TestAppFiltersHeartbeatsOnEveryReader(t *testing.T) {
+	if n := strings.Count(AppJS, `"heartbeat"`); n < 2 {
+		t.Errorf("app.js filters heartbeats in %d place(s), want at least 2 (main feed and Code rail)", n)
+	}
+}
+
+// TestAppHandlesStreamDropped pins that a truncation is not read as completion.
+//
+// When a client falls too far behind the server gives up and says so. A reader
+// that ignores the frame shows a half answer as if the run had finished.
+func TestAppHandlesStreamDropped(t *testing.T) {
+	if !strings.Contains(AppJS, "stream_dropped") {
+		t.Errorf("app.js does not handle stream_dropped; a truncation would render as completion")
+	}
+}
+
+// TestBundleIsBuiltFromSource guards against editing the generated bundle.
+//
+// web/app.js is produced by esbuild from flobot-ui-redesign/src. Fixes applied
+// straight to the bundle are silently reverted by the next sync — which is how
+// the stream resume work was lost once already. The bundle carries a banner
+// naming its source so this stays discoverable.
+func TestBundleIsBuiltFromSource(t *testing.T) {
+	if !strings.Contains(AppJS, "flobot-ui-redesign") {
+		t.Errorf("app.js has no banner naming its source project; edits to it are lost on the next sync")
+	}
+}

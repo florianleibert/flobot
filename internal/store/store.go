@@ -181,6 +181,15 @@ type Message struct {
 
 // Event is one streaming-json line. Unknown fields are never stored.
 type Event struct {
+	// Seq is the event's 1-based position in its run, stamped by AppendEvent.
+	//
+	// It exists because the stream does not deliver events one-for-one: the hub
+	// coalesces consecutive deltas into a single frame. A client that counted
+	// the frames it had seen and asked to resume from that count would index a
+	// different sequence than the one the server replays from the store, and
+	// would skip or repeat events. Seq is the position in the persisted
+	// sequence, which is the only thing ?since= can mean.
+	Seq     int    `json:"seq,omitempty"`
 	Kind    string `json:"kind"`
 	TurnID  uint64 `json:"turn_id,omitempty"`
 	Text    string `json:"text,omitempty"`
@@ -884,12 +893,17 @@ func (s *Store) AppendEvent(id, actor string, ev Event) error {
 	}
 	if len(run.Events) >= maxEvents {
 		if ev.Kind == "done" || ev.Kind == "err" {
+			// The run is full: the terminal event replaces the last slot. Its
+			// seq is that slot's position, so a client resuming from it lands
+			// on the terminal event rather than past the end.
+			ev.Seq = maxEvents
 			run.Events[maxEvents-1] = ev
 			run.EventCount = len(run.Events)
 			s.runs[id] = run
 		}
 		return nil
 	}
+	ev.Seq = len(run.Events) + 1
 	run.Events = append(run.Events, ev)
 	run.EventCount = len(run.Events)
 	s.runs[id] = run
