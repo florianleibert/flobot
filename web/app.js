@@ -2630,14 +2630,14 @@ ${indent}${opens ? "  " : ""}`, pos, pos, "end");
     }
   }
   function notifyRunDone(status, runId) {
-    const panelActive = document.getElementById("panel-editor")?.classList.contains("active");
-    if (panelActive && !document.hidden) return;
     const files = Number(ed.review?.diffSummary?.files) || 0;
     const bridge = typeof window !== "undefined" ? window.flobotDesktop : null;
     if (bridge && typeof bridge.notifyRunEnd === "function") {
       bridge.notifyRunEnd({ status, files });
       return;
     }
+    const panelActive = document.getElementById("panel-editor")?.classList.contains("active");
+    if (panelActive && !document.hidden) return;
     if (typeof Notification === "undefined") return;
     try {
       if (Notification.permission === "granted") {

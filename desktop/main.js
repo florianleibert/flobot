@@ -380,11 +380,16 @@ function showRunNotification(batch) {
 ipcMain.on('flobot:run-end', (_evt, payload) => {
   const status = (payload && payload.status) || 'done';
   const files = Number(payload && payload.files) || 0;
+  // The badge counts runs that finished without you watching them. A focused
+  // window does not mean you were watching: you may be on the Queue tab, or
+  // the Code panel may be scrolled away. Only the banner is suppressed when
+  // focused — dropping the event here would leave the badge at zero for a run
+  // you never saw, which is the one thing the count exists to prevent.
+  setUnseen(unseenRuns + 1);
   if (win && win.isFocused()) {
-    // You watched it happen; nothing to tell you about.
+    // You are looking at the app; do not interrupt with a banner.
     return;
   }
-  setUnseen(unseenRuns + 1);
   if (!pendingNotify) pendingNotify = [];
   pendingNotify.push({ status, files });
   if (pendingNotify.length === 1) {

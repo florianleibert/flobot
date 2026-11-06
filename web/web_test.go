@@ -166,6 +166,7 @@ func TestStylesStyleUseCases(t *testing.T) {
 		}
 	}
 }
+
 // TestAppRoutesRunEndThroughDesktopBridge pins the notification wiring.
 //
 // The main process owns coalescing, the dock badge and the tray count, and it
@@ -187,6 +188,37 @@ func TestAppRoutesRunEndThroughDesktopBridge(t *testing.T) {
 	}
 	if bridge > browser {
 		t.Errorf("app.js consults the browser Notification API before the desktop bridge")
+	}
+}
+
+// TestAppReportsEveryRunToBridge pins that the renderer does not decide on its
+// own whether the user is watching.
+//
+// document.hidden stays false when the Electron window is minimized, so a
+// renderer-side "panel is active and page is visible" guard silently drops the
+// run: no banner, and no badge increment either. Main is the only side that can
+// see win.isFocused() and win.isMinimized(), so it must make that call. The
+// guard is still correct for the browser fallback, where it is the only signal.
+func TestAppReportsEveryRunToBridge(t *testing.T) {
+	start := strings.Index(AppJS, "function notifyRunDone")
+	if start < 0 {
+		t.Fatal("notifyRunDone not found in app.js")
+	}
+	body := AppJS[start:]
+	if end := strings.Index(body, "\n  }"); end > 0 {
+		body = body[:end]
+	}
+	bridge := strings.Index(body, "notifyRunEnd")
+	guard := strings.Index(body, "panelActive")
+	if bridge < 0 {
+		t.Fatal("notifyRunDone never calls notifyRunEnd")
+	}
+	if guard >= 0 && guard < bridge {
+		t.Errorf("notifyRunDone suppresses on panelActive before consulting the bridge; " +
+			"a minimized window leaves document.hidden false, so the run is dropped and the badge never counts it")
+	}
+	if guard < 0 {
+		t.Errorf("the browser fallback lost its panelActive guard; in a plain browser it is the only focus signal")
 	}
 }
 
